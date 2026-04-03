@@ -1,0 +1,60 @@
+name: GlassBox CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install optional dependencies
+        run: pip install flask>=3.0.0 pyyaml>=6.0
+
+      - name: Core test suite (172 tests)
+        env:
+          GLASSBOX_LOG_LEVEL: CRITICAL
+        run: python tests/test_glassbox.py
+
+      - name: Load, stress and security tests (60 tests)
+        env:
+          GLASSBOX_LOG_LEVEL: CRITICAL
+        run: python tests/test_load_stress_security.py
+
+      - name: Framework component tests (66 tests)
+        env:
+          GLASSBOX_LOG_LEVEL: CRITICAL
+        run: python tests/test_framework.py
+
+      - name: Advanced feature tests (68 tests)
+        env:
+          GLASSBOX_LOG_LEVEL: CRITICAL
+        run: python tests/test_advanced.py
+
+      - name: Industry scenarios
+        env:
+          GLASSBOX_LOG_LEVEL: WARNING
+        run: python -m glassbox.scenarios.run_scenarios
+
+      - name: Industry examples
+        env:
+          GLASSBOX_LOG_LEVEL: CRITICAL
+        run: python examples/industry_examples.py
+
+      - name: Benchmarks
+        env:
+          GLASSBOX_LOG_LEVEL: CRITICAL
+        run: python -m glassbox.benchmarks.run_benchmarks

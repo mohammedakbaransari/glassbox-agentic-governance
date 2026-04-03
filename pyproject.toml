@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "glassbox-governance"
+version = "1.0.0"
+description = "Runtime Decision Governance Framework for Autonomous AI Systems"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [{name = "Mohammed Akbar Ansari"}]
+requires-python = ">=3.9"
+dependencies = []
+keywords = [
+  "ai-governance","autonomous-agents","policy-as-code","enterprise-ai",
+  "decision-governance","responsible-ai","agentic-systems","audit-trail",
+  "langchain","langgraph","rag-governance","multi-tenancy"
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+api   = ["flask>=3.0.0"]
+spark = ["pyspark>=3.3.0"]
+yaml  = ["pyyaml>=6.0"]
+dev   = ["flask>=3.0.0", "pyyaml>=6.0"]
+
+[project.urls]
+Homepage   = "https://github.com/mohammedakbaransari/runtime-decision-governance"
+Repository = "https://github.com/mohammedakbaransari/runtime-decision-governance"
+Issues     = "https://github.com/mohammedakbaransari/runtime-decision-governance/issues"
+
+[tool.setuptools.packages.find]
+where   = ["."]
+include = ["glassbox*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
