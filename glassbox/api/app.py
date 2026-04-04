@@ -1,8 +1,11 @@
 """
-GlassBox Framework — REST API  (v1.0.0)
+GlassBox Framework — REST API  (v1.0.1)
 Flask governance service — hardened, production-ready.
 
-Security hardening (v1.0.0):
+Security hardening (v1.0.1):
+  - Agent request rate limiting (100 req/min per agent_id)
+  - Global rate limiting (500 req/min per IP)
+  - user_override moved from request body to authenticated session only
   - agent_id in URL params validated before use
   - Security response headers on every request
   - Payload size limit enforced at API boundary
@@ -27,6 +30,9 @@ Author: Mohammed Akbar Ansari
 """
 from __future__ import annotations
 import os, re, sys, uuid
+import threading
+from collections import defaultdict
+from time import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from flask import Flask, Response, jsonify, request
@@ -45,6 +51,51 @@ _MAX_BODY_BYTES = 8 * 1024
 _SAFE_ID_RE     = re.compile(r'^[a-zA-Z0-9_\-\.@:]+$')
 _UUID_RE        = re.compile(
     r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
+
+
+# ── RATE LIMITER [v1.0.1 DoS Prevention] ──────────────────────────────────
+
+class SimpleSlidingWindowRateLimiter:
+    """
+    In-memory sliding-window rate limiter with per-key tracking.
+    Thread-safe. No external dependencies.
+    
+    Usage:
+        limiter = SimpleSlidingWindowRateLimiter(requests_per_window=100, window_seconds=60)
+        if limiter.is_allowed("agent_id_abc"):
+            # Process request
+        else:
+            # Reject with 429 Too Many Requests
+    """
+    def __init__(self, requests_per_window: int = 100, window_seconds: int = 60):
+        self.requests_per_window = requests_per_window
+        self.window_seconds = window_seconds
+        self._timestamps = defaultdict(list)  # key -> [timestamp, ...]
+        self._lock = threading.Lock()
+    
+    def is_allowed(self, key: str) -> bool:
+        """Check if request is allowed under rate limit. Returns True if allowed, False if rate exceeded."""
+        now = time()
+        window_start = now - self.window_seconds
+        
+        with self._lock:
+            # Remove expired timestamps outside the window
+            if key in self._timestamps:
+                self._timestamps[key] = [ts for ts in self._timestamps[key] if ts > window_start]
+            else:
+                self._timestamps[key] = []
+            
+            # Check if we're under limit
+            if len(self._timestamps[key]) < self.requests_per_window:
+                self._timestamps[key].append(now)
+                return True
+            else:
+                return False
+
+
+# Rate limiters for different endpoints
+_agent_limiter = SimpleSlidingWindowRateLimiter(requests_per_window=100, window_seconds=60)  # 100 req/min per agent
+_ip_limiter    = SimpleSlidingWindowRateLimiter(requests_per_window=500, window_seconds=60)  # 500 req/min per IP 
 
 
 def _safe_url_id(v: str, name: str = "id"):
@@ -93,10 +144,17 @@ def create_app(pipeline=None, log_dir=None, echo=False, testing=False) -> Flask:
         if not payload or not isinstance(payload, dict):
             raise ValueError("'payload' must be a non-empty object.")
         ctx = data.get("context") or {}
+        
+        # [v1.0.1 SECURITY] user_override MUST NOT come from untrusted request body
+        # Only authenticated session can set user_override. Request body is rejected.
+        if "user_override" in ctx:
+            raise ValueError(
+                "'user_override' cannot be set from request body. Only authenticated sessions can enable this.")
+        
         context = DecisionContext(
             environment   = str(ctx.get("environment",   "production"))[:32],
             source_system = str(ctx.get("source_system", "api"))[:64],
-            user_override = bool(ctx.get("user_override", False)),
+            user_override = False,  # Always False from request; authenticated code can override
             confidence    = max(0.0, min(1.0, float(ctx.get("confidence", 1.0)))),
             agent_chain   = [str(a)[:128] for a in (ctx.get("agent_chain") or [])[:10]],
             metadata      = ctx.get("metadata") or {},
@@ -116,6 +174,13 @@ def create_app(pipeline=None, log_dir=None, echo=False, testing=False) -> Flask:
     @app.route("/decisions", methods=["POST"])
     def submit():
         rid  = str(uuid.uuid4())[:8]
+        
+        # [v1.0.1 DoS Prevention] Rate limiting check
+        client_ip = request.remote_addr or "unknown"
+        if not _ip_limiter.is_allowed(client_ip):
+            log.warning("Rate limit exceeded", extra={"component": "api", "client_ip": client_ip, "reason": "global_limit"})
+            return _err("Rate limit exceeded (500 req/min per IP).", 429, rid)
+        
         data = request.get_json(silent=True, force=False)
         if not data:           return _err("Request body must be valid JSON.", 400, rid)
         if not isinstance(data, dict): return _err("Request body must be a JSON object.", 400, rid)
@@ -125,6 +190,12 @@ def create_app(pipeline=None, log_dir=None, echo=False, testing=False) -> Flask:
             return _err(str(exc), 422, rid)
         except Exception:
             return _err("Request could not be processed.", 500, rid)
+        
+        # [v1.0.1 DoS Prevention] Per-agent rate limiting check
+        if not _agent_limiter.is_allowed(req.agent_id):
+            log.warning("Rate limit exceeded", extra={"component": "api", "agent_id": req.agent_id, "reason": "agent_limit"})
+            return _err("Rate limit exceeded (100 req/min per agent).", 429, rid)
+        
         resp = _pipeline.process(req)
         return jsonify(resp.to_dict()), 200
 
@@ -133,12 +204,25 @@ def create_app(pipeline=None, log_dir=None, echo=False, testing=False) -> Flask:
         status_f = request.args.get("status")
         agent_f  = request.args.get("agent_id")
         type_f   = request.args.get("decision_type")
-        try:   limit = min(int(request.args.get("limit", 100)), 500)
-        except (ValueError, TypeError): limit = 100
+        
+        # [v1.0.1 DoS Prevention] Validate pagination parameters
+        try:
+            limit  = int(request.args.get("limit", 100))
+            offset = int(request.args.get("offset", 0))
+        except (ValueError, TypeError):
+            limit, offset = 100, 0
+        
+        limit  = max(1, min(limit, 500))   # Clamp to [1, 500]
+        offset = max(0, offset)              # Ensure non-negative
+        
         if agent_f:
             ok, _ = _safe_url_id(agent_f, "agent_id")
             if not ok: agent_f = None
+        
+        # [v1.0.1 Memory Safety] Avoid loading all records by filtering first
+        # We need database-level filtering for production; this is in-memory fallback
         records = _pipeline.audit_logger.get_all()
+        
         if status_f:
             try: records = [r for r in records if r.final_status == FinalStatus(status_f)]
             except ValueError: pass
@@ -146,8 +230,18 @@ def create_app(pipeline=None, log_dir=None, echo=False, testing=False) -> Flask:
         if type_f:
             try: records = [r for r in records if r.decision_type == DecisionType(type_f)]
             except ValueError: pass
-        records = records[-limit:]
-        return jsonify({"count": len(records), "records": [r.to_dict() for r in records]}), 200
+        
+        # Apply pagination AFTER filtering
+        total = len(records)
+        records = records[offset:offset + limit]
+        
+        return jsonify({
+            "count":     len(records),
+            "total":     total,
+            "offset":    offset,
+            "limit":     limit,
+            "records":   [r.to_dict() for r in records]
+        }), 200
 
     @app.route("/decisions/<decision_id>", methods=["GET"])
     def get_decision(decision_id: str):

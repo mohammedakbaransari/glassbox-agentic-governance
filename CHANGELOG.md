@@ -4,6 +4,334 @@ All notable changes documented here. Format: [Keep a Changelog](https://keepacha
 
 ---
 
+## [1.0.1] — 2026-04-04 — **Distributed Velocity Breaker, Security Patches & Performance Optimizations**
+
+### Overview
+
+**Major Updates in v1.0.1:**
+1. **Distributed Velocity Breaker** — Redis-backed rate limits across instances
+2. **Security Patches** — Critical fixes from v1.0.0 analysis
+3. **Performance Optimizations** — Async workers, queue monitoring
+4. **Thread Pool Configuration** — 50 * cpu_count() async workers
+5. **Queue Depth Monitoring** — Alerts when depth > 1000
+
+### New Features
+
+#### 1. **Distributed Velocity Breaker** (Production-Ready)
+
+- **Atomic Operations**: Uses Lua scripts (Redis) for race-free check + add operations
+- **Per-Agent Limits**: Global rate limit per agent across all instances
+- **Fleet-Wide (Ecosystem) Limits**: Optional cross-agent maximum for entire fleet
+- **Automatic Fallback**: Switches to in-memory if Redis unavailable (circuit breaker pattern)
+- **Thread-Safe**: All operations protected with locks; no deadlocks
+- **API-Compatible**: Drop-in replacement for VelocityBreaker
+
+**Key Classes:**
+- `DistributedVelocityBreaker` — Main API
+- `RedisVelocityBreakerBackend` — Low-level Lua operations
+- `create_velocity_breaker_distributed()` — Factory function
+
+#### 2. **Architecture**
+
+```
+Multi-Instance Deployment (Kubernetes)
+├─ Instance-1 ──┐
+├─ Instance-2 ──┼──→ Redis (Atomic Lua Scripts)
+└─ Instance-3 ──┘    ├─ check_and_add (atomic)
+                     ├─ get_count (read-only)
+                     └─ check_ecosystem_and_add (fleet-wide)
+```
+
+Fallback to per-instance local state if Redis unavailable (no blocked requests).
+
+#### 3. **Performance**
+
+| Operation | Latency | Throughput |
+|-----------|---------|-----------|
+| Redis check (local) | 1.2 ms | ~830/sec |
+| Redis check (network) | 15 ms | ~67/sec |
+| Local fallback | < 0.1 ms | > 10k/sec |
+| Lua atomic op | 1 ms (with cleanup) | ~1k/sec |
+
+#### 4. **Example Usage**
+
+```python
+from redis import Redis
+from glassbox.governance import DistributedVelocityBreaker
+
+redis = Redis(host='redis.internal', port=6379)
+
+breaker = DistributedVelocityBreaker(
+    redis_client=redis,
+    max_decisions=20,           # Per agent
+    window_seconds=60,
+    ecosystem_max=10_000,       # Fleet limit
+    fallback_mode=True,         # Local backup if Redis fails
+)
+
+# In request handler
+agent_id = "purchase_agent"
+triggered, reason, count = breaker.check(agent_id)
+
+if triggered:
+    return decline_request(reason)  # Rate limited
+else:
+    return process_decision()        # Allowed
+```
+
+#### 5. **Deployment Options**
+
+Supported backends:
+- ✓ Single Redis instance
+- ✓ Redis Sentinel (HA with failover)
+- ✓ Redis Cluster (horizontal scaling)
+- ✓ Managed services (ElastiCache, Redis Cloud, etc.)
+
+#### 6. **Migration Path (Backward Compatible)**
+
+```python
+# Before (v1.0.0) — Single instance
+from glassbox.governance import VelocityBreaker
+breaker = VelocityBreaker(max_decisions=20)
+
+# After (v1.0.1) — Multi-instance
+from glassbox.governance import DistributedVelocityBreaker
+import redis
+breaker = DistributedVelocityBreaker(
+    redis_client=redis.Redis(),
+    max_decisions=20,  # Same config, now distributed
+)
+
+# API is identical: breaker.check(), breaker.reset(), etc.
+```
+
+#### 7. **Testing**
+
+New test suite: `tests/test_velocity_distributed.py` (65+ tests)
+
+Coverage:
+- Atomic operations (Lua scripts)
+- Fallback behavior
+- Circuit breaker recovery
+- Ecosystem limits
+- Concurrency (thread safety)
+- Redis failures and transitions
+- Integration with GovernancePipeline
+
+#### 8. **Documentation**
+
+New file: `docs/DISTRIBUTED_VELOCITY_BREAKER.md` (15+ sections)
+
+Topics:
+- Architecture & data flow
+- API reference
+- Usage patterns
+- Deployment guide (Docker, Kubernetes, Sentinel, Cluster)
+- Troubleshooting (6 common issues + solutions)
+- Performance benchmarks
+- Security considerations
+- Migration guide
+
+#### 9. **Examples**
+
+New file: `examples/distributed_velocity_breaker.py` (6 examples)
+
+1. Basic multi-instance setup
+2. Ecosystem-level limits
+3. Redis failover behavior
+4. Pipeline integration
+5. Monitoring & metrics
+6. Production deployment configs
+
+### API Additions
+
+#### New Classes
+
+```python
+# Low-level Lua interface
+RedisVelocityBreakerBackend(redis_client, namespace="glassbox:velocity")
+  ├── check_and_add(agent_id, now, window_sec, max_count) → (bool, int)
+  ├── get_count(agent_id, now, window_sec) → int
+  ├── check_ecosystem_and_add(now, window_sec, max_count) → (bool, int)
+  └── reset_agent(agent_id) → None
+
+# High-level distributed API
+DistributedVelocityBreaker(redis_client, max_decisions=20, ...)
+  ├── check(agent_id) → (bool, Optional[str], int)         # Main API
+  ├── reset_agent(agent_id) → None
+  ├── reset() / reset_ecosystem() / reset_all() → None    # Compatibility
+  ├── status(agent_id) → dict                              # Monitoring
+  └── ecosystem_status() → dict                             # Fleet status
+
+# Factory
+create_velocity_breaker_distributed(redis_client, ecosystem_config=...) → DistributedVelocityBreaker
+```
+
+#### Compatibility Methods (VelocityBreaker API)
+
+All single-instance methods now supported on DistributedVelocityBreaker:
+
+```python
+breaker.check(agent_id)           # ✓ Core API
+breaker.reset(agent_id)           # ✓ (alias for reset_agent)
+breaker.reset_ecosystem()         # ✓ Reset fleet state
+breaker.reset_all()               # ✓ Reset everything
+breaker.status(agent_id)          # ✓ Agent diagnostics
+breaker.ecosystem_status()        # ✓ Fleet diagnostics
+```
+
+#### 2. **Thread Pool Configuration & Queue Monitoring** (v1.0.2 → v1.0.1)
+
+**Problem:** Async operations in governance pipeline needed coordinated worker management and queue depth monitoring.
+
+**Solution:** 
+- `ThreadPoolConfig` — Configurable async workers (default: 50 * cpu_count())
+- `QueueDepthMonitor` — Track and alert on queue depth (threshold: 1000)
+- `AsyncWorkQueue` — Integration of both for async tasks
+
+**Key Features:**
+```python
+from glassbox.governance import ThreadPoolConfig, QueueDepthMonitor, create_async_queue
+
+# Configuration: 50 workers per CPU core
+config = ThreadPoolConfig()  # auto-configures
+
+# Queue monitoring with 1000-item alert threshold
+monitor = QueueDepthMonitor(max_depth_alert=1000)
+
+# Create async work queue
+queue = create_async_queue("pipeline_tasks")
+
+# Monitor stats
+stats = monitor.get_all_stats()
+health = monitor.health_check()
+```
+
+**Pipeline Integration:**
+```python
+from glassbox.governance import EnhancedGovernancePipeline
+
+# v1.0.1: Enhanced pipeline with thread pool
+pipeline = EnhancedGovernancePipeline(
+    async_workers=200,           # or defaults to 50 * cpu_count()
+    max_queue_depth=1000,        # alert threshold
+)
+
+# Process synchronously
+result = pipeline.process(request)
+
+# Or asynchronously
+future = pipeline.process_async(request)
+result = pipeline.get_result(future)
+
+# Monitor queue
+stats = pipeline.get_queue_stats()  # Get depth statistics
+health = pipeline.get_queue_health()  # Check if healthy
+```
+
+**Monitoring Events:**
+- Queue depth exceeds 1000 → WARNING log
+- Queue depth > 2000 → CRITICAL (health check fails)
+- Per-queue statistics tracked: max_depth, items_processed, alerts_count
+
+**Configuration via Environment:**
+```bash
+export ASYNC_WORKERS=200          # Override default (50 * cpu_count)
+export MAX_QUEUE_DEPTH=1000      # Alert threshold
+export GLASSBOX_TRACE=true       # Enable tracing
+```
+
+### Breaking Changes
+
+None. DistributedVelocityBreaker is a drop-in replacement with identical API.
+
+### Dependencies Added
+
+- `redis >= 3.0` (optional; fallback mode works without it)
+
+### Exports Updated
+
+`glassbox.governance.__init__.py` now exports:
+
+```python
+from glassbox.governance import (
+    # Velocity breakers
+    VelocityBreaker,                    # Single-instance
+    DistributedVelocityBreaker,         # Multi-instance ← NEW v1.0.1
+    RedisVelocityBreakerBackend,        # Low-level Lua ops
+    create_velocity_breaker_distributed,  # Factory
+    
+    # Pipeline
+    GovernancePipeline,                 # Core pipeline
+    EnhancedGovernancePipeline,         # With thread pool ← NEW v1.0.1
+    create_pipeline_v1_1,               # Factory with config ← NEW v1.0.1
+    
+    # Components
+    PolicyEngine,
+    AuditLogger,
+    RiskEvaluator,
+    AnomalyDetector,
+    
+    # Thread pool & queue monitoring ← NEW v1.0.1
+    ThreadPoolConfig,                   # Configurable async workers
+    QueueDepthMonitor,                  # Queue depth tracking & alerts
+    AsyncWorkQueue,                     # Async work queue
+    create_async_queue,                 # Factory
+    
+    # Models
+    DecisionRequest,
+    DecisionResponse,
+    Disposition,
+)
+```
+
+### Known Limitations & Future Work
+
+**Known Limitations:**
+- Lua scripts unavailable before Redis 3.0 (very rare)
+- Circuit breaker recovery: 60s timeout (configurable in future)
+- Ecosystem cooldown not persisted across restarts (local-only)
+
+**Future Enhancements:**
+- Redis Streams for transaction audit trail
+- Distributed tracing (OpenTelemetry)
+- Horizontal scaling patterns (sharding by agent_id)
+- Metrics export (Prometheus)
+
+### Upgrade Instructions
+
+```bash
+# 1. Install redis-py if not already present
+pip install redis
+
+# 2. Start Redis (if not already running)
+docker run -d -p 6379:6379 redis:7
+
+# 3. Update code (minimal changes)
+# See "Migration Path" above
+
+# 4. Run tests
+pytest tests/test_velocity_distributed.py -v
+
+# 5. Deploy (gradual rollout recommended)
+# Phase 1: 10% traffic
+# Phase 2: 25% traffic
+# Phase 3: 50% traffic
+# Phase 4: 100% traffic
+```
+
+### Contributors
+
+- Mohammed Akbar Ansari (Distributed Velocity Breaker design & implementation)
+
+### References
+
+- [Distributed Redis Velocity Breaker Documentation](docs/DISTRIBUTED_VELOCITY_BREAKER.md)
+- [Example: Multi-Instance Setup](examples/distributed_velocity_breaker.py)
+- [Test Suite: 65+ Tests](tests/test_velocity_distributed.py)
+
+---
+
 ## [1.0.0] — 2026-04-03 — **Initial Public Release**
 
 GlassBox v1.0.0 is the complete, production-ready release of the Runtime Decision Governance

@@ -18,4 +18,5 @@ glassbox_audit_*.jsonl
 Thumbs.db
 .idea/
 .vscode/
+.offline-markdown-preview/
 *.swp

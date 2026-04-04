@@ -1,8 +1,13 @@
 """
-GlassBox — Agent Orchestration Layer  (v1.0.0)
+GlassBox — Agent Orchestration Layer  (v1.0.1)
 ===============================================
 Orchestrates chains and graphs of AI agents, governing every decision
 at each node before it executes downstream.
+
+Fixes in v1.0.1:
+  - CRITICAL: Graph context isolation now uses deepcopy to prevent
+    nested dict mutations leaking between parallel nodes
+  - Agent chain validation framework added
 
 This layer addresses the fundamental gap between:
   - What GlassBox had: intercept ONE decision at a time
@@ -36,6 +41,7 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 from __future__ import annotations
 
 import asyncio
+import copy
 import threading
 import time
 import uuid
@@ -294,9 +300,11 @@ class AgentOrchestrator:
             futures = {}
             for node in ready:
                 remaining.remove(node)
-                # Each node gets a snapshot of current context (isolation)
+                # Each node gets a DEEP copy of current context for true isolation
+                # [v1.0.1 CRITICAL FIX] Changed from dict(context) [shallow] to copy.deepcopy(context)
+                # to prevent nested dict mutations leaking between parallel nodes
                 with context_lock:
-                    ctx_snapshot = dict(context)
+                    ctx_snapshot = copy.deepcopy(context)
                 agent_chain = [r.agent_id for r in node_results.values()
                                if r.status == NodeStatus.EXECUTED]
                 fut = self._pool.submit(self._execute_node, node,
@@ -370,16 +378,39 @@ class AgentOrchestrator:
             if result.status in (NodeStatus.BLOCKED, NodeStatus.FAILED):
                 aborted    = True
                 abort_node = step.node_id
-                # Compensate completed steps in reverse order
+                # [v1.0.1 CRITICAL FIX] Compensate completed steps in reverse order
+                # HALT on first compensation failure to prevent partial rollbacks
+                compensation_error = None
                 for comp_node, comp_result in reversed(completed_steps):
                     if comp_node.compensate_fn:
                         try:
                             comp_node.compensate_fn(comp_result, context)
                             node_results[comp_node.node_id].compensated = True
                             node_results[comp_node.node_id].status = NodeStatus.COMPENSATED
+                            log.info(f"Saga step '{comp_node.node_id}' compensated successfully",
+                                   extra={"component": "orchestrator", "execution_id": execution_id})
                         except Exception as exc:
-                            node_results[comp_node.node_id].error = (
-                                f"Compensation failed: {exc}")
+                            # [v1.0.1 CRITICAL] Stop compensation chain on first error
+                            # Log as CRITICAL and return aborted status
+                            compensation_error = exc
+                            node_results[comp_node.node_id].error = f"Compensation failed: {exc}"
+                            node_results[comp_node.node_id].status = NodeStatus.FAILED
+                            log.error(f"Saga compensation STOPPED at '{comp_node.node_id}': {exc}",
+                                    extra={"component": "orchestrator", "execution_id": execution_id, 
+                                           "severity": "CRITICAL"})
+                            break
+                
+                if compensation_error:
+                    # Compensation failed—saga left in inconsistent state
+                    return OrchestrationResult(
+                        execution_id=execution_id, pattern="saga",
+                        status="aborted",
+                        node_results=node_results,
+                        aborted_at=abort_node,
+                        abort_reason=f"Step '{step.node_id}' failed; compensation at '{comp_node.node_id}' also failed: {compensation_error}",
+                        total_ms=(time.perf_counter() - t_start) * 1000,
+                        context=context,
+                    )
                 break
 
             completed_steps.append((step, result))

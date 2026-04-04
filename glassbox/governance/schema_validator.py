@@ -45,7 +45,10 @@ SCHEMAS: Dict[str, List[Dict[str, Any]]] = {
         {"field": "action",      "type": str, "required": True},
         {"field": "employee_id", "type": str, "required": False},
     ],
-    DecisionType.CUSTOM.value: [],  # No schema constraints for custom
+    DecisionType.CUSTOM.value: [
+        # CUSTOM type accepts any payload - no schema validation
+        # (Decision ID and timestamp are added by the pipeline, not required from user)
+    ],
 }
 
 

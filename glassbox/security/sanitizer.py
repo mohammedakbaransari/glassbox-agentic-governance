@@ -1,5 +1,5 @@
 """
-GlassBox Security Module  (v1.0.0)
+GlassBox Security Module  (v1.0.1)
 Input sanitisation, injection detection, and payload security validation.
 
 Protects against:
@@ -10,6 +10,10 @@ Protects against:
   - Null byte injection
   - Unicode homoglyph attacks in identifiers
   - Deeply nested or excessively wide payloads
+
+Fixes in v1.0.1:
+  - Serialization errors now fail-closed (block) instead of silent pass
+  - Added logging for security events
 
 Usage:
     from glassbox.security.sanitizer import PayloadSanitizer, SecurityReport
@@ -28,6 +32,11 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+
+from glassbox.governance.logging_manager import get_logger
+
+log = get_logger("security")
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -148,7 +157,7 @@ class PayloadSanitizer:
         """
         findings: List[SecurityFinding] = []
 
-        # Size check
+        # Size check [v1.0.1 CRITICAL FIX] - Fail-closed on serialization error
         try:
             raw_size = len(json.dumps(payload, default=str).encode())
             if raw_size > self.max_payload_size:
@@ -157,8 +166,17 @@ class PayloadSanitizer:
                     field_path="<root>",
                     detail=f"Payload size {raw_size} bytes exceeds limit {self.max_payload_size}"
                 ))
-        except Exception:
-            pass
+        except Exception as exc:
+            # [v1.0.1 CRITICAL] Fail-closed: payload cannot be serialized, treat as critical
+            log.warning(
+                f"Sanitizer: payload serialization error (fail-closed): {exc}",
+                extra={"component": "security", "agent_id": agent_id}
+            )
+            findings.append(SecurityFinding(
+                severity="critical", category="serialization",
+                field_path="<root>",
+                detail=f"Payload cannot be serialized: {exc}"
+            ))
 
         # Structural checks + content scanning
         self._scan_value(payload, "<root>", 0, findings)

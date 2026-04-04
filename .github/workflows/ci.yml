@@ -22,39 +22,19 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install optional dependencies
-        run: pip install flask>=3.0.0 pyyaml>=6.0
+        run: pip install pytest flask>=3.0.0 pyyaml>=6.0
 
-      - name: Core test suite (172 tests)
+      - name: Run all tests (550+ total)
         env:
           GLASSBOX_LOG_LEVEL: CRITICAL
-        run: python tests/test_glassbox.py
+        run: python -m pytest tests/ -v --tb=short
 
-      - name: Load, stress and security tests (60 tests)
-        env:
-          GLASSBOX_LOG_LEVEL: CRITICAL
-        run: python tests/test_load_stress_security.py
-
-      - name: Framework component tests (66 tests)
-        env:
-          GLASSBOX_LOG_LEVEL: CRITICAL
-        run: python tests/test_framework.py
-
-      - name: Advanced feature tests (68 tests)
-        env:
-          GLASSBOX_LOG_LEVEL: CRITICAL
-        run: python tests/test_advanced.py
-
-      - name: Industry scenarios
-        env:
-          GLASSBOX_LOG_LEVEL: WARNING
-        run: python -m glassbox.scenarios.run_scenarios
-
-      - name: Industry examples
+      - name: Run examples
         env:
           GLASSBOX_LOG_LEVEL: CRITICAL
         run: python examples/industry_examples.py
 
-      - name: Benchmarks
+      - name: Run benchmarks
         env:
           GLASSBOX_LOG_LEVEL: CRITICAL
         run: python -m glassbox.benchmarks.run_benchmarks

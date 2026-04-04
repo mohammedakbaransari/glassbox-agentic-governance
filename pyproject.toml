@@ -4,7 +4,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "glassbox-governance"
-version = "1.0.0"
+version = "1.1.0"
 description = "Runtime Decision Governance Framework for Autonomous AI Systems"
 readme = "README.md"
 license = {text = "Apache-2.0"}

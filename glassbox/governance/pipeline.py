@@ -31,7 +31,9 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 from __future__ import annotations
 
 import asyncio
+import atexit
 import concurrent.futures
+import copy
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -39,6 +41,7 @@ from typing import Any, Callable, Dict, List, Optional
 from glassbox.governance.anomaly_detector  import AnomalyDetector
 from glassbox.governance.audit_logger      import AuditLogger
 from glassbox.governance.context_capture   import ContextCapture
+from glassbox.governance.event_dispatcher  import ResilientEventDispatcher
 from glassbox.governance.execution_trace   import ExecutionTrace, StageTimer
 from glassbox.governance.logging_manager   import get_logger
 from glassbox.governance.models import (
@@ -129,7 +132,6 @@ class GovernancePipeline:
             self.velocity_breaker = VelocityBreaker(
                 ecosystem_max=(eco.max_decisions if eco.enabled else None),
                 ecosystem_window_seconds=eco.window_seconds,
-                ecosystem_cooldown_seconds=eco.cooldown_seconds,
             )
         else:
             self.velocity_breaker = velocity_breaker
@@ -149,6 +151,14 @@ class GovernancePipeline:
         self.trace_enabled        = trace_enabled
         self.async_audit_writes   = async_audit_writes
 
+        # Resilient event dispatcher (v1.0.1 - CRITICAL-1 fix)
+        self._event_dispatcher = ResilientEventDispatcher(
+            event_bus=event_bus,
+            fallback_log_fn=lambda msg: log.warning(msg),
+            max_failures=10,
+            failure_timeout_sec=60,
+        ) if event_bus else None
+
         # Agent contract registry
         self._contracts: Dict[str, AgentContract] = {}
         self._contracts_lock = threading.RLock()
@@ -158,6 +168,9 @@ class GovernancePipeline:
             max_workers=async_workers,
             thread_name_prefix="glassbox-async",
         )
+
+        # Register cleanup handlers (v1.0.1 - CRITICAL-5 fix)
+        atexit.register(self.shutdown)
 
         log.info("GovernancePipeline initialised", extra={
             "component":      "pipeline",
@@ -261,7 +274,8 @@ class GovernancePipeline:
             resp = self._blocked_early(record, f"Security violation: {detail}", "SECURITY-001")
             return self._finalize(record, t_start, resp, trace)
 
-        clean_payload = sec_report.clean_payload or request.payload
+        # Deep copy sanitized payload to prevent post-sanitization injection (v1.0.1 - CRITICAL-6)
+        clean_payload = copy.deepcopy(sec_report.clean_payload or request.payload)
 
         # ── Stage 0: AgentContract Validation ───────────────────────────
         contract = self.get_contract(request.agent_id)
@@ -627,6 +641,9 @@ class GovernancePipeline:
 
     def _collect_compliance_evidence(self, record) -> None:
         """Auto-collect compliance evidence from governed decisions."""
+        if not self.compliance_catalogue:
+            return
+
         try:
             _MAP = {
                 "all":        ["AIRM.MG.02","EUAI.A12","CSF2.DE.CM-01","E8.ML2.03","IEC62443.SR6.1"],
@@ -646,60 +663,77 @@ class GovernancePipeline:
                     ctrl, "decision", decision_id=record.decision_id,
                     agent_id=record.agent_id, evidence_data=ev)
         except Exception as exc:
-            log.warning("Compliance evidence collection failed: %s", exc)
+            log.error(
+                f"Compliance evidence collection failed: {exc}",
+                extra={
+                    "component": "pipeline",
+                    "event": "compliance_evidence_failed",
+                    "decision_id": record.decision_id,
+                    "error_type": type(exc).__name__,
+                },
+                exc_info=True,
+            )
 
     def _emit_decision_event(self, record: AuditRecord, response: DecisionResponse) -> None:
+        if not self._event_dispatcher:
+            return
+
         from glassbox.events.event_bus import (
             DecisionExecuted, DecisionBlocked, DecisionPendingReview,
         )
-        try:
-            status = record.final_status
-            if status == FinalStatus.EXECUTED:
-                self.event_bus.publish(DecisionExecuted(
-                    decision_id=record.decision_id, agent_id=record.agent_id,
-                    decision_type=record.decision_type.value,
-                    risk_score=record.risk_result.risk_score if record.risk_result else 0.0,
-                    latency_ms=record.pipeline_latency_ms or 0.0,
-                ))
-            elif status == FinalStatus.BLOCKED:
-                self.event_bus.publish(DecisionBlocked(
-                    decision_id=record.decision_id, agent_id=record.agent_id,
-                    decision_type=record.decision_type.value,
-                    violations=response.policy_violations,
-                    risk_score=response.risk_score,
-                ))
-            elif status == FinalStatus.PENDING_REVIEW:
-                self.event_bus.publish(DecisionPendingReview(
-                    decision_id=record.decision_id, agent_id=record.agent_id,
-                    decision_type=record.decision_type.value,
-                    risk_score=response.risk_score or 0.0,
-                ))
-        except Exception as exc:
-            log.warning("EventBus publish failed: %s", exc)
+
+        status = record.final_status
+        if status == FinalStatus.EXECUTED:
+            event = DecisionExecuted(
+                decision_id=record.decision_id, agent_id=record.agent_id,
+                decision_type=record.decision_type.value,
+                risk_score=record.risk_result.risk_score if record.risk_result else 0.0,
+                latency_ms=record.pipeline_latency_ms or 0.0,
+            )
+            self._event_dispatcher.publish(event, event_type="DecisionExecuted")
+        elif status == FinalStatus.BLOCKED:
+            event = DecisionBlocked(
+                decision_id=record.decision_id, agent_id=record.agent_id,
+                decision_type=record.decision_type.value,
+                violations=response.policy_violations,
+                risk_score=response.risk_score,
+            )
+            self._event_dispatcher.publish(event, event_type="DecisionBlocked")
+        elif status == FinalStatus.PENDING_REVIEW:
+            event = DecisionPendingReview(
+                decision_id=record.decision_id, agent_id=record.agent_id,
+                decision_type=record.decision_type.value,
+                risk_score=response.risk_score or 0.0,
+            )
+            self._event_dispatcher.publish(event, event_type="DecisionPendingReview")
 
     def _emit_security_event(self, agent_id, dtype, findings) -> None:
-        if not self.event_bus: return
+        if not self._event_dispatcher:
+            return
         from glassbox.events.event_bus import SecurityViolation
-        try: self.event_bus.publish(SecurityViolation(agent_id, dtype, findings))
-        except Exception: pass
+        event = SecurityViolation(agent_id, dtype, findings)
+        self._event_dispatcher.publish(event, event_type="SecurityViolation")
 
     def _emit_anomaly_event(self, decision_id, agent_id, dtype, fields, z) -> None:
-        if not self.event_bus: return
+        if not self._event_dispatcher:
+            return
         from glassbox.events.event_bus import AnomalyDetected
-        try: self.event_bus.publish(AnomalyDetected(decision_id, agent_id, dtype, fields, z))
-        except Exception: pass
+        event = AnomalyDetected(decision_id, agent_id, dtype, fields, z)
+        self._event_dispatcher.publish(event, event_type="AnomalyDetected")
 
     def _emit_breaker_event(self, agent_id, name, reason, is_eco) -> None:
-        if not self.event_bus: return
+        if not self._event_dispatcher:
+            return
         from glassbox.events.event_bus import CircuitBreakerTripped
-        try: self.event_bus.publish(CircuitBreakerTripped(agent_id, name, reason, is_eco))
-        except Exception: pass
+        event = CircuitBreakerTripped(agent_id, name, reason, is_eco)
+        self._event_dispatcher.publish(event, event_type="CircuitBreakerTripped")
 
     def _emit_policy_event(self, decision_id, agent_id, violations, warnings) -> None:
-        if not self.event_bus: return
+        if not self._event_dispatcher:
+            return
         from glassbox.events.event_bus import PolicyViolated
-        try: self.event_bus.publish(PolicyViolated(decision_id, agent_id, violations, warnings))
-        except Exception: pass
+        event = PolicyViolated(decision_id, agent_id, violations, warnings)
+        self._event_dispatcher.publish(event, event_type="PolicyViolated")
 
     # ── Convenience ────────────────────────────────────────────────────────────
 
@@ -738,10 +772,58 @@ class GovernancePipeline:
         }
 
     def shutdown(self) -> None:
-        self._thread_pool.shutdown(wait=True)
+        """Gracefully shutdown pipeline (v1.0.1 - CRITICAL-5: lifecycle management)."""
+        # [v1.0.1 CRITICAL FIX] Shutdown audit logger background write executor
+        if self.audit_logger and hasattr(self.audit_logger, "shutdown"):
+            try:
+                self.audit_logger.shutdown()
+            except Exception as exc:
+                log.error(
+                    f"AuditLogger shutdown failed: {exc}",
+                    extra={"component": "pipeline", "event": "audit_shutdown_failed"},
+                    exc_info=True,
+                )
+        
+        if self._thread_pool is not None:
+            try:
+                self._thread_pool.shutdown(wait=True)
+            except Exception as exc:
+                log.error(
+                    f"ThreadPoolExecutor shutdown failed: {exc}",
+                    extra={"component": "pipeline", "event": "shutdown_failed"},
+                    exc_info=True,
+                )
+            finally:
+                self._thread_pool = None
+
         if self.workflow_engine and hasattr(self.workflow_engine, "stop_monitor"):
-            self.workflow_engine.stop_monitor()
+            try:
+                self.workflow_engine.stop_monitor()
+            except Exception as exc:
+                log.error(
+                    f"WorkflowEngine shutdown failed: {exc}",
+                    extra={"component": "pipeline", "event": "workflow_shutdown_failed"},
+                    exc_info=True,
+                )
+
         if self.event_bus and hasattr(self.event_bus, "shutdown"):
-            self.event_bus.shutdown()
+            try:
+                self.event_bus.shutdown()
+            except Exception as exc:
+                log.error(
+                    f"EventBus shutdown failed: {exc}",
+                    extra={"component": "pipeline", "event": "eventbus_shutdown_failed"},
+                    exc_info=True,
+                )
+
         log.info("GovernancePipeline shutdown complete",
                  extra={"component": "pipeline", "event": "shutdown"})
+
+    def __enter__(self):
+        """Context manager entry (v1.0.1 - CRITICAL-5)."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures cleanup."""
+        self.shutdown()
+        return False

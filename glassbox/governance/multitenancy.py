@@ -30,7 +30,9 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 
 from __future__ import annotations
 
+import re
 import threading
+import time
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from glassbox.governance.anomaly_detector import AnomalyDetector
@@ -96,19 +98,26 @@ class TenantRegistry:
     """
     Thread-safe registry of per-tenant component bundles.
 
+    v1.0.1 changes (CRITICAL-4):
+      - Tenant ID validation (format + no null bytes)
+      - Per-tenant quota enforcement
+      - Configurable max tenant limit
+      - LRU eviction of inactive tenants
+      - Prevents memory exhaustion attacks
+
     Usage:
-        registry = TenantRegistry(base_policies=DEFAULT_POLICIES)
+        registry = TenantRegistry(
+            base_policies=DEFAULT_POLICIES,
+            max_tenants=10000,  # max concurrent tenants
+            tenant_id_pattern=r'^[a-z0-9_\-]{3,64}$',
+        )
 
         # Get (or lazily create) components for a tenant
         components = registry.get("org_a")
         components.policy_engine.evaluate(...)
-        components.velocity_breaker.check("agent_id")
 
-        # Register a tenant-specific policy
-        registry.register_policy("org_a", my_custom_policy)
-
-        # List active tenants
-        tenants = registry.list_tenants()
+        # Periodic maintenance
+        evicted = registry.evict_inactive(inactive_after_sec=3600)
     """
 
     def __init__(
@@ -117,37 +126,146 @@ class TenantRegistry:
         velocity_config: Optional[Dict]         = None,
         anomaly_config:  Optional[Dict]         = None,
         log_dir:         Optional[str]          = None,
+        max_tenants:     int                    = 10_000,
+        tenant_id_pattern: Optional[str]        = None,
     ):
         self._base_policies   = base_policies
         self._velocity_config = velocity_config
         self._anomaly_config  = anomaly_config
         self._log_dir         = log_dir
+        self._max_tenants     = max_tenants
+        self._tenant_id_pattern = re.compile(
+            tenant_id_pattern or r'^[a-z0-9_-]{3,64}$', re.IGNORECASE
+        )
         self._tenants: Dict[str, TenantComponents] = {}
+        self._tenant_last_access: Dict[str, float] = {}
         self._lock    = threading.RLock()
+
+        log_module = __import__("glassbox.governance.logging_manager", fromlist=["get_logger"])
+        get_logger = log_module.get_logger
+        self._logger = get_logger("tenant_registry")
+
+        self._logger.info(
+            f"TenantRegistry initialized: max_tenants={max_tenants}, "
+            f"pattern={tenant_id_pattern}",
+            extra={"component": "tenant_registry", "event": "init"},
+        )
+
+    def _validate_tenant_id(self, tenant_id: str) -> None:
+        """Validate tenant_id format for security and correctness."""
+        if not tenant_id:
+            raise ValueError("tenant_id must not be empty")
+
+        if len(tenant_id) > 128:
+            raise ValueError(f"tenant_id exceeds 128 characters: {len(tenant_id)}")
+
+        if "\x00" in tenant_id:
+            raise ValueError("tenant_id contains null byte")
+
+        if "/" in tenant_id or "\\" in tenant_id:
+            raise ValueError("tenant_id must not contain path separators")
+
+        if not self._tenant_id_pattern.match(tenant_id):
+            raise ValueError(
+                f"tenant_id '{tenant_id}' does not match pattern: {self._tenant_id_pattern.pattern}"
+            )
 
     def get(self, tenant_id: str) -> TenantComponents:
         """Get tenant components, creating them if this is a new tenant."""
-        # Fast path
+        # Validate tenant_id
+        self._validate_tenant_id(tenant_id)
+
+        # Fast path: already exists
         if tenant_id in self._tenants:
+            with self._lock:
+                self._tenant_last_access[tenant_id] = time.time()
             return self._tenants[tenant_id]
+
         # Slow path: create under lock
         with self._lock:
-            if tenant_id not in self._tenants:
-                self._tenants[tenant_id] = TenantComponents(
-                    tenant_id=tenant_id,
-                    base_policies=self._base_policies,
-                    velocity_config=self._velocity_config,
-                    anomaly_config=self._anomaly_config,
-                    log_dir=self._log_dir,
+            # Double-check in case another thread created it
+            if tenant_id in self._tenants:
+                self._tenant_last_access[tenant_id] = time.time()
+                return self._tenants[tenant_id]
+
+            # Enforce quota
+            if len(self._tenants) >= self._max_tenants:
+                raise RuntimeError(
+                    f"Tenant quota reached: {len(self._tenants)}/{self._max_tenants}. "
+                    f"Consider evicting inactive tenants."
                 )
+
+            # Create new tenant
+            self._tenants[tenant_id] = TenantComponents(
+                tenant_id=tenant_id,
+                base_policies=self._base_policies,
+                velocity_config=self._velocity_config,
+                anomaly_config=self._anomaly_config,
+                log_dir=self._log_dir,
+            )
+            self._tenant_last_access[tenant_id] = time.time()
+
+            self._logger.info(
+                f"Created new tenant: {tenant_id}",
+                extra={
+                    "component": "tenant_registry",
+                    "event": "tenant_created",
+                    "tenant_id": tenant_id,
+                    "total_tenants": len(self._tenants),
+                },
+            )
+
             return self._tenants[tenant_id]
 
     def register_policy(self, tenant_id: str, policy: Policy) -> None:
+        """Register a policy for a specific tenant only."""
+        self._validate_tenant_id(tenant_id)
         self.get(tenant_id).register_policy(policy)
 
     def list_tenants(self) -> List[str]:
+        """Get list of active tenant IDs."""
         with self._lock:
             return list(self._tenants.keys())
+
+    def evict_inactive(self, inactive_after_sec: int = 3600) -> int:
+        """
+        Evict tenants that haven't been accessed recently (LRU eviction).
+        
+        Returns:
+            int: number of tenants evicted
+        """
+        now = time.time()
+        with self._lock:
+            inactive = [
+                tid for tid, last_access in self._tenant_last_access.items()
+                if now - last_access > inactive_after_sec
+            ]
+
+            for tid in inactive:
+                del self._tenants[tid]
+                del self._tenant_last_access[tid]
+
+                self._logger.info(
+                    f"Evicted inactive tenant: {tid}",
+                    extra={
+                        "component": "tenant_registry",
+                        "event": "tenant_evicted",
+                        "tenant_id": tid,
+                        "inactive_for_sec": inactive_after_sec,
+                    },
+                )
+
+            return len(inactive)
+
+    def status(self) -> Dict[str, Any]:
+        """Get registry status for monitoring."""
+        with self._lock:
+            return {
+                "total_tenants": len(self._tenants),
+                "max_tenants": self._max_tenants,
+                "utilization_pct": round(len(self._tenants) / self._max_tenants * 100, 1),
+                "tenant_ids": list(self._tenants.keys()),
+            }
 
     def remove_tenant(self, tenant_id: str) -> bool:
         with self._lock:

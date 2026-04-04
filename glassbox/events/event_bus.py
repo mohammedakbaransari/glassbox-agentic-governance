@@ -32,6 +32,7 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import threading
 import uuid
@@ -223,7 +224,7 @@ class EventBus:
 
     def _invoke(self, handler: Callable, event: GlassBoxEvent) -> None:
         try:
-            if asyncio.iscoroutinefunction(handler):
+            if inspect.iscoroutinefunction(handler):
                 # Run async handler in a new event loop
                 loop = asyncio.new_event_loop()
                 try:

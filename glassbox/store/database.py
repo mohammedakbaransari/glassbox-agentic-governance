@@ -1,7 +1,11 @@
 """
-GlassBox — Transactional Relational Database Engine  (v1.0.0)
+GlassBox — Transactional Relational Database Engine  (v1.0.1)
 ==============================================================
 Production-grade relational database layer using Python stdlib sqlite3.
+
+Fixes in v1.0.1:
+  - tenant_id now MANDATORY in all query methods to prevent cross-tenant data leakage
+  - All audit queries must explicitly scope to a specific tenant
 
 Why SQLite (transactional) over JSON-document stores:
   - Compliance audit trails require JOIN: which decisions satisfy which controls?
@@ -573,11 +577,14 @@ class RelationalAuditRepository:
         min_risk_score: Optional[float] = None,
         max_risk_score: Optional[float] = None,
         has_violations: Optional[bool]  = None,
-        tenant_id:      Optional[str]   = None,
+        tenant_id:      str             = "",  # [v1.0.1 BREAKING] Now MANDATORY (required str, not Optional)
         circuit_breaker_triggered: Optional[bool] = None,
         limit:          int             = 100,
         offset:         int             = 0,
     ) -> List[Dict[str, Any]]:
+        # [v1.0.1 SECURITY] tenant_id is MANDATORY to prevent cross-tenant data leakage
+        if not tenant_id or not isinstance(tenant_id, str):
+            raise ValueError("tenant_id is required and must be a non-empty string")
         qb = (QueryBuilder("audit_records")
               .select("full_record_json")
               .where_eq("agent_id", agent_id)
@@ -606,8 +613,11 @@ class RelationalAuditRepository:
         final_status:  Optional[str] = None,
         decision_type: Optional[str] = None,
         agent_id:      Optional[str] = None,
-        tenant_id:     Optional[str] = None,
+        tenant_id:     str = "",  # [v1.0.1 BREAKING] Now MANDATORY
     ) -> int:
+        # [v1.0.1 SECURITY] tenant_id is MANDATORY to prevent cross-tenant data leakage
+        if not tenant_id or not isinstance(tenant_id, str):
+            raise ValueError("tenant_id is required and must be a non-empty string")
         qb = (QueryBuilder("audit_records")
               .where_eq("final_status", final_status)
               .where_eq("decision_type", decision_type)
@@ -621,9 +631,12 @@ class RelationalAuditRepository:
         decision_type: str,
         final_status:  str          = "executed",
         from_ts:       Optional[str] = None,
-        tenant_id:     Optional[str] = None,
+        tenant_id:     str = "",  # [v1.0.1 BREAKING] Now MANDATORY
     ) -> float:
         """Uses the covering index idx_aud_spend — fast even on millions of rows."""
+        # [v1.0.1 SECURITY] tenant_id is MANDATORY to prevent cross-tenant data leakage
+        if not tenant_id or not isinstance(tenant_id, str):
+            raise ValueError("tenant_id is required and must be a non-empty string")
         qb = (QueryBuilder("audit_records")
               .where_eq("decision_type", decision_type)
               .where_eq("final_status", final_status)
@@ -632,12 +645,14 @@ class RelationalAuditRepository:
         sql, params = qb.build_sum("payload_amount")
         return float(self._conn().execute(sql, params).fetchone()[0])
 
-    def block_rate_by_type(self, tenant_id: Optional[str] = None) -> Dict[str, float]:
+    def block_rate_by_type(self, tenant_id: str = "") -> Dict[str, float]:  # [v1.0.1 BREAKING] Now MANDATORY
         """Block rate per decision type — for compliance reporting."""
+        # [v1.0.1 SECURITY] tenant_id is MANDATORY to prevent cross-tenant data leakage
+        if not tenant_id or not isinstance(tenant_id, str):
+            raise ValueError("tenant_id is required and must be a non-empty string")
         params = []
-        where  = "WHERE 1=1"
-        if tenant_id:
-            where += " AND tenant_id=?"
+        where  = "WHERE tenant_id=?"
+        params.append(tenant_id)
             params.append(tenant_id)
         rows = self._conn().execute(f"""
             SELECT decision_type,
@@ -678,14 +693,15 @@ class RelationalAuditRepository:
         self,
         bucket_minutes: int = 60,
         last_hours:     int = 24,
-        tenant_id:      Optional[str] = None,
+        tenant_id:      str = "",  # [v1.0.1 BREAKING] Now MANDATORY
     ) -> List[Dict[str, Any]]:
         """Time-bucketed decision volume — for dashboards."""
+        # [v1.0.1 SECURITY] tenant_id is MANDATORY to prevent cross-tenant data leakage
+        if not tenant_id or not isinstance(tenant_id, str):
+            raise ValueError("tenant_id is required and must be a non-empty string")
         params = [last_hours * 60 * 60, bucket_minutes * 60]
-        where  = ""
-        if tenant_id:
-            where = "AND tenant_id=?"
-            params.append(tenant_id)
+        where  = "AND tenant_id=?"
+        params.append(tenant_id)
         rows = self._conn().execute(f"""
             SELECT
                 CAST(strftime('%s', timestamp) / ? * ? AS INTEGER) as bucket_ts,

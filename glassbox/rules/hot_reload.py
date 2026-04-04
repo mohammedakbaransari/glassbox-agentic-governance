@@ -190,7 +190,8 @@ class PolicyHotReloader:
                     self._mtimes[str_fp] = mtime
                 if self.on_reload:
                     try: self.on_reload(str_fp, n)
-                    except Exception: pass
+                    except Exception as exc:
+                        log.warning("Hot-reload: callback failed for %s: %s", str_fp, exc)
 
         # Handle deleted files
         with self._lock:
@@ -222,7 +223,8 @@ class PolicyHotReloader:
                 removed   = prior_ids - loaded_ids
                 for pid in removed:
                     try: self.policy_engine.disable(pid)
-                    except Exception: pass
+                    except Exception as exc:
+                        log.warning("Hot-reload: failed to disable policy %s: %s", pid, exc)
                 self._file_policy_ids[str(fp.resolve())] = loaded_ids
 
             log.info("Hot-reload: loaded %d policies from %s", len(policies), fp.name)
@@ -232,7 +234,8 @@ class PolicyHotReloader:
             log.warning("Hot-reload: failed to load %s: %s", fp, exc)
             if self.on_error:
                 try: self.on_error(str(fp), exc)
-                except Exception: pass
+                except Exception as handler_exc:
+                    log.error("Hot-reload: error handler crashed: %s", handler_exc)
             return 0
 
     def _unload_file(self, str_fp: str) -> None:

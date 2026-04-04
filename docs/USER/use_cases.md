@@ -8,6 +8,51 @@ Run all examples: `python3 examples/industry_examples.py`
 
 ---
 
+## Quick Pattern Selection Guide
+
+**Which pattern matches your use case?**
+
+```
+Do you have a single AI agent?
+├─ YES → Pattern 1: Single Agent Controls
+│        (Procurement, Pricing, Trading, Clinical, etc.)
+│
+└─ NO → Do you have multiple agents in sequence?
+        ├─ YES → Pattern 6: Agent Chains & Orchestration
+        │        (Supply chain, workflow, approval flows)
+        │
+        └─ NO → Do you need distributed transactions with rollback?
+                ├─ YES → Pattern 6 (Saga Variant)
+                │
+                └─ NO → Do you use RAG / retrieval?
+                        ├─ YES → Pattern 9: RAG Governance
+                        │
+                        └─ NO → Do you serve multiple customers/tenants?
+                                ├─ YES → Pattern 10: Multi-Tenant SaaS
+                                │
+                                └─ NO → Do you need batch/historical analysis?
+                                        └─ Pattern 11: Policy Replay / Regression Testing
+```
+
+### Pattern Matrix
+
+| Pattern | Scenario | Agents | Key Feature |
+|---------|----------|--------|-------------|
+| 1 | Single AI agent with risk controls | 1 | Policy enforcement, velocity limits |
+| 2 | Healthcare clinical decisions | 1 | Controlled substance detection, dosage validation |
+| 3 | Manufacturing/production scheduling | 1–N | Resource constraints, maintenance windows |
+| 4 | Insurance underwriting | 1 | Auto-approve/review/block disposition |
+| 5 | Energy grid dispatch | 1–N | Dual authorisation, critical ops |
+| 6 | Multi-agent workflows (chains/DAGs) | N | Orchestration, abort propagation, saga |
+| 7 | LangChain integration | 1–N | Transparent tool governance |
+| 8 | LangGraph workflows | 1–N | Node-level governance, state governance |
+| 9 | RAG systems | 1 | Query/retrieval/action governance |
+| 10 | Multi-tenant SaaS | 1–N per tenant | Tenant isolation, separate policies |
+| 11 | Policy analysis | 1–N | Regression testing, impact analysis, replay |
+| 12 | PySpark / Databricks | 1–N | Batch governance at scale |
+
+---
+
 ## Pattern 1 — Financial Services: Algorithmic Trading Controls
 
 **Business context:** Quantitative hedge fund with AI agents generating FX orders, treasury transfers, and settlement instructions connected to Bloomberg, Reuters, and prime broker APIs.

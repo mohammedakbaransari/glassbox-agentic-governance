@@ -1,7 +1,0 @@
-# GlassBox v1.0.0 — Runtime Decision Governance Framework
-# Zero mandatory dependencies — Python stdlib only (3.9+)
-#
-# Optional:
-flask>=3.0.0        # REST API layer only
-pyyaml>=6.0         # YAML rule files (RulesLoader)
-pyspark>=3.3.0      # Spark/Databricks/Fabric integration

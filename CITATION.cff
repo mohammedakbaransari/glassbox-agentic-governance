@@ -2,23 +2,24 @@ cff-version: 1.0.0
 message: "If you use GlassBox in research or production, please cite as below."
 type: software
 title: "GlassBox: A Runtime Decision Governance Framework for Autonomous AI Systems"
-version: 1.0.0
-date-released: 2026-04-03
+date-released: 2026-04-05
 authors:
   - family-names: Ansari
     given-names: Mohammed Akbar
     affiliation: "Independent Researcher"
     country: IN
 license: Apache-2.0
-repository-code: "https://github.com/mohammedakbaransari/runtime-decision-governance"
-url: "https://github.com/mohammedakbaransari/runtime-decision-governance"
+repository-code: "https://github.com/mohammedakbaransari/glassbox-agentic-governance"
+url: "https://github.com/mohammedakbaransari/glassbox-agentic-governance"
 abstract: >
   GlassBox implements the decision-semantic layer — a runtime governance tier
   that intercepts every AI-generated operational decision before it reaches an
-  enterprise execution system. It validates, scores, routes, and audits decisions
-  through a 9-stage pipeline with zero mandatory dependencies, full async support,
-  SQLite-backed transactional storage, declarative rules, multi-tenancy, RAG
-  governance, LangChain/LangGraph/AutoGen adapters, and 435 tests.
+  enterprise execution system. Production-ready implementation validates, scores,
+  routes, and audits decisions through a 9-stage pipeline with zero mandatory
+  dependencies, full async support, SQLite-backed transactional storage,
+  declarative rules, multi-tenancy, RAG governance, LangChain/LangGraph/AutoGen
+  adapters, lock-pooling optimization (95% latency reduction), and comprehensive
+  test coverage.
 keywords:
   - ai-governance
   - autonomous-agents
@@ -38,5 +39,5 @@ preferred-citation:
       given-names: Mohammed Akbar
   title: "GlassBox: A Runtime Decision Governance Framework for Autonomous AI Systems"
   year: 2026
-  version: "1.0.0"
-  url: "https://github.com/mohammedakbaransari/runtime-decision-governance"
+  version: "1.0.1"
+  url: "https://github.com/mohammedakbaransari/glassbox-agentic-governance"
