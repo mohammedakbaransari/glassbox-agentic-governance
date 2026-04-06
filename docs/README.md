@@ -57,7 +57,7 @@ Welcome to the GlassBox Framework documentation. This folder is organized into l
 
 ### Root Documentation (2 files)
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Contribution guidelines
-- [glossary.md](glossary.md) - Key terms and definitions
+- [GLOSSARY.md](GLOSSARY.md) - Key terms and definitions
 
 ---
 
@@ -67,7 +67,7 @@ Welcome to the GlassBox Framework documentation. This folder is organized into l
 docs/
 ├── README.md                              ← You are here
 ├── CONTRIBUTING.md                        # How to contribute
-├── glossary.md                            # Terminology reference
+├── GLOSSARY.md                            # Terminology reference
 │
 ├── API/                                   # API Documentation
 │   ├── README.md                          # API navigation hub

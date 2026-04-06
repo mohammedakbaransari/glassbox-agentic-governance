@@ -209,6 +209,117 @@ def _generic_factors(payload: Dict, ctx: DecisionContext) -> List[RiskFactor]:
     return [RiskFactor("unclassified_decision", 25, 1.0)]
 
 
+def _clinical_factors(payload: Dict, ctx: DecisionContext) -> List[RiskFactor]:
+    """Risk factors for clinical/healthcare decisions (prescriptions, dosage, procedures)."""
+    # Dosage-related risk: high-dose or off-label prescriptions are higher risk
+    dosage_str = str(payload.get("dosage", "") or payload.get("dose", ""))
+    dosage_val = float(payload.get("dosage_mg", 0) or payload.get("dose_mg", 0))
+    if   dosage_val > 1000: dose_score = 60
+    elif dosage_val > 500:  dose_score = 40
+    elif dosage_val > 100:  dose_score = 20
+    else:                   dose_score = 10 if dosage_val > 0 else 5
+    factors = [RiskFactor("dosage_level", dose_score, 0.40)]
+
+    # Contraindication / allergy flag
+    contraindication = payload.get("contraindication_flag", False) or payload.get("allergy_flag", False)
+    contra_score = 55 if contraindication else 0
+    factors.append(RiskFactor("contraindication", contra_score, 0.35))
+
+    # Missing prescriber authorisation for controlled substances
+    controlled = payload.get("controlled_substance", False)
+    auth_ref   = payload.get("prescriber_id") or payload.get("auth_ref")
+    auth_score = 35 if (controlled and not auth_ref) else 0
+    factors.append(RiskFactor("missing_prescriber_auth", auth_score, 0.15))
+
+    conf_score = max(0, int((1.0 - ctx.confidence) * 30))
+    factors.append(RiskFactor("ai_confidence", conf_score, 0.10))
+
+    return factors
+
+
+def _trading_factors(payload: Dict, ctx: DecisionContext) -> List[RiskFactor]:
+    """Risk factors for trading decisions (orders, positions, hedges)."""
+    notional = float(payload.get("notional", 0) or payload.get("order_value", 0))
+    if   notional > 10_000_000: notional_score = 65
+    elif notional >  1_000_000: notional_score = 45
+    elif notional >    100_000: notional_score = 25
+    elif notional >     10_000: notional_score = 12
+    else:                       notional_score =  5
+    factors = [RiskFactor("notional_value", notional_score, 0.45)]
+
+    # Large position concentration raises risk
+    position_pct = float(payload.get("position_pct", 0) or payload.get("concentration_pct", 0))
+    if   position_pct > 20: conc_score = 55
+    elif position_pct > 10: conc_score = 30
+    elif position_pct >  5: conc_score = 15
+    else:                   conc_score =  5
+    factors.append(RiskFactor("position_concentration", conc_score, 0.30))
+
+    # Missing risk limit / mandate reference for large trades
+    limit_ref = payload.get("risk_limit_ref") or payload.get("mandate_ref")
+    limit_score = 30 if (notional > 100_000 and not limit_ref) else 0
+    factors.append(RiskFactor("missing_limit_ref", limit_score, 0.15))
+
+    conf_score = max(0, int((1.0 - ctx.confidence) * 25))
+    factors.append(RiskFactor("ai_confidence", conf_score, 0.10))
+
+    return factors
+
+
+def _content_factors(payload: Dict, ctx: DecisionContext) -> List[RiskFactor]:
+    """Risk factors for generative AI content governance (GDPR Art.22)."""
+    # Personal data mention raises risk (PII in generated content)
+    includes_pii = payload.get("contains_pii", False) or payload.get("pii_detected", False)
+    pii_score = 50 if includes_pii else 5
+    factors = [RiskFactor("pii_in_content", pii_score, 0.40)]
+
+    # Sensitive topic: medical, legal, financial advice without disclaimer
+    topic = str(payload.get("topic", "") or payload.get("content_category", "")).lower()
+    HIGH_RISK_TOPICS = {"medical", "legal", "financial", "investment", "health"}
+    disclaimer = payload.get("disclaimer_present", False)
+    topic_score = 40 if (any(t in topic for t in HIGH_RISK_TOPICS) and not disclaimer) else 10
+    factors.append(RiskFactor("sensitive_topic", topic_score, 0.30))
+
+    # Automated decision flag: fully automated decisions affecting users (GDPR Art.22)
+    automated = payload.get("fully_automated", False) or payload.get("no_human_review", False)
+    auto_score = 35 if automated else 0
+    factors.append(RiskFactor("fully_automated_decision", auto_score, 0.20))
+
+    conf_score = max(0, int((1.0 - ctx.confidence) * 20))
+    factors.append(RiskFactor("ai_confidence", conf_score, 0.10))
+
+    return factors
+
+
+def _legal_factors(payload: Dict, ctx: DecisionContext) -> List[RiskFactor]:
+    """Risk factors for legal AI decisions (contract analysis, e-discovery, filings)."""
+    # Contract value or dispute amount raises risk
+    value = float(payload.get("contract_value", 0) or payload.get("dispute_amount", 0))
+    if   value > 10_000_000: val_score = 60
+    elif value >  1_000_000: val_score = 40
+    elif value >    100_000: val_score = 22
+    elif value >     10_000: val_score = 10
+    else:                    val_score =  5
+    factors = [RiskFactor("contract_value", val_score, 0.40)]
+
+    # Missing legal review / sign-off for binding actions
+    action = str(payload.get("action", "")).lower()
+    BINDING_ACTIONS = {"sign", "execute", "file", "submit", "conclude"}
+    legal_review = payload.get("legal_review_ref") or payload.get("counsel_sign_off")
+    binding_score = 45 if (any(a in action for a in BINDING_ACTIONS) and not legal_review) else 0
+    factors.append(RiskFactor("missing_legal_review", binding_score, 0.35))
+
+    # Jurisdiction risk: cross-border filings are inherently riskier
+    cross_border = payload.get("cross_border", False) or payload.get("international", False)
+    juris_score = 25 if cross_border else 0
+    factors.append(RiskFactor("cross_border_jurisdiction", juris_score, 0.15))
+
+    conf_score = max(0, int((1.0 - ctx.confidence) * 25))
+    factors.append(RiskFactor("ai_confidence", conf_score, 0.10))
+
+    return factors
+
+
 FACTOR_EXTRACTORS = {
     DecisionType.PROCUREMENT: _procurement_factors,
     DecisionType.PRICING:     _pricing_factors,
@@ -218,6 +329,11 @@ FACTOR_EXTRACTORS = {
     DecisionType.LOGISTICS:   _logistics_factors,
     DecisionType.HR:          _hr_factors,
     DecisionType.CUSTOM:      _generic_factors,
+    # v1.1 decision types — dedicated extractors replace the generic fallback.
+    DecisionType.CLINICAL:    _clinical_factors,
+    DecisionType.TRADING:     _trading_factors,
+    DecisionType.CONTENT:     _content_factors,
+    DecisionType.LEGAL:       _legal_factors,
 }
 
 

@@ -1,121 +1,121 @@
-# API Reference
+﻿# GlassBox — API Reference
 
-This directory contains the GlassBox REST API documentation and endpoint references.
+The `docs/API/` directory contains the REST API documentation.
 
-## 📖 Contents
+---
 
-### Endpoint Reference
-- **[endpoint_reference.md](endpoint_reference.md)** - Complete REST API reference including:
-  - Authentication & headers
-  - Available endpoints
-  - Request/response formats
-  - Status codes
-  - Error handling
-  - Rate limiting
+## Contents
 
-## 🚀 Quick Start
+- **[endpoint_reference.md](endpoint_reference.md)** — Complete REST API reference:
+  authentication, all 15 endpoints, request/response formats, status codes, error handling, rate limiting
 
-1. **Review authentication** - Check your API key setup
-2. **Explore endpoints** - Browse available operations
-3. **Test requests** - Use examples provided
-4. **Handle errors** - Understand error responses
+---
 
-## 🔍 Categories
+## Quick Start
 
-### Decision Management
-- POST `/api/v1/decisions` - Create and evaluate decisions
-- GET `/api/v1/decisions/{id}` - Retrieve decision details
-- GET `/api/v1/decisions` - List decisions with filters
-
-### Policy Management
-- GET `/api/v1/policies` - List all policies
-- POST `/api/v1/policies` - Register new policy
-- PUT `/api/v1/policies/{id}` - Update policy configuration
-
-### Audit & Compliance
-- GET `/api/v1/audit` - Retrieve audit records
-- GET `/api/v1/audit/{id}` - Get specific audit entry
-- POST `/api/v1/audit/export` - Export audit logs
-
-### Monitoring & Health
-- GET `/api/v1/health` - System health check
-- GET `/api/v1/metrics` - Performance metrics
-- GET `/api/v1/status` - Current system status
-
-## 🔐 Authentication
-
-All API requests require authentication. Include:
-```
-Authorization: Bearer YOUR_API_KEY
-Content-Type: application/json
-```
-
-## 📊 Rate Limiting
-
-- **Free tier**: 100 requests/hour
-- **Pro tier**: 10,000 requests/hour
-- **Enterprise**: Custom limits
-
-Rate limit headers included in all responses:
-```
-X-RateLimit-Limit: 100
-X-RateLimit-Remaining: 42
-X-RateLimit-Reset: 1617904800
-```
-
-## 🛠️ Common Tasks
-
-| Task | Endpoint | Method |
-|------|----------|--------|
-| Create decision | `/api/v1/decisions` | POST |
-| Get decision | `/api/v1/decisions/{id}` | GET |
-| List policies | `/api/v1/policies` | GET |
-| Export audit | `/api/v1/audit/export` | POST |
-| Check health | `/api/v1/health` | GET |
-
-## 📝 Examples
-
-### Create a Decision
 ```bash
-curl -X POST https://api.glassbox.io/v1/decisions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+# Install Flask (only dependency for the API)
+pip install flask
+
+# Start the server
+python3 -m glassbox.api.app
+# → http://localhost:8000
+```
+
+Test immediately:
+
+```bash
+curl -X POST http://localhost:8000/decisions \
   -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "agent-001",
-    "decision_type": "financial",
-    "payload": {"amount": 50000}
-  }'
+  -d '{"agent_id":"test_agent","decision_type":"procurement","payload":{"amount":5000}}'
+
+curl http://localhost:8000/health
 ```
 
-### Retrieve Decision
-```bash
-curl https://api.glassbox.io/v1/decisions/dec-12345 \
-  -H "Authorization: Bearer YOUR_API_KEY"
+---
+
+## All Endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/decisions` | Submit a decision for governance |
+| `GET` | `/decisions` | List audit records (paginated) |
+| `GET` | `/decisions/{id}` | Get a specific audit record |
+| `POST` | `/decisions/{id}/replay` | Replay a historical decision |
+| `POST` | `/decisions/simulate` | Dry-run simulation (no audit write) |
+| `POST` | `/decisions/batch` | Submit up to 499 decisions in parallel |
+| `GET` | `/events/stream` | Real-time SSE event stream |
+| `GET` | `/stats` | Aggregate governance statistics |
+| `GET` | `/agents/{id}/velocity` | Circuit breaker status for an agent |
+| `GET` | `/agents/{id}/anomaly` | Anomaly detection baseline for an agent |
+| `GET` | `/policies` | List registered governance policies |
+| `GET` | `/contracts` | List registered agent contracts |
+| `GET` | `/ecosystem` | Ecosystem circuit breaker status |
+| `GET` | `/health` | Full health check |
+| `GET` | `/ready` | Kubernetes readiness probe |
+
+---
+
+## Authentication
+
+The default server has **no authentication**. For production, add an API key check:
+
+```python
+from functools import wraps
+from flask import request, jsonify
+import os
+
+def require_api_key(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        key = request.headers.get("X-API-Key")
+        if not key or key != os.environ.get("GLASSBOX_API_KEY"):
+            return jsonify({"error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
 ```
 
-## ⚠️ Error Handling
+See [endpoint_reference.md](endpoint_reference.md#authentication--security) for CORS, HTTPS, and security headers.
 
-All errors follow standard HTTP status codes:
-- `400` - Bad Request (validation error)
-- `401` - Unauthorized (missing/invalid auth)
-- `403` - Forbidden (insufficient permissions)
-- `404` - Not Found (resource doesn't exist)
-- `429` - Rate Limited (too many requests)
-- `500` - Server Error (internal issue)
+---
 
-## 📚 Related Documentation
+## Rate Limits (default)
 
-- [User Guides](../USER/README.md) - Best practices
-- [Development Guide](../DEVELOPMENT/architecture.md) - Extend the API
-- [Security](../SECURITY/hardening.md) - Security best practices
-- [Compliance](../COMPLIANCE/requirements.md) - Regulatory info
+| Scope | Limit |
+|---|---|
+| Per IP address | 500 requests / minute |
+| Per `agent_id` | 100 requests / minute |
 
-## 🤝 Support
+Both enforced in `glassbox/api/app.py` using an in-memory sliding-window counter.
 
-For API issues:
-1. Check [../USER/troubleshooting.md](../USER/troubleshooting.md)
-2. Review error messages in response
-3. Check [endpoint_reference.md](endpoint_reference.md) for correct usage
-4. Contact support with request ID (from response headers)
+---
 
+## Payload Size Limit
 
+Default: **8 KB** per request.  
+Configured via `_MAX_BODY_BYTES` in `glassbox/api/app.py`.
+
+---
+
+## Error Format
+
+All errors return:
+
+```json
+{
+  "error": "human_readable_code",
+  "status": 422,
+  "request_id": "a1b2c3d4"
+}
+```
+
+---
+
+## Related Documentation
+
+- [endpoint_reference.md](endpoint_reference.md) — Full endpoint reference
+- [../GLOSSARY.md](../GLOSSARY.md) — API term definitions
+- [../ARCHITECTURE.md](../ARCHITECTURE.md) — 9-stage pipeline behind every API call
+- [../DEPLOYMENT.md](../DEPLOYMENT.md) — Deploying to production
+- [../USER/troubleshooting.md](../USER/troubleshooting.md) — Common issues
+- [../../glassbox/api/README.md](../../glassbox/api/README.md) — Module-level implementation notes

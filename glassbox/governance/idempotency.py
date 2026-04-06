@@ -315,7 +315,18 @@ class IdempotencyService:
                     if deleted_count > 0:
                         log.info("IdempotencyService: cleaned up %d expired records", deleted_count)
             except Exception as exc:
-                log.error("IdempotencyService._cleanup_expired_records failed: %s", exc)
+                # Catch all errors (SQLite lock, I/O, etc.) so the daemon thread
+                # does not silently die, leaving expired records to accumulate.
+                log.error(
+                    "IdempotencyService._cleanup_expired_records failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+                # Back off before retrying to avoid a tight error loop.
+                try:
+                    time.sleep(60)
+                except Exception:
+                    pass
 
     def clear_cache(self) -> None:
         """Clear in-memory cache (useful for testing/reset)."""

@@ -34,10 +34,14 @@ python3 -m glassbox.api.app
 | **GET** | `/stats/agents` | Per-agent statistics | `/stats/agents?agent_id=my_agent` |
 | **GET** | `/agents/{id}/velocity` | Circuit breaker status | `/agents/my_agent/velocity` |
 | **GET** | `/policies` | List registered policies | `/policies` |
-| **POST** | `/policies/{policy_id}/disable` | Disable a policy (admin) | `POST /policies/PROC-001/disable` |
-| **GET** | `/health` | Health check | `/health` (K8s compatible) |
+| **GET** | `/contracts` | List registered agent contracts | `/contracts` |
+| **GET** | `/ecosystem` | Ecosystem circuit breaker status | `/ecosystem` |
+| **POST** | `/decisions/simulate` | Dry-run policy simulation | `POST /decisions/simulate` |
+| **GET** | `/agents/{id}/anomaly` | Anomaly detection baseline | `/agents/my_agent/anomaly` |
+| **GET** | `/health` | Full health check | `/health` |
+| **GET** | `/ready` | Kubernetes readiness probe | `/ready` |
 
-For full documentation, see [docs/API.md](../../docs/API.md).
+For full documentation, see [docs/API/endpoint_reference.md](../../docs/API/endpoint_reference.md).
 
 ---
 
@@ -420,4 +424,4 @@ app.config['MAX_CONTENT_LENGTH'] = 52_428_800  # 50MB
 
 ---
 
-See [docs/API.md](../../docs/API.md) for comprehensive endpoint reference and [docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md) for production deployment practices.
+See [docs/API/endpoint_reference.md](../../docs/API/endpoint_reference.md) for comprehensive endpoint reference and [docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md) for production deployment practices.

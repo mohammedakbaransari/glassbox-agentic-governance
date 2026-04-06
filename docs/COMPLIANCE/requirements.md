@@ -231,10 +231,10 @@ gaps     = cat.gap_analysis("NIST CSF 2.0")  # missing controls
 
 ## See Also
 
-- **[GLOSSARY.md](GLOSSARY.md)** — Definitions of compliance and governance terms
-- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md#compliance)** — Common compliance issues and solutions
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — How compliance checks integrate into the 9-stage pipeline
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** — Compliance considerations for production deployment
+- **[GLOSSARY.md](../GLOSSARY.md)** — Definitions of compliance and governance terms
+- **[TROUBLESHOOTING.md](../USER/troubleshooting.md#compliance)** — Common compliance issues and solutions
+- **[ARCHITECTURE.md](../ARCHITECTURE.md)** — How compliance checks integrate into the 9-stage pipeline
+- **[DEPLOYMENT.md](../DEPLOYMENT.md)** — Compliance considerations for production deployment
 - **[compliance/README.md](../glassbox/compliance/README.md)** — Compliance module documentation
 
 ---

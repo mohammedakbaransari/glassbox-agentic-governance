@@ -1,5 +1,5 @@
 """
-GlassBox Framework — Benchmark Suite  (v1.0.0)
+GlassBox Framework — Benchmark Suite  (v1.1.0)
 Measures throughput, latency distribution, policy accuracy,
 anomaly detection precision/recall, concurrency behaviour,
 and retry overhead across all decision types.

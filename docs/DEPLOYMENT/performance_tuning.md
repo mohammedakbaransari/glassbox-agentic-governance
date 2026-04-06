@@ -707,9 +707,9 @@ benchmark_pipeline(pipeline, payloads)
 
 ## See Also
 
-- **[docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md#performance)** — Performance-related issues and solutions
-- **[docs/DEPLOYMENT.md](DEPLOYMENT.md#capacity-planning)** — Capacity planning for different platforms
-- **[docs/ARCHITECTURE.md](ARCHITECTURE.md#performance-baseline)** — Architecture performance characteristics
+- **[docs/TROUBLESHOOTING.md](../USER/troubleshooting.md#performance)** — Performance-related issues and solutions
+- **[DEPLOYMENT.md](../DEPLOYMENT.md)** — Deployment and capacity planning
+- **[ARCHITECTURE.md](../ARCHITECTURE.md#performance-characteristics)** — Architecture performance characteristics
 - **[governance/README.md](../glassbox/governance/README.md#configuration-parameters--tuning)** — Pipeline configuration reference
 
 ---

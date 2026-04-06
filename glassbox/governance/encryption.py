@@ -51,7 +51,7 @@ from typing import Any, Dict, Optional, Tuple
 try:
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     from cryptography.hazmat.primitives import hashes
     HAS_CRYPTO = True
 except ImportError:
@@ -123,7 +123,7 @@ class CryptoManager:
         """
         salt = salt or os.urandom(16)
 
-        kdf = PBKDF2(
+        kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=salt,
@@ -167,11 +167,13 @@ class CryptoManager:
 
             # Return nonce || ciphertext || tag
             result = nonce + ciphertext + tag
-            self._stats["encryptions"] += 1
+            with self._lock:
+                self._stats["encryptions"] += 1
             return result
 
         except Exception as exc:
-            self._stats["errors"] += 1
+            with self._lock:
+                self._stats["errors"] += 1
             log.error("Encryption failed: %s", exc)
             raise
 
@@ -202,11 +204,13 @@ class CryptoManager:
                 decryptor.authenticate_additional_data(aad)
 
             plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-            self._stats["decryptions"] += 1
+            with self._lock:
+                self._stats["decryptions"] += 1
             return plaintext
 
         except Exception as exc:
-            self._stats["errors"] += 1
+            with self._lock:
+                self._stats["errors"] += 1
             log.error("Decryption failed: %s", exc)
             raise
 
@@ -259,7 +263,7 @@ class CryptoManager:
         """
         salt = salt or os.urandom(32)
 
-        kdf = PBKDF2(
+        kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=64,
             salt=salt,
@@ -285,7 +289,7 @@ class CryptoManager:
         """
         try:
             salt_bytes = bytes.fromhex(salt)
-            kdf = PBKDF2(
+            kdf = PBKDF2HMAC(
                 algorithm=hashes.SHA256(),
                 length=64,
                 salt=salt_bytes,

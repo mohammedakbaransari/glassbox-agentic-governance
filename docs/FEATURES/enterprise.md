@@ -1307,9 +1307,9 @@ GlassBox v1.1.0 provides **production-ready enterprise features**:
 | Middleware pipeline | `api_gateway` | Composable security layers |
 
 **See also:**
-- [API Reference](API.md)
-- [Deployment Guide](DEPLOYMENT.md)
-- [Troubleshooting Guide](TROUBLESHOOTING.md)
+- [API Reference](../API/endpoint_reference.md)
+- [Deployment Guide](../DEPLOYMENT.md)
+- [Troubleshooting Guide](../USER/troubleshooting.md)
 - [Integration Tests](../tests/test_v1_1_enterprise.py)
 
 ---

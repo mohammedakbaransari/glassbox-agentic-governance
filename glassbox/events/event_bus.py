@@ -42,6 +42,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from glassbox.governance.logging_manager import get_logger
+
+log = get_logger("events")
+
 
 # ── Domain Events ─────────────────────────────────────────────────────────────
 
@@ -235,8 +239,7 @@ class EventBus:
                 handler(event)
         except Exception as exc:
             # Handlers must never crash the bus
-            import logging
-            logging.getLogger("glassbox.events").error(
+            log.error(
                 "EventBus handler %s failed for %s: %s",
                 getattr(handler, "__name__", str(handler)), event.event_type, exc
             )
@@ -306,8 +309,7 @@ class WebhookEventHandler:
             )
             urllib.request.urlopen(req, timeout=self.timeout)
         except Exception as exc:
-            import logging
-            logging.getLogger("glassbox.events").warning(
+            log.warning(
                 "WebhookHandler: POST to %s failed: %s", self.url, exc
             )
 

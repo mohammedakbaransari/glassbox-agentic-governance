@@ -142,11 +142,17 @@ class Role:
         self.parent_role = parent_role
         log.debug("Role %s inherits from %s", self.name, parent_role.name)
 
-    def get_all_permissions(self) -> Set[Permission]:
-        """Get all permissions (including inherited)."""
+    def get_all_permissions(self, _visited: Optional[Set[str]] = None) -> Set["Permission"]:
+        """Get all permissions (including inherited). Cycle-safe."""
+        if _visited is None:
+            _visited = set()
+        # Guard against circular role inheritance (role_a.parent = role_b; role_b.parent = role_a).
+        if self.name in _visited:
+            return set()
+        _visited.add(self.name)
         perms = set(self.permissions)
         if self.parent_role:
-            perms.update(self.parent_role.get_all_permissions())
+            perms.update(self.parent_role.get_all_permissions(_visited))
         return perms
 
     def has_permission(
@@ -236,12 +242,14 @@ class AccessControl:
         """Register a role."""
         with self._lock:
             self.roles[role.name] = role
+            self._cache.clear()  # Invalidate stale permission decisions
             log.info("Role registered: %s", role.name)
 
     def register_user(self, user: User) -> None:
         """Register a user."""
         with self._lock:
             self.users[user.user_id] = user
+            self._cache.clear()  # Invalidate stale permission decisions
             log.info("User registered: %s with roles: %s", user.user_id, user.roles)
 
     def get_role(self, role_name: str) -> Optional[Role]:
@@ -251,6 +259,39 @@ class AccessControl:
     def get_user(self, user_id: str) -> Optional[User]:
         """Get a user by ID."""
         return self.users.get(user_id)
+
+    def grant_permission(
+        self,
+        role_name: str,
+        resource: str,
+        action: str,
+        scope: str = PermissionScope.ANY,
+        conditions: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Grant a permission to a registered role and invalidate the cache."""
+        with self._lock:
+            role = self.roles.get(role_name)
+            if role is None:
+                raise ValueError(f"Role '{role_name}' is not registered.")
+            role.grant_permission(resource, action, scope, conditions)
+            self._cache.clear()
+            log.info("Granted %s:%s:%s to role %s", resource, action, scope, role_name)
+
+    def revoke_permission(
+        self,
+        role_name: str,
+        resource: str,
+        action: str,
+        scope: str = PermissionScope.ANY,
+    ) -> None:
+        """Revoke a permission from a registered role and invalidate the cache."""
+        with self._lock:
+            role = self.roles.get(role_name)
+            if role is None:
+                raise ValueError(f"Role '{role_name}' is not registered.")
+            role.revoke_permission(resource, action, scope)
+            self._cache.clear()
+            log.info("Revoked %s:%s:%s from role %s", resource, action, scope, role_name)
 
     def add_validator(self, validator: Callable[[Dict[str, Any]], bool]) -> None:
         """
@@ -308,11 +349,10 @@ class AccessControl:
                 )
                 return False
 
-            # Get effective role (impersonated or actual)
-            effective_role_name = user.delegated_role or (
-                list(user.roles)[0] if user.roles else None
-            )
-            if not effective_role_name:
+            # Check all assigned roles (impersonated role only if set)
+            role_names = [user.delegated_role] if user.delegated_role else sorted(user.roles)
+            
+            if not role_names:
                 self._record_decision(
                     AccessDecision(
                         allowed=False,
@@ -325,25 +365,19 @@ class AccessControl:
                 )
                 return False
 
-            role = self.roles.get(effective_role_name)
-            if not role:
-                self._record_decision(
-                    AccessDecision(
-                        allowed=False,
-                        reason=f"Role not found: {effective_role_name}",
-                        principal=user_id,
-                        resource=resource,
-                        action=action,
-                        duration_ms=(time.time() - start_time) * 1000,
-                    )
-                )
-                return False
-
-            # Check permission
+            # Check if ANY role grants permission (standard RBAC semantics)
             context = context or {}
             scope = context.get("scope", PermissionScope.ANY)
-
-            allowed = role.has_permission(resource, action, scope)
+            
+            allowed = False
+            for role_name in role_names:
+                role = self.roles.get(role_name)
+                if not role:
+                    continue
+                
+                if role.has_permission(resource, action, scope):
+                    allowed = True
+                    break
 
             # Run custom validators
             if allowed:
@@ -393,18 +427,34 @@ class AccessControl:
                         return False
         return True
 
-    def impersonate(self, role_name: str, requesting_user_id: str):
+    def impersonate(self, role_name: str, requesting_user_id: str,
+                    max_seconds: int = 300):
         """
         Context manager for role impersonation (admin testing, support access).
+
+        A daemon watchdog thread forcibly restores the original role after
+        ``max_seconds`` to prevent privilege escalation on thread crash.
         """
         class ImpersonationContext:
-            def __init__(ctx_self, ac, role_name, requesting_user_id):
+            def __init__(ctx_self, ac, role_name, requesting_user_id, max_seconds):
                 ctx_self.ac = ac
                 ctx_self.role_name = role_name
                 ctx_self.requesting_user_id = requesting_user_id
                 ctx_self.original_role = None
+                ctx_self.max_seconds = max_seconds
+                ctx_self._restored = False
+
+            def _restore(ctx_self):
+                """Re-apply original role (idempotent)."""
+                with ctx_self.ac._lock:
+                    user = ctx_self.ac.get_user(ctx_self.requesting_user_id)
+                    if user:
+                        user.delegated_role = ctx_self.original_role
+                        user.delegated_by = None
+                ctx_self._restored = True
 
             def __enter__(ctx_self):
+                import threading as _threading
                 with ctx_self.ac._lock:
                     user = ctx_self.ac.get_user(ctx_self.requesting_user_id)
                     if user:
@@ -413,23 +463,31 @@ class AccessControl:
                         user.delegated_by = ctx_self.requesting_user_id
 
                 log.info(
-                    "Impersonation started: %s as %s",
-                    ctx_self.requesting_user_id, ctx_self.role_name
+                    "Impersonation started: %s as %s (max %ds)",
+                    ctx_self.requesting_user_id, ctx_self.role_name, ctx_self.max_seconds
                 )
 
-            def __exit__(ctx_self, exc_type, exc_val, exc_tb):
-                with ctx_self.ac._lock:
-                    user = ctx_self.ac.get_user(ctx_self.requesting_user_id)
-                    if user:
-                        user.delegated_role = ctx_self.original_role
-                        user.delegated_by = None
+                def _watchdog():
+                    import time as _time
+                    _time.sleep(ctx_self.max_seconds)
+                    if not ctx_self._restored:
+                        ctx_self._restore()
+                        log.warning(
+                            "Impersonation watchdog: restored role for %s after %ds timeout",
+                            ctx_self.requesting_user_id, ctx_self.max_seconds
+                        )
 
+                watcher = _threading.Thread(target=_watchdog, daemon=True)
+                watcher.start()
+
+            def __exit__(ctx_self, exc_type, exc_val, exc_tb):
+                ctx_self._restore()
                 log.info(
                     "Impersonation ended: %s",
                     ctx_self.requesting_user_id
                 )
 
-        return ImpersonationContext(self, role_name, requesting_user_id)
+        return ImpersonationContext(self, role_name, requesting_user_id, max_seconds)
 
     def _record_decision(self, decision: AccessDecision) -> None:
         """Record access decision for audit."""

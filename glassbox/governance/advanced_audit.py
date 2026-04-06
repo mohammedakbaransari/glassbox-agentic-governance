@@ -17,10 +17,10 @@ Design:
   - Compliance with SOX, HIPAA, GDPR requirements
 
 Usage:
-    from glassbox.governance.advanced_audit import AuditLogger, AuditRecord
+    from glassbox.governance.advanced_audit import TamperEvidentAuditLogger, AuditRecord
     
     # Create logger
-    logger = AuditLogger()
+    logger = TamperEvidentAuditLogger()
     
     # Log an action
     logger.log_action(
@@ -62,6 +62,12 @@ from glassbox.governance.logging_manager import get_logger
 from glassbox.governance.encryption import CryptoManager
 
 log = get_logger("advanced_audit")
+
+# Sentinel value for the genesis record's previous_hash field.
+# Using 64 hex zeros makes it unambiguously distinct from any real SHA-256 hash,
+# so an attacker cannot delete the first record and insert a fake one with
+# previous_hash=None or previous_hash="" to pass chain verification.
+GENESIS_SENTINEL = "0" * 64
 
 
 @dataclass
@@ -105,8 +111,18 @@ class AuditRecord:
         return data
 
 
-class AuditLogger:
-    """Advanced audit logging engine."""
+class TamperEvidentAuditLogger:
+    """Advanced tamper-evident audit logging engine.
+    
+    Provides:
+      - Immutable audit trail (write-once, append-only)
+      - Tamper detection via cryptographic hashing
+      - Optional digital signatures (if cryptography package installed)
+      - Configurable retention policies
+      - Search and filtering
+    
+    Gracefully degrades if cryptography package is not installed.
+    """
 
     def __init__(
         self,
@@ -117,12 +133,31 @@ class AuditLogger:
     ):
         self.db_path = db_path
         self.enable_hash_chain = enable_hash_chain
-        self.crypto_manager = crypto_manager or CryptoManager()
+        self.retention_days = retention_days
+        
+        # P3-C: Gracefully handle missing cryptography package
+        if crypto_manager is not None:
+            self.crypto_manager = crypto_manager
+        else:
+            try:
+                self.crypto_manager = CryptoManager()
+            except RuntimeError as e:
+                log.warning(
+                    f"Cryptography not available, tamper-evident audit logging will operate without encryption: {e}"
+                )
+                self.crypto_manager = None  # Degrade gracefully
         self.retention_days = retention_days
 
         self._lock = threading.Lock()
         self._record_count = 0
-        self._last_hash = None
+        self._last_hash = GENESIS_SENTINEL
+        # For :memory: databases hold a single persistent connection so schema
+        # and data are visible to all subsequent calls on this logger instance.
+        self._persistent_conn: Optional[sqlite3.Connection] = (
+            sqlite3.connect(":memory:", check_same_thread=False)
+            if db_path == ":memory:"
+            else None
+        )
         self._init_database()
 
         log.info(
@@ -175,12 +210,16 @@ class AuditLogger:
     @contextmanager
     def _get_connection(self):
         """Get database connection."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-        finally:
-            conn.close()
+        if self._persistent_conn is not None:
+            self._persistent_conn.row_factory = sqlite3.Row
+            yield self._persistent_conn
+        else:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+            finally:
+                conn.close()
 
     def log_action(
         self,
@@ -351,8 +390,8 @@ class AuditLogger:
             )
             rows = cursor.fetchall()
 
-            previous_hash = None
-            for row in rows:
+            previous_hash = GENESIS_SENTINEL
+            for i, row in enumerate(rows):
                 context = json.loads(row["context"]) if row["context"] else {}
                 record = AuditRecord(
                     id=row["id"],
@@ -367,6 +406,16 @@ class AuditLogger:
                     previous_hash=row["previous_hash"],
                     record_hash=row["record_hash"],
                 )
+
+                # First record must reference the genesis sentinel explicitly.
+                # If it does not, a record was inserted before the real first
+                # record to bypass verification.
+                if i == 0 and record.previous_hash != GENESIS_SENTINEL:
+                    log.error(
+                        "Genesis sentinel mismatch at record %d: possible insertion attack",
+                        row["id"]
+                    )
+                    return False
 
                 # Verify this record's hash
                 expected_hash = record.compute_hash()

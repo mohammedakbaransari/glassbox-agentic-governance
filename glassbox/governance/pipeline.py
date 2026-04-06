@@ -1,7 +1,7 @@
 """
 GlassBox Framework — Governance Pipeline  (v1.0.0)
 ===================================================
-The central 9-stage orchestrator — now a proper framework component.
+The central 12-step orchestrator (2 security pre-checks + 9 governance stages + finalize) — now a proper framework component.
 
 Framework integrations (all opt-in):
   event_bus       — publishes domain events at every state transition
@@ -30,12 +30,14 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 
 from __future__ import annotations
 
-import asyncio
 import atexit
+import asyncio
 import concurrent.futures
+import contextlib
 import copy
 import threading
 import time
+import weakref
 from typing import Any, Callable, Dict, List, Optional
 
 from glassbox.governance.anomaly_detector  import AnomalyDetector
@@ -61,6 +63,40 @@ from glassbox.security.sanitizer           import (
 )
 
 log = get_logger("pipeline")
+
+# ── P2-B Fix: Module-level atexit handler to prevent resource leak ────────────────
+# Problem: Each GovernancePipeline() instantiation called atexit.register(self.shutdown),
+#          creating hundreds of handlers in tests causing slow process exit.
+# Solution: Track pipelines in a WeakSet, register single module-level handler.
+
+_active_pipelines = weakref.WeakSet()
+
+
+def _shutdown_all_pipelines() -> None:
+    """
+    Module-level atexit handler that shuts down all active pipelines.
+    
+    Uses WeakSet so pipelines that are garbage-collected are automatically
+    removed without manual cleanup. This prevents resource leaks and ensures
+    graceful shutdown of remaining active pipelines.
+    """
+    # Create a snapshot of active pipelines (WeakSet may change during iteration)
+    pipelines = list(_active_pipelines)
+    
+    for pipeline in pipelines:
+        try:
+            if hasattr(pipeline, 'shutdown'):
+                pipeline.shutdown()
+        except Exception as exc:
+            log.error(
+                f"Pipeline shutdown failed during exit: {exc}",
+                extra={"component": "pipeline", "event": "exit_shutdown_failed"},
+                exc_info=True,
+            )
+
+
+# Register the module-level handler ONCE (not per-instance)
+atexit.register(_shutdown_all_pipelines)
 
 
 class GovernancePipeline:
@@ -169,8 +205,10 @@ class GovernancePipeline:
             thread_name_prefix="glassbox-async",
         )
 
-        # Register cleanup handlers (v1.0.1 - CRITICAL-5 fix)
-        atexit.register(self.shutdown)
+        # P2-B Fix: Track this pipeline in module-level WeakSet for coordinated shutdown
+        # Instead of registering per-instance atexit handlers (which causes resource leaks),
+        # add to WeakSet and let module-level handler manage cleanup.
+        _active_pipelines.add(self)
 
         log.info("GovernancePipeline initialised", extra={
             "component":      "pipeline",
@@ -243,11 +281,11 @@ class GovernancePipeline:
             record = AuditRecord(agent_id="__invalid__",
                                  decision_type=request.decision_type,
                                  payload={}, context=dummy_ctx)
-            if trace:
-                with StageTimer(trace, 0, "AgentIDValidation",
-                                {"agent_id": request.agent_id}) as t:
-                    t.outcome = "blocked"
-                    t.detail  = id_err or "Invalid agent_id"
+            with self._timed_call(trace, 0, "AgentIDValidation",
+                                   {"agent_id": request.agent_id}) as t:
+                t.outcome = "blocked"
+                t.detail  = id_err or "Invalid agent_id"
+            log.warning(f"Agent ID validation failed for '{request.agent_id}': {id_err}")
             resp = self._blocked_early(record, id_err or "Invalid agent_id", "SECURITY-001")
             return self._finalize(record, t_start, resp, trace)
 
@@ -264,13 +302,13 @@ class GovernancePipeline:
                 f"{f.category}@{f.field_path}" for f in sec_report.findings
                 if f.severity in ("critical", "high")
             )
-            if trace:
-                with StageTimer(trace, 0, "SecuritySanitizer") as t:
-                    t.outcome = "blocked"
-                    t.detail  = detail
+            with self._timed_call(trace, 0, "SecuritySanitizer") as t:
+                t.outcome = "blocked"
+                t.detail  = detail
             self._emit_security_event(request.agent_id,
                                        request.decision_type.value,
                                        [f.detail for f in sec_report.findings])
+            log.warning(f"Payload security block for agent '{request.agent_id}': {detail}")
             resp = self._blocked_early(record, f"Security violation: {detail}", "SECURITY-001")
             return self._finalize(record, t_start, resp, trace)
 
@@ -284,11 +322,11 @@ class GovernancePipeline:
             if viol:
                 record = self._init_record(request, request_metadata, clean_payload)
                 record.contract_validated = True
-                if trace:
-                    with StageTimer(trace, 0, "AgentContract",
-                                    {"agent_id": request.agent_id}) as t:
-                        t.outcome = "blocked"
-                        t.detail  = viol
+                with self._timed_call(trace, 0, "AgentContract",
+                                       {"agent_id": request.agent_id}) as t:
+                    t.outcome = "blocked"
+                    t.detail  = viol
+                log.warning(f"Agent contract violation for agent '{request.agent_id}': {viol}")
                 resp = self._blocked_early(record, viol, "CONTRACT-001")
                 return self._finalize(record, t_start, resp, trace)
 
@@ -305,54 +343,39 @@ class GovernancePipeline:
         )
 
         # ── Stage 3: Schema Validation ────────────────────────────────────
-        if trace:
-            with StageTimer(trace, 3, "SchemaValidation",
-                            {"decision_type": request.decision_type.value}) as t:
-                schema_ok, schema_error = self.schema_validator.validate(
-                    request.decision_type, clean_payload)
-                t.outcome = "passed" if schema_ok else "blocked"
-                t.detail  = schema_error or ""
-                t.output_summary = {"valid": schema_ok}
-        else:
+        with self._timed_call(trace, 3, "SchemaValidation",
+                              {"decision_type": request.decision_type.value}) as t:
             schema_ok, schema_error = self.schema_validator.validate(
                 request.decision_type, clean_payload)
+            t.outcome = "passed" if schema_ok else "blocked"
+            t.detail  = schema_error or ""
+            t.output_summary = {"valid": schema_ok}
 
         if not schema_ok:
             resp = self._blocked_early(record, schema_error or "Schema error", "SCHEMA-001")
             return self._finalize(record, t_start, resp, trace)
 
         # ── Stage 4: Velocity / Ecosystem Breaker ─────────────────────────
-        if trace:
-            with StageTimer(trace, 4, "VelocityBreaker",
-                            {"agent_id": request.agent_id}) as t:
-                vel_triggered, vel_reason, vel_count = self.velocity_breaker.check(
-                    request.agent_id)
-                t.outcome = "blocked" if vel_triggered else "passed"
-                t.detail  = vel_reason or ""
-                t.output_summary = {"count": vel_count, "triggered": vel_triggered}
-        else:
+        with self._timed_call(trace, 4, "VelocityBreaker",
+                              {"agent_id": request.agent_id}) as t:
             vel_triggered, vel_reason, vel_count = self.velocity_breaker.check(
                 request.agent_id)
+            t.outcome = "blocked" if vel_triggered else "passed"
+            t.detail  = vel_reason or ""
+            t.output_summary = {"count": vel_count, "triggered": vel_triggered}
 
         # ── Stage 5: Anomaly Detection ─────────────────────────────────────
-        if trace:
-            with StageTimer(trace, 5, "AnomalyDetection",
-                            {"agent_id": request.agent_id,
-                             "decision_type": request.decision_type.value}) as t:
-                anom_triggered, anom_score, anom_fields = self.anomaly_detector.check(
-                    agent_id=request.agent_id,
-                    decision_type=request.decision_type.value,
-                    payload=clean_payload,
-                )
-                t.outcome = "blocked" if anom_triggered else "passed"
-                t.detail  = "; ".join(anom_fields) if anom_triggered else ""
-                t.output_summary = {"z_score": anom_score, "anomalous": anom_triggered}
-        else:
+        with self._timed_call(trace, 5, "AnomalyDetection",
+                              {"agent_id": request.agent_id,
+                               "decision_type": request.decision_type.value}) as t:
             anom_triggered, anom_score, anom_fields = self.anomaly_detector.check(
                 agent_id=request.agent_id,
                 decision_type=request.decision_type.value,
                 payload=clean_payload,
             )
+            t.outcome = "blocked" if anom_triggered else "passed"
+            t.detail  = "; ".join(anom_fields) if anom_triggered else ""
+            t.output_summary = {"z_score": anom_score, "anomalous": anom_triggered}
 
         cb_triggered = vel_triggered or anom_triggered
         if vel_triggered:
@@ -394,27 +417,20 @@ class GovernancePipeline:
             return self._finalize(record, t_start, resp, trace)
 
         # ── Stage 6: Policy Enforcement ────────────────────────────────────
-        if trace:
-            with StageTimer(trace, 6, "PolicyEnforcement",
-                            {"decision_type": request.decision_type.value}) as t:
-                policy_result = self.policy_engine.evaluate(
-                    decision_type=request.decision_type,
-                    payload=clean_payload,
-                    context=context,
-                )
-                t.outcome = "passed" if policy_result.passed else "blocked"
-                t.detail  = "; ".join(policy_result.violations[:3])
-                t.output_summary = {
-                    "passed": policy_result.passed,
-                    "violations": len(policy_result.violations),
-                    "warnings": len(policy_result.warnings),
-                }
-        else:
+        with self._timed_call(trace, 6, "PolicyEnforcement",
+                              {"decision_type": request.decision_type.value}) as t:
             policy_result = self.policy_engine.evaluate(
                 decision_type=request.decision_type,
                 payload=clean_payload,
                 context=context,
             )
+            t.outcome = "passed" if policy_result.passed else "blocked"
+            t.detail  = "; ".join(policy_result.violations[:3])
+            t.output_summary = {
+                "passed": policy_result.passed,
+                "violations": len(policy_result.violations),
+                "warnings": len(policy_result.warnings),
+            }
         record.policy_result = policy_result
 
         if not policy_result.passed and self.event_bus:
@@ -422,27 +438,19 @@ class GovernancePipeline:
                                      policy_result.violations, policy_result.warnings)
 
         # ── Stage 7: Risk Evaluation ────────────────────────────────────────
-        if trace:
-            with StageTimer(trace, 7, "RiskEvaluation") as t:
-                risk_result = self.risk_evaluator.evaluate(
-                    decision_type=request.decision_type,
-                    payload=clean_payload,
-                    context=context,
-                    policy_result=policy_result,
-                )
-                t.outcome = "passed" if risk_result.disposition.value != "block" else "blocked"
-                t.output_summary = {
-                    "risk_score": risk_result.risk_score,
-                    "risk_level": risk_result.risk_level.value,
-                    "disposition": risk_result.disposition.value,
-                }
-        else:
+        with self._timed_call(trace, 7, "RiskEvaluation") as t:
             risk_result = self.risk_evaluator.evaluate(
                 decision_type=request.decision_type,
                 payload=clean_payload,
                 context=context,
                 policy_result=policy_result,
             )
+            t.outcome = "passed" if risk_result.disposition.value != "block" else "blocked"
+            t.output_summary = {
+                "risk_score": risk_result.risk_score,
+                "risk_level": risk_result.risk_level.value,
+                "disposition": risk_result.disposition.value,
+            }
         record.risk_result = risk_result
 
         # ── Stage 8: Disposition ────────────────────────────────────────────
@@ -478,13 +486,12 @@ class GovernancePipeline:
             except Exception as exc:
                 log.warning("WorkflowEngine.create_from_decision failed: %s", exc)
 
-        if trace:
-            with StageTimer(trace, 8, "Disposition") as t:
-                t.outcome = final_status.value
-                t.output_summary = {
-                    "final_status": final_status.value,
-                    "risk_score": risk_result.risk_score,
-                }
+        with self._timed_call(trace, 8, "Disposition") as t:
+            t.outcome = final_status.value
+            t.output_summary = {
+                "final_status": final_status.value,
+                "risk_score": risk_result.risk_score,
+            }
 
         messages = {
             FinalStatus.EXECUTED:       "Decision approved and executed.",
@@ -571,6 +578,37 @@ class GovernancePipeline:
             return (f"Agent '{request.agent_id}' contract prohibits delegation "
                     f"(chain depth {chain_depth}).")
         return None
+
+    @contextlib.contextmanager
+    def _timed_call(
+        self,
+        trace:      Optional[Any],
+        stage_num:  int,
+        stage_name: str,
+        metadata:   Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Context manager that wraps StageTimer when trace is active; no-op otherwise.
+
+        Eliminates the duplicate ``if trace: with StageTimer(...) as t: ... else: ...``
+        pattern that appeared in every pipeline stage.
+
+        Usage::
+
+            with self._timed_call(trace, 3, "SchemaValidation", meta) as t:
+                ok, err = self.schema_validator.validate(...)
+                t.outcome = "passed" if ok else "blocked"
+                t.output_summary = {"valid": ok}
+        """
+        if trace is not None:
+            with StageTimer(trace, stage_num, stage_name, metadata or {}) as t:
+                yield t
+        else:
+            class _NoopTimer:
+                outcome: str = ""
+                detail: str = ""
+                output_summary: Dict[str, Any] = {}
+            yield _NoopTimer()
 
     def _blocked_early(
         self,

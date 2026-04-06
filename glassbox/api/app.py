@@ -37,11 +37,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from flask import Flask, Response, jsonify, request
 
+from glassbox import __version__ as _GLASSBOX_VERSION
 from glassbox.governance.pipeline        import GovernancePipeline
 from glassbox.governance.models          import (
     AgentContract, DecisionContext, DecisionRequest, DecisionType, FinalStatus,
 )
 from glassbox.governance.decision_replay import DecisionReplay
+from glassbox.governance.simulator       import PolicySimulator
 from glassbox.governance.logging_manager import get_logger
 from glassbox.security.sanitizer         import validate_agent_id
 
@@ -60,13 +62,11 @@ class SimpleSlidingWindowRateLimiter:
     In-memory sliding-window rate limiter with per-key tracking.
     Thread-safe. No external dependencies.
     
-    Usage:
-        limiter = SimpleSlidingWindowRateLimiter(requests_per_window=100, window_seconds=60)
-        if limiter.is_allowed("agent_id_abc"):
-            # Process request
-        else:
-            # Reject with 429 Too Many Requests
+    Keys are capped at _max_keys to prevent unbounded memory growth
+    under adversarial conditions (many unique IPs / agent IDs).
     """
+    _MAX_KEYS = 100_000  # Hard cap on tracked keys; oldest entry evicted past this.
+
     def __init__(self, requests_per_window: int = 100, window_seconds: int = 60):
         self.requests_per_window = requests_per_window
         self.window_seconds = window_seconds
@@ -83,6 +83,10 @@ class SimpleSlidingWindowRateLimiter:
             if key in self._timestamps:
                 self._timestamps[key] = [ts for ts in self._timestamps[key] if ts > window_start]
             else:
+                # Evict the oldest entry if the key dict is at capacity.
+                if len(self._timestamps) >= self._MAX_KEYS:
+                    oldest_key = next(iter(self._timestamps))
+                    del self._timestamps[oldest_key]
                 self._timestamps[key] = []
             
             # Check if we're under limit
@@ -122,7 +126,7 @@ def create_app(pipeline=None, log_dir=None, echo=False, testing=False) -> Flask:
         resp.headers["X-Frame-Options"]        = "DENY"
         resp.headers["X-XSS-Protection"]       = "1; mode=block"
         resp.headers["Cache-Control"]          = "no-store"
-        resp.headers["X-GlassBox-Version"]     = "1.0.0"
+        resp.headers["X-GlassBox-Version"]     = _GLASSBOX_VERSION
         return resp
 
     def _err(msg, code, rid=""):
@@ -196,8 +200,69 @@ def create_app(pipeline=None, log_dir=None, echo=False, testing=False) -> Flask:
             log.warning("Rate limit exceeded", extra={"component": "api", "agent_id": req.agent_id, "reason": "agent_limit"})
             return _err("Rate limit exceeded (100 req/min per agent).", 429, rid)
         
-        resp = _pipeline.process(req)
+        try:
+            resp = _pipeline.process(req)
+        except Exception as exc:
+            log.error(
+                "Pipeline error for agent '%s': %s",
+                req.agent_id, exc,
+                extra={"component": "api", "request_id": rid},
+                exc_info=True,
+            )
+            return _err("Decision processing failed.", 500, rid)
         return jsonify(resp.to_dict()), 200
+
+    @app.route("/decisions/simulate", methods=["POST"])
+    def simulate():
+        """POST /decisions/simulate — Dry-run policy simulation without commit.
+        
+        Returns predicted decision status WITHOUT persisting to audit log.
+        Useful for what-if analysis and pre-deployment impact assessment.
+        """
+        rid  = str(uuid.uuid4())[:8]
+        
+        # [v1.0.1 DoS Prevention] Rate limiting check
+        client_ip = request.remote_addr or "unknown"
+        if not _ip_limiter.is_allowed(client_ip):
+            log.warning("Rate limit exceeded", extra={"component": "api", "client_ip": client_ip, "reason": "global_limit"})
+            return _err("Rate limit exceeded (500 req/min per IP).", 429, rid)
+        
+        data = request.get_json(silent=True, force=False)
+        if not data:
+            return _err("Request body must be valid JSON.", 400, rid)
+        if not isinstance(data, dict):
+            return _err("Request body must be a JSON object.", 400, rid)
+        try:
+            req = _parse(data)
+        except (ValueError, TypeError) as exc:
+            return _err(str(exc), 422, rid)
+        except Exception:
+            return _err("Request could not be processed.", 500, rid)
+        
+        # [v1.0.1 DoS Prevention] Per-agent rate limiting check
+        if not _agent_limiter.is_allowed(req.agent_id):
+            log.warning("Rate limit exceeded", extra={"component": "api", "agent_id": req.agent_id, "reason": "agent_limit"})
+            return _err("Rate limit exceeded (100 req/min per agent).", 429, rid)
+        
+        # Run simulator for dry-run prediction
+        try:
+            sim = PolicySimulator(_pipeline)
+            sim_result = sim.simulate(req)
+            return jsonify({
+                "simulation": True,
+                "predicted_decision_id": rid,
+                "request_id": req.request_id,
+                "agent_id": req.agent_id,
+                "decision_type": req.decision_type.value,
+                "predicted_status": sim_result.get("final_status", "UNKNOWN"),
+                "predicted_disposition": sim_result.get("disposition", "UNKNOWN"),
+                "blocking_policy": sim_result.get("blocking_policy"),
+                "risk_score": sim_result.get("risk_score"),
+                "note": "This is a simulated decision - no audit record was created."
+            }), 200
+        except Exception as exc:
+            log.error(f"Simulation failed: {exc}", extra={"component": "api", "request_id": rid}, exc_info=True)
+            return _err(f"Simulation error: {str(exc)}", 500, rid)
 
     @app.route("/decisions", methods=["GET"])
     def list_decisions():
@@ -302,7 +367,7 @@ def create_app(pipeline=None, log_dir=None, echo=False, testing=False) -> Flask:
     @app.route("/decisions/batch", methods=["POST"])
     def batch_submit():
         """POST /decisions/batch — Govern up to 500 decisions in parallel."""
-        import concurrent.futures, time as _t
+        import time as _t
         rid = str(uuid.uuid4())[:8]
         data = request.get_json(silent=True)
         if not data:
@@ -310,7 +375,7 @@ def create_app(pipeline=None, log_dir=None, echo=False, testing=False) -> Flask:
         decisions_raw = data.get("decisions", [])
         if not isinstance(decisions_raw, list) or not decisions_raw:
             return _err("'decisions' must be non-empty list", 400, rid)
-        if len(decisions_raw) >= 500:
+        if len(decisions_raw) > 500:
             return _err("Batch size limited to 500 decisions per request", 400, rid)
         max_workers = min(int(data.get("max_workers", 4)), 16)
 
@@ -326,14 +391,28 @@ def create_app(pipeline=None, log_dir=None, echo=False, testing=False) -> Flask:
             responses = [_pipeline.process(r) for r in parsed]
         else:
             resp_map = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futs = {ex.submit(_pipeline.process, r): i for i, r in enumerate(parsed)}
-                for fut in concurrent.futures.as_completed(futs):
+            # Reuse the pipeline's own thread pool instead of spawning a new
+            # ThreadPoolExecutor per request (which would exhaust threads under load).
+            _tp = getattr(_pipeline, "_thread_pool", None)
+            if _tp is not None:
+                futs = {_tp.submit(_pipeline.process, r): i for i, r in enumerate(parsed)}
+                import concurrent.futures as _cf
+                for fut in _cf.as_completed(futs):
                     idx = futs[fut]
                     try:
                         resp_map[idx] = fut.result()
                     except Exception as e:
                         errors.append({"index": idx, "error": str(e)})
+            else:
+                import concurrent.futures as _cf
+                with _cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futs = {ex.submit(_pipeline.process, r): i for i, r in enumerate(parsed)}
+                    for fut in _cf.as_completed(futs):
+                        idx = futs[fut]
+                        try:
+                            resp_map[idx] = fut.result()
+                        except Exception as e:
+                            errors.append({"index": idx, "error": str(e)})
             responses = [resp_map[i] for i in sorted(resp_map)]
 
         results   = [r.to_dict() for r in responses]
@@ -394,9 +473,14 @@ def create_app(pipeline=None, log_dir=None, echo=False, testing=False) -> Flask:
 
         return Response(
             _gen(), mimetype="text/event-stream",
-            headers={"Cache-Control": "no-cache",
-                     "X-Accel-Buffering": "no",
-                     "Connection": "keep-alive"},
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+                # Restrict what the SSE stream can load; data-only responses
+                # should never trigger scripts, frames, or resource loads.
+                "Content-Security-Policy": "default-src 'none'",
+            },
         )
 
     return app

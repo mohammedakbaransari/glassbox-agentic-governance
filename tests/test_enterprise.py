@@ -30,7 +30,7 @@ from glassbox.governance.access_control import (
     AccessControl, Role, User, PermissionScope
 )
 from glassbox.governance.encryption import CryptoManager, EncryptedField
-from glassbox.governance.advanced_audit import AuditLogger, AuditRecord
+from glassbox.governance.advanced_audit import TamperEvidentAuditLogger, AuditRecord
 from glassbox.governance.request_context import (
     RequestContext, Config, ContextManager
 )
@@ -351,7 +351,7 @@ class TestAdvancedAudit:
 
     def test_audit_log_action(self):
         """Test logging an action."""
-        logger = AuditLogger(db_path=":memory:")
+        logger = TamperEvidentAuditLogger(db_path=":memory:")
 
         record = logger.log_action(
             user_id="user123",
@@ -368,7 +368,7 @@ class TestAdvancedAudit:
 
     def test_audit_search(self):
         """Test searching audit trail."""
-        logger = AuditLogger(db_path=":memory:")
+        logger = TamperEvidentAuditLogger(db_path=":memory:")
 
         # Log multiple actions
         logger.log_action("user1", "create", "policy", "p1", "success")
@@ -385,7 +385,7 @@ class TestAdvancedAudit:
 
     def test_hash_chain_verification(self):
         """Test hash chain integrity verification."""
-        logger = AuditLogger(db_path=":memory:", enable_hash_chain=True)
+        logger = TamperEvidentAuditLogger(db_path=":memory:", enable_hash_chain=True)
 
         # Log actions
         logger.log_action("user1", "action1", "resource", "r1", "success")
@@ -396,7 +396,7 @@ class TestAdvancedAudit:
 
     def test_audit_export(self):
         """Test exporting audit records."""
-        logger = AuditLogger(db_path=":memory:")
+        logger = TamperEvidentAuditLogger(db_path=":memory:")
 
         logger.log_action("user1", "action", "resource", "r1", "success", {"key": "value"})
 
@@ -636,7 +636,7 @@ class TestEndToEndIntegration:
         ac.register_user(user)
 
         # Setup audit logger
-        logger = AuditLogger(db_path=":memory:", enable_hash_chain=True)
+        logger = TamperEvidentAuditLogger(db_path=":memory:", enable_hash_chain=True)
 
         # Setup encryption
         crypto = CryptoManager()

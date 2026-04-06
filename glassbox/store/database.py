@@ -43,9 +43,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
+import sys
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -55,10 +58,11 @@ from glassbox.governance.models import AuditRecord, DecisionType, FinalStatus
 
 log = logging.getLogger("glassbox.db")
 
+_VALID_IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
 # ── Schema version and DDL migrations ─────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 # Each migration is (version, sql_statements_list)
 # Applied in order, never re-applied once recorded in schema_version table.
@@ -172,6 +176,12 @@ MIGRATIONS: List[Tuple[int, List[str]]] = [
         """CREATE INDEX IF NOT EXISTS idx_wf_pending
            ON workflows(created_at) WHERE state IN ('pending','in_review')""",
     ]),
+
+    (4, [
+        # Add tenant_id to compliance_evidence for row-level tenant isolation
+        "ALTER TABLE compliance_evidence ADD COLUMN tenant_id TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_ev_tenant ON compliance_evidence(tenant_id)",
+    ]),
 ]
 
 
@@ -199,26 +209,51 @@ class ThreadLocalConnectionPool:
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._local  = threading.local()
+        # For :memory: databases every thread-local connection is a separate empty DB.
+        # Share one connection so all threads see the same data.
+        if db_path == ":memory:":
+            self._memory_conn = self._make_conn()
+        else:
+            self._memory_conn = None
+
+    def _make_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False,
+                               timeout=30.0, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")   # safe with WAL
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA cache_size=-8000")     # 8MB page cache
+        conn.execute("PRAGMA temp_store=MEMORY")
+        return conn
 
     def get(self) -> sqlite3.Connection:
         """Return this thread's connection, creating it if needed."""
+        if self._memory_conn is not None:
+            return self._memory_conn
         if not hasattr(self._local, "conn") or self._local.conn is None:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False,
-                                   timeout=30.0, isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")   # safe with WAL
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA cache_size=-8000")     # 8MB page cache
-            conn.execute("PRAGMA temp_store=MEMORY")
-            self._local.conn = conn
+            self._local.conn = self._make_conn()
         return self._local.conn
 
     def close_thread(self) -> None:
         """Close this thread's connection (call at thread end)."""
+        if self._memory_conn is not None:
+            return  # shared connection — do not close per-thread
         if hasattr(self._local, "conn") and self._local.conn:
             self._local.conn.close()
             self._local.conn = None
+
+
+# ── Transaction Pool shim ──────────────────────────────────────────────────────────
+
+class _TransactionPool:
+    """Thin pool shim that returns a fixed connection, used inside Transaction."""
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn_obj = conn
+    def get(self) -> sqlite3.Connection:
+        return self._conn_obj
+    def close_thread(self) -> None:
+        pass
 
 
 # ── Transaction Context Manager ────────────────────────────────────────────────
@@ -246,6 +281,11 @@ class Transaction:
     def __enter__(self) -> "Transaction":
         self._conn = self._pool.get()
         self._conn.execute("BEGIN IMMEDIATE")
+        _tx_pool = _TransactionPool(self._conn)
+        self.policies   = RelationalPolicyRepository(_tx_pool)
+        self.audit      = RelationalAuditRepository(_tx_pool)
+        self.workflows  = RelationalWorkflowRepository(_tx_pool)
+        self.compliance = RelationalComplianceRepository(_tx_pool)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
@@ -322,6 +362,8 @@ class QueryBuilder:
         return self
 
     def order_by(self, col: str, desc: bool = True) -> "QueryBuilder":
+        if not _VALID_IDENTIFIER.match(col):
+            raise ValueError(f"Invalid column name for ORDER BY: {col!r}")
         self._order = f"ORDER BY {col} {'DESC' if desc else 'ASC'}"
         return self
 
@@ -349,6 +391,8 @@ class QueryBuilder:
         return sql, self._params
 
     def build_sum(self, col: str) -> Tuple[str, List]:
+        if not _VALID_IDENTIFIER.match(col):
+            raise ValueError(f"Invalid column name for SUM: {col!r}")
         sql = f"SELECT COALESCE(SUM({col}), 0) FROM {self._table}"
         if self._where:
             sql += " WHERE " + " AND ".join(self._where)
@@ -363,36 +407,21 @@ class RelationalPolicyRepository:
     Supports versioned policies, lifecycle management, cross-version queries.
     """
 
+    _ACTIVE_CACHE_TTL = 30.0
+
     def __init__(self, pool: ThreadLocalConnectionPool):
         self._pool = pool
+        self._active_cache: Optional[List] = None
+        self._active_cache_ts: float = 0.0
+        self._active_cache_lock = threading.Lock()
 
     def _conn(self) -> sqlite3.Connection:
         return self._pool.get()
 
-    def save(self, record) -> None:
-        """Upsert a policy record. Uses REPLACE for atomic version update."""
-        record.updated_at = datetime.now(timezone.utc).isoformat()
-        conn = self._conn()
-        conn.execute("BEGIN IMMEDIATE" if conn.in_transaction is False else "SAVEPOINT sp_policy")
-        try:
-            conn.execute("""
-                INSERT OR REPLACE INTO policies
-                (policy_id, version, policy_name, decision_types, rule_type,
-                 rule_body, status, description, created_by, tags, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                record.policy_id, record.version, record.policy_name,
-                json.dumps(record.decision_types), record.rule_type, record.rule_body,
-                record.status, record.description, record.created_by,
-                json.dumps(record.tags), record.created_at, record.updated_at,
-            ))
-            if conn.in_transaction:
-                conn.execute("RELEASE sp_policy" if "SAVEPOINT" else "")
-            else:
-                conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK TO sp_policy" if conn.in_transaction else "ROLLBACK")
-            raise
+    def _invalidate_active_cache(self) -> None:
+        with self._active_cache_lock:
+            self._active_cache = None
+            self._active_cache_ts = 0.0
 
     def save(self, record) -> None:
         """Upsert — safe under concurrent access."""
@@ -408,6 +437,7 @@ class RelationalPolicyRepository:
             record.status, record.description, record.created_by,
             json.dumps(record.tags), record.created_at, record.updated_at,
         ))
+        self._invalidate_active_cache()
 
     def get(self, policy_id: str, version: str = None):
         """Get active (or specific version) policy."""
@@ -430,7 +460,11 @@ class RelationalPolicyRepository:
         return self._from_row(row) if row else None
 
     def list_active(self) -> List:
-        """All currently active policies (latest version per policy_id)."""
+        """All currently active policies (latest version per policy_id). Cached with 30s TTL."""
+        now = time.monotonic()
+        with self._active_cache_lock:
+            if self._active_cache is not None and (now - self._active_cache_ts) < self._ACTIVE_CACHE_TTL:
+                return list(self._active_cache)
         rows = self._conn().execute("""
             SELECT p.* FROM policies p
             INNER JOIN (
@@ -440,7 +474,11 @@ class RelationalPolicyRepository:
             ) latest ON p.policy_id=latest.policy_id AND p.updated_at=latest.max_u
             ORDER BY p.policy_id
         """).fetchall()
-        return [self._from_row(r) for r in rows]
+        result = [self._from_row(r) for r in rows]
+        with self._active_cache_lock:
+            self._active_cache = result
+            self._active_cache_ts = now
+        return list(result)
 
     def list_all(self, status: str = None) -> List:
         qb = QueryBuilder("policies").order_by("policy_id", desc=False)
@@ -457,6 +495,7 @@ class RelationalPolicyRepository:
             "UPDATE policies SET status=?, updated_at=? WHERE policy_id=?",
             (status, now, policy_id)
         )
+        self._invalidate_active_cache()
         return cur.rowcount > 0
 
     def deprecate_and_activate(self, policy_id: str, new_record) -> None:
@@ -466,7 +505,9 @@ class RelationalPolicyRepository:
         """
         conn = self._conn()
         now  = datetime.now(timezone.utc).isoformat()
-        conn.execute("BEGIN IMMEDIATE")
+        began = not conn.in_transaction
+        if began:
+            conn.execute("BEGIN IMMEDIATE")
         try:
             # Deprecate current active
             conn.execute(
@@ -487,10 +528,13 @@ class RelationalPolicyRepository:
                 new_record.created_by, json.dumps(new_record.tags),
                 new_record.created_at, now,
             ))
-            conn.execute("COMMIT")
+            if began:
+                conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if began:
+                conn.execute("ROLLBACK")
             raise
+        self._invalidate_active_cache()
 
     def list_versions(self, policy_id: str) -> List:
         rows = self._conn().execute(
@@ -501,6 +545,7 @@ class RelationalPolicyRepository:
 
     def delete(self, policy_id: str) -> bool:
         cur = self._conn().execute("DELETE FROM policies WHERE policy_id=?", (policy_id,))
+        self._invalidate_active_cache()
         return cur.rowcount > 0
 
     def _from_row(self, row: sqlite3.Row):
@@ -653,7 +698,6 @@ class RelationalAuditRepository:
         params = []
         where  = "WHERE tenant_id=?"
         params.append(tenant_id)
-            params.append(tenant_id)
         rows = self._conn().execute(f"""
             SELECT decision_type,
                    COUNT(*) as total,
@@ -666,26 +710,40 @@ class RelationalAuditRepository:
             for r in rows
         }
 
-    def latency_percentiles(self, decision_type: Optional[str] = None) -> Dict[str, float]:
-        """P50/P90/P99 latency — for SLA reporting."""
-        where  = "WHERE pipeline_latency_ms IS NOT NULL"
-        params = []
+    def latency_percentiles(
+        self,
+        decision_type: Optional[str] = None,
+        tenant_id:     str           = "",
+    ) -> Dict[str, float]:
+        """P50/P90/P99 latency via 3 offset-based queries — no full-table Python sort."""
+        if not tenant_id or not isinstance(tenant_id, str):
+            raise ValueError("tenant_id is required and must be a non-empty string")
+        where_parts = ["pipeline_latency_ms IS NOT NULL", "tenant_id=?"]
+        params: List[Any] = [tenant_id]
         if decision_type:
-            where += " AND decision_type=?"
+            where_parts.append("decision_type=?")
             params.append(decision_type)
-        rows = self._conn().execute(
-            f"SELECT pipeline_latency_ms FROM audit_records {where} "
-            f"ORDER BY pipeline_latency_ms",
-            params
-        ).fetchall()
-        if not rows:
+        where = "WHERE " + " AND ".join(where_parts)
+        n = self._conn().execute(
+            f"SELECT COUNT(*) FROM audit_records {where}", params
+        ).fetchone()[0]
+        if not n:
             return {}
-        vals = [r[0] for r in rows]
-        n    = len(vals)
+
+        def _percentile(pct: float) -> float:
+            idx = int(n * pct)
+            row = self._conn().execute(
+                f"SELECT pipeline_latency_ms FROM audit_records"
+                f" {where} ORDER BY pipeline_latency_ms"
+                f" LIMIT 1 OFFSET ?",
+                params + [min(idx, n - 1)],
+            ).fetchone()
+            return round(row[0], 3) if row else 0.0
+
         return {
-            "p50":   round(vals[int(n * 0.50)], 3),
-            "p90":   round(vals[int(n * 0.90)], 3),
-            "p99":   round(vals[min(int(n * 0.99), n-1)], 3),
+            "p50":   _percentile(0.50),
+            "p90":   _percentile(0.90),
+            "p99":   _percentile(0.99),
             "count": n,
         }
 
@@ -734,7 +792,9 @@ class RelationalWorkflowRepository:
     def create(self, instance) -> None:
         """Create workflow and record initial step atomically."""
         conn = self._conn()
-        conn.execute("BEGIN IMMEDIATE")
+        began = not conn.in_transaction
+        if began:
+            conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute("""
                 INSERT INTO workflows
@@ -757,9 +817,11 @@ class RelationalWorkflowRepository:
             """, (str(uuid.uuid4()), instance.workflow_id, "created",
                   "system", "Workflow created", "pending",
                   instance.created_at))
-            conn.execute("COMMIT")
+            if began:
+                conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if began:
+                conn.execute("ROLLBACK")
             raise
 
     def get(self, workflow_id: str):
@@ -779,7 +841,9 @@ class RelationalWorkflowRepository:
         now  = datetime.now(timezone.utc).isoformat()
         instance.updated_at = now
         conn = self._conn()
-        conn.execute("BEGIN IMMEDIATE")
+        began = not conn.in_transaction
+        if began:
+            conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute("""
                 UPDATE workflows
@@ -792,7 +856,7 @@ class RelationalWorkflowRepository:
                 instance.workflow_id,
             ))
             # Persist any new steps that weren't already in the DB
-            existing = {r[0] for r in self._conn().execute(
+            existing = {r[0] for r in conn.execute(
                 "SELECT step_id FROM workflow_steps WHERE workflow_id=?",
                 (instance.workflow_id,)
             ).fetchall()}
@@ -805,9 +869,11 @@ class RelationalWorkflowRepository:
                     """, (step.step_id, instance.workflow_id, step.step_type,
                           step.actor, step.notes, step.outcome,
                           step.created_at, step.completed_at))
-            conn.execute("COMMIT")
+            if began:
+                conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if began:
+                conn.execute("ROLLBACK")
             raise
 
     def list_pending(self) -> List:
@@ -885,41 +951,51 @@ class RelationalComplianceRepository:
         decision_id:   Optional[str] = None,
         agent_id:      Optional[str] = None,
         evidence_data: Optional[Dict] = None,
+        tenant_id:     str = "",
     ) -> str:
         evidence_id = str(uuid.uuid4())
         now         = datetime.now(timezone.utc).isoformat()
         self._conn().execute("""
             INSERT INTO compliance_evidence
             (evidence_id, control_id, decision_id, agent_id,
-             evidence_type, evidence_data, collected_at)
-            VALUES (?,?,?,?,?,?,?)
+             evidence_type, evidence_data, collected_at, tenant_id)
+            VALUES (?,?,?,?,?,?,?,?)
         """, (
             evidence_id, control_id, decision_id, agent_id,
             evidence_type,
             json.dumps(evidence_data or {}, default=str),
             now,
+            tenant_id or None,
         ))
         return evidence_id
 
-    def get_evidence(self, control_id: str) -> List[Dict[str, Any]]:
+    def get_evidence(self, control_id: str, tenant_id: str = "") -> List[Dict[str, Any]]:
+        if not tenant_id or not isinstance(tenant_id, str):
+            raise ValueError("tenant_id is required and must be a non-empty string")
         rows = self._conn().execute(
-            "SELECT * FROM compliance_evidence WHERE control_id=? ORDER BY collected_at DESC",
-            (control_id,)
+            "SELECT * FROM compliance_evidence WHERE control_id=? AND tenant_id=? ORDER BY collected_at DESC",
+            (control_id, tenant_id)
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def evidence_count_by_control(self) -> Dict[str, int]:
+    def evidence_count_by_control(self, tenant_id: str = "") -> Dict[str, int]:
+        if not tenant_id or not isinstance(tenant_id, str):
+            raise ValueError("tenant_id is required and must be a non-empty string")
         rows = self._conn().execute(
-            "SELECT control_id, COUNT(*) as cnt FROM compliance_evidence GROUP BY control_id"
+            "SELECT control_id, COUNT(*) as cnt FROM compliance_evidence WHERE tenant_id=? GROUP BY control_id",
+            (tenant_id,)
         ).fetchall()
         return {r["control_id"]: r["cnt"] for r in rows}
 
-    def recent_evidence(self, hours: int = 24, limit: int = 100) -> List[Dict[str, Any]]:
+    def recent_evidence(self, hours: int = 24, limit: int = 100, tenant_id: str = "") -> List[Dict[str, Any]]:
+        if not tenant_id or not isinstance(tenant_id, str):
+            raise ValueError("tenant_id is required and must be a non-empty string")
         rows = self._conn().execute("""
             SELECT * FROM compliance_evidence
             WHERE (julianday('now') - julianday(collected_at)) * 24 <= ?
+              AND tenant_id=?
             ORDER BY collected_at DESC LIMIT ?
-        """, (hours, limit)).fetchall()
+        """, (hours, tenant_id, limit)).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -1037,6 +1113,8 @@ class GlassBoxDatabase:
         src_conn  = self._pool.get()
         src_conn.backup(dest_conn)
         dest_conn.close()
+        if sys.platform != "win32":
+            os.chmod(dest_path, 0o600)
         log.info("Database backed up to %s", dest_path)
 
     def vacuum(self) -> None:

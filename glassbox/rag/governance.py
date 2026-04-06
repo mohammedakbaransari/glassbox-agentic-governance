@@ -179,13 +179,15 @@ class RAGQueryGovernor:
 
     def __init__(
         self,
-        max_query_length:  int         = 2048,
-        allowed_topics:    Optional[List[str]] = None,   # None = all topics allowed
-        sanitizer:         Optional[PayloadSanitizer] = None,
+        max_query_length:      int         = 2048,
+        allowed_topics:        Optional[List[str]] = None,   # None = all topics allowed
+        block_on_out_of_scope: bool        = False,
+        sanitizer:             Optional[PayloadSanitizer] = None,
     ):
-        self.max_query_length = max_query_length
-        self.allowed_topics   = [t.lower() for t in allowed_topics] if allowed_topics else None
-        self.sanitizer        = sanitizer or PayloadSanitizer()
+        self.max_query_length      = max_query_length
+        self.allowed_topics        = [t.lower() for t in allowed_topics] if allowed_topics else None
+        self.block_on_out_of_scope = block_on_out_of_scope
+        self.sanitizer             = sanitizer or PayloadSanitizer()
 
     def check(self, query: str, agent_id: str = "") -> RAGQueryResult:
         """Govern a RAG query before it reaches the retriever."""
@@ -221,7 +223,16 @@ class RAGQueryGovernor:
         warnings = []
         if self.allowed_topics:
             query_lower = query.lower()
-            if not any(topic in query_lower for topic in self.allowed_topics):
+            in_scope = any(
+                re.search(r'\b' + re.escape(topic) + r'\b', query_lower)
+                for topic in self.allowed_topics
+            )
+            if not in_scope:
+                if self.block_on_out_of_scope:
+                    return RAGQueryResult(
+                        allowed=False, query=query,
+                        blocked_reason=f"Query out of scope. Allowed topics: {self.allowed_topics[:5]}"
+                    )
                 warnings.append(
                     f"Query may be out of scope. Allowed topics: {self.allowed_topics[:5]}")
 
@@ -323,12 +334,12 @@ class RAGRetrievalGovernor:
     ) -> Optional[str]:
         """Return a reason string if the chunk should be blocked, else None."""
 
-        # Source authorisation
-        if not self.source_registry.is_approved(chunk.source):
-            return f"Source '{chunk.source}' not in approved source registry"
-
+        # Source authorisation — check explicit block FIRST for accurate messages
         if self.source_registry.is_blocked(chunk.source):
             return f"Source '{chunk.source}' is explicitly blocked"
+
+        if not self.source_registry.is_approved(chunk.source):
+            return f"Source '{chunk.source}' not in approved source registry"
 
         # Relevance threshold
         if chunk.relevance_score < self.min_relevance:
@@ -413,15 +424,18 @@ class AgenticRAGOrchestrator:
         action_decision_type: DecisionType = DecisionType.CUSTOM,
         action_payload_fn:   Optional[Callable[[Dict], Dict]] = None,
         confidence:          float = 1.0,
+        should_continue_fn:  Optional[Callable[[Dict], bool]] = None,
+        next_query_fn:       Optional[Callable[[Dict], str]] = None,
     ) -> Dict[str, Any]:
         """
-        Execute one Agentic RAG iteration:
+        Execute one or more Agentic RAG iterations:
         1. Govern the query
         2. Retrieve (if retriever_fn is provided)
         3. Govern the retrieval result
         4. Govern the action
         5. Execute the action
 
+        Repeats up to max_iterations if should_continue_fn returns True.
         Returns a result dict with governance outcome and action result.
         """
         result = {
@@ -433,91 +447,104 @@ class AgenticRAGOrchestrator:
             "final_status":     "unknown",
             "action_result":    None,
             "blocked_reason":   None,
+            "iterations":       0,
         }
 
-        # Step 1: Govern the query
-        query_result = self.query_governor.check(initial_query, agent_id=agent_id)
-        result["query_gov"] = query_result.to_dict()
+        working_query = initial_query
 
-        if not query_result.allowed:
-            result["final_status"]   = "blocked_at_query"
-            result["blocked_reason"] = query_result.blocked_reason
-            return result
+        for _iteration in range(self.max_iterations):
+            result["iterations"] += 1
 
-        working_query = query_result.cleaned_query or initial_query
+            # Step 1: Govern the query
+            query_result = self.query_governor.check(working_query, agent_id=agent_id)
+            result["query_gov"] = query_result.to_dict()
 
-        # Step 2: Retrieve (optional — only if retriever provided)
-        retrieved_chunks = []
-        if self.retriever_fn:
-            try:
-                raw_chunks = self.retriever_fn(working_query)
-                if isinstance(raw_chunks, list):
-                    retrieved_chunks = raw_chunks
-            except Exception as exc:
-                result["final_status"]   = "retrieval_error"
-                result["blocked_reason"] = f"Retriever error: {exc}"
+            if not query_result.allowed:
+                result["final_status"]   = "blocked_at_query"
+                result["blocked_reason"] = query_result.blocked_reason
                 return result
 
-            # Step 3: Govern the retrieval result
-            retrieval_result = self.retrieval_governor.check(
-                retrieved_chunks, query=working_query)
-            result["retrieval_gov"] = retrieval_result.to_dict()
+            governed_query = query_result.cleaned_query or working_query
 
-            if retrieval_result.all_blocked:
-                result["final_status"]   = "blocked_at_retrieval"
-                result["blocked_reason"] = "All retrieved chunks were blocked by retrieval governance"
-                return result
+            # Step 2: Retrieve (optional — only if retriever provided)
+            retrieved_chunks = []
+            if self.retriever_fn:
+                try:
+                    raw_chunks = self.retriever_fn(governed_query)
+                    if isinstance(raw_chunks, list):
+                        retrieved_chunks = raw_chunks
+                except Exception as exc:
+                    result["final_status"]   = "retrieval_error"
+                    result["blocked_reason"] = f"Retriever error: {exc}"
+                    return result
 
-            working_chunks = retrieval_result.allowed_chunks
-        else:
-            working_chunks = []
+                # Step 3: Govern the retrieval result
+                retrieval_result = self.retrieval_governor.check(
+                    retrieved_chunks, query=governed_query)
+                result["retrieval_gov"] = retrieval_result.to_dict()
 
-        # Build context for action
-        context_for_action: Dict[str, Any] = {
-            "query":           working_query,
-            "retrieved_chunks": [
-                {"content": c.content[:500], "source": c.source,
-                 "relevance": c.relevance_score}
-                for c in working_chunks
-            ],
-        }
+                if retrieval_result.all_blocked:
+                    result["final_status"]   = "blocked_at_retrieval"
+                    result["blocked_reason"] = "All retrieved chunks were blocked by retrieval governance"
+                    return result
 
-        # Step 4: Govern the action through the pipeline
-        if action_payload_fn:
-            action_payload = action_payload_fn(context_for_action)
-        else:
-            action_payload = {
-                "query":        working_query,
-                "chunk_count":  len(working_chunks),
-                "sources":      list({c.source for c in working_chunks}),
-                "action_type":  "rag_response",
+                working_chunks = retrieval_result.allowed_chunks
+            else:
+                working_chunks = []
+
+            # Build context for action
+            context_for_action: Dict[str, Any] = {
+                "query":           governed_query,
+                "retrieved_chunks": [
+                    {"content": c.content[:500], "source": c.source,
+                     "relevance": c.relevance_score}
+                    for c in working_chunks
+                ],
             }
 
-        ctx     = DecisionContext(
-            confidence=confidence, source_system="agentic_rag",
-            metadata={"query": working_query[:200],
-                      "chunk_count": len(working_chunks)},
-        )
-        request = DecisionRequest(
-            agent_id=agent_id, decision_type=action_decision_type,
-            payload=action_payload, context=ctx,
-        )
-        response = self.pipeline.process(request)
-        result["decision_id"]  = response.decision_id
-        result["final_status"] = response.final_status.value
+            # Step 4: Govern the action through the pipeline
+            if action_payload_fn:
+                action_payload = action_payload_fn(context_for_action)
+            else:
+                action_payload = {
+                    "query":        governed_query,
+                    "chunk_count":  len(working_chunks),
+                    "sources":      list({c.source for c in working_chunks}),
+                    "action_type":  "rag_response",
+                }
 
-        if response.final_status == FinalStatus.BLOCKED:
-            result["blocked_reason"] = (
-                response.policy_violations[0] if response.policy_violations
-                else response.message
+            ctx     = DecisionContext(
+                confidence=confidence, source_system="agentic_rag",
+                metadata={"query": governed_query[:200],
+                          "chunk_count": len(working_chunks)},
             )
-            return result
+            request = DecisionRequest(
+                agent_id=agent_id, decision_type=action_decision_type,
+                payload=action_payload, context=ctx,
+            )
+            response = self.pipeline.process(request)
+            result["decision_id"]  = response.decision_id
+            result["final_status"] = response.final_status.value
 
-        # Step 5: Execute the action
-        try:
-            result["action_result"] = action_fn(context_for_action)
-        except Exception as exc:
-            result["action_error"] = str(exc)
+            if response.final_status == FinalStatus.BLOCKED:
+                result["blocked_reason"] = (
+                    response.policy_violations[0] if response.policy_violations
+                    else response.message
+                )
+                return result
+
+            # Step 5: Execute the action
+            try:
+                result["action_result"] = action_fn(context_for_action)
+            except Exception as exc:
+                result["action_error"] = str(exc)
+
+            # Decide whether to iterate
+            if should_continue_fn is None or not should_continue_fn(result):
+                break
+
+            if next_query_fn is not None:
+                working_query = next_query_fn(result)
 
         return result
 

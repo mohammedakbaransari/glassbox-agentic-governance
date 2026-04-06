@@ -766,10 +766,10 @@ def post_incident_review(incident_id):
 
 ## See Also
 
-- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md#security)** — Security-related issues and solutions
+- **[TROUBLESHOOTING.md](../USER/troubleshooting.md#security)** — Security-related issues and solutions
 - **[security/README.md](../glassbox/security/README.md)** — Payload sanitization and injection detection
-- **[DEPLOYMENT.md](DEPLOYMENT.md#security-hardening)** — Platform-specific security deployment
-- **[docs/COMPLIANCE.md](COMPLIANCE.md)** — Compliance requirements and controls
+- **[DEPLOYMENT.md](../DEPLOYMENT.md#security-hardening)** — Platform-specific security deployment
+- **[COMPLIANCE/requirements.md](../COMPLIANCE/requirements.md)** — Compliance requirements and controls
 - **[CONTRIBUTING.md](../CONTRIBUTING.md#security-vulnerability-reporting)** — Responsible disclosure
 
 ---

@@ -1,6 +1,6 @@
 # GlassBox — REST API Reference
 
-**v1.0.0 | Start:** `python3 -m glassbox.api.app` → `http://localhost:8000`
+**v1.1.0 | Start:** `python3 -m glassbox.api.app` → `http://localhost:8000`
 
 ---
 
@@ -212,13 +212,137 @@ POST /decisions/a1b2c3d4-e5f6-.../replay
 
 ---
 
+### POST /decisions/simulate — Dry-run policy simulation
+
+```bash
+curl -X POST http://localhost:8000/decisions/simulate \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id":"agent1","decision_type":"procurement","payload":{"amount":500000}}'
+```
+
+**Response:**
+
+```json
+{
+  "simulation": true,
+  "predicted_status": "BLOCKED",
+  "predicted_disposition": "BLOCK",
+  "blocking_policy": "PROC-001",
+  "risk_score": 92.0,
+  "note": "This is a simulated decision - no audit record was created."
+}
+```
+
+No audit record is written. Use for what-if analysis and pre-deployment impact assessment.
+
+---
+
+### POST /decisions/batch — Bulk governance (up to 499 decisions)
+
+```bash
+curl -X POST http://localhost:8000/decisions/batch \
+  -H "Content-Type: application/json" \
+  -d '{"decisions":[{"agent_id":"a1","decision_type":"procurement","payload":{"amount":5000}},...]}'
+```
+
+**Response:**
+
+```json
+{
+  "results": [],
+  "errors": [],
+  "summary": {
+    "total": 10, "executed": 8, "blocked": 2,
+    "pending_review": 0, "parse_errors": 0,
+    "batch_latency_ms": 12.4
+  }
+}
+```
+
+---
+
+### GET /events/stream — Real-time event stream (SSE)
+
+```bash
+curl http://localhost:8000/events/stream \
+  -H "Accept: text/event-stream"
+```
+
+Server-Sent Events stream of all governance events:
+
+```
+event: decision.executed
+data: {"event_type":"decision.executed","payload":{...}}
+
+event: policy.violated
+data: {"event_type":"policy.violated","payload":{...}}
+```
+
+Heartbeat sent every 15 seconds if no events occur.
+
+---
+
+### GET /agents/{id}/anomaly — Anomaly detection baseline
+
+```bash
+GET /agents/procurement_agent/anomaly?decision_type=procurement
+```
+
+**Response:**
+
+```json
+{
+  "agent_id": "procurement_agent",
+  "decision_type": "procurement",
+  "baseline": {"mean": 45000, "stddev": 12000, "p99": 98000},
+  "samples_collected": 127,
+  "min_samples_required": 10
+}
+```
+
+---
+
+### GET /contracts — List agent contracts
+
+```json
+{
+  "contracts": [
+    {"agent_id": "procurement_agent", "permitted_types": ["procurement"], "max_amount": 500000}
+  ]
+}
+```
+
+---
+
+### GET /ecosystem — Ecosystem circuit breaker status
+
+```json
+{
+  "ecosystem_tripped": false,
+  "total_decisions_last_window": 4532,
+  "ecosystem_limit": 10000
+}
+```
+
+---
+
+### GET /ready — Kubernetes readiness probe
+
+```json
+{"ready": true}
+```
+
+Returns `{"ready": false}` if the pipeline is not healthy.
+
+---
+
 ### GET /health — Health check
 
 ```json
 {
   "status": "healthy",
   "service": "GlassBox",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "environment": "production",
   "total_decisions": 5432,
   "policies": 12,
@@ -240,7 +364,7 @@ POST /decisions/a1b2c3d4-e5f6-.../replay
 | **403** | Permission denied | `{"error": "forbidden", "reason": "agent_id not authorized"}` | Agent not permitted for operation |
 | **404** | Decision ID not found | `{"error": "not_found", "resource": "decision", "id": "xyz"}` | Query for non-existent decision ID |
 | **409** | Conflict — duplicate submission | `{"error": "conflict", "reason": "decision_id already exists"}` | Idempotency key collision |
-| **413** | Payload too large | `{"error": "payload_too_large", "max_bytes": 10485760}` | Payload exceeds 10MB limit |
+| **413** | Payload too large | `{"error": "payload_too_large", "max_bytes": 8192}` | Payload exceeds 8 KB limit |
 | **415** | Invalid content type | `{"error": "unsupported_media_type", "expected": "application/json"}` | Missing `Content-Type: application/json` |
 | **422** | Unprocessable entity — semantic error | `{"error": "invalid_decision_type", "got": "invalid_type", "valid_types": ["procurement", ...]}` | Unknown decision type |
 | **429** | Rate limited | `{"error": "rate_limited", "retry_after_seconds": 60}` | Too many requests in time window |
@@ -287,23 +411,23 @@ The same `Idempotency-Key` will always return the same response, even if called 
 | `400 Bad Request` | Malformed JSON or missing required field | Check payload structure in endpoint table above |
 | `401 Unauthorized` | Missing or invalid API key | Ensure `Authorization: Bearer {token}` header |
 | `403 Forbidden` | Agent not authorized for decision type | Contact admin to grant permissions |
-| `413 Payload Too Large` | Payload exceeds size limit (10 MB) | Reduce payload size or split into smaller decisions |
+| `413 Payload Too Large` | Payload exceeds size limit (8 KB) | Reduce payload size or split into smaller decisions |
 | `429 Too Many Requests` | Rate limit exceeded | Back off; retry after `Retry-After` seconds |
 | `500 Internal Server Error` | Pipeline or database error | Check server logs; contact support |
 | `503 Service Unavailable` | Server overloaded or restarting | Retry after 30–60 seconds |
 
-For detailed troubleshooting, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#api--core).
+For detailed troubleshooting, see [TROUBLESHOOTING.md](../USER/troubleshooting.md#api--core).
 
 ---
 
 ## See Also
 
-- **[GLOSSARY.md](GLOSSARY.md)** — Definitions of API terms (disposition, decision_type, payload, etc.)
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Understanding the 9-stage pipeline behind each API call
-- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** — Common API issues and solutions
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** — Deploying the REST API to production
-- **[glassbox/api/README.md](../glassbox/api/README.md)** — Module-level API documentation
+- **[GLOSSARY.md](../GLOSSARY.md)** — Definitions of API terms (disposition, decision_type, payload, etc.)
+- **[ARCHITECTURE.md](../ARCHITECTURE.md)** — Understanding the 9-stage pipeline behind each API call
+- **[TROUBLESHOOTING.md](../USER/troubleshooting.md)** — Common API issues and solutions
+- **[DEPLOYMENT.md](../DEPLOYMENT.md)** — Deploying the REST API to production
+- **[glassbox/api/README.md](../../glassbox/api/README.md)** — Module-level API documentation
 
 ---
 
-*GlassBox v1.0.0 · Apache 2.0 · Mohammed Akbar Ansari*
+*GlassBox v1.1.0 · Apache 2.0 · Mohammed Akbar Ansari*

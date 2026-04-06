@@ -306,8 +306,9 @@ def scenario_fleet_budget():
     p = GovernancePipeline(echo=False)
     FLEET_BUDGET = 400_000.0
 
-    def _agg_budget(payload, ctx):
-        spent = p.audit_logger.get_executed_spend(DecisionType.PROCUREMENT)
+    def _agg_budget(payload, ctx, pipeline=p):
+        """Fleet budget policy with explicit pipeline binding to avoid closure bug."""
+        spent = pipeline.audit_logger.get_executed_spend(DecisionType.PROCUREMENT)
         proposed = float(payload.get("amount",0))
         projected = spent + proposed
         util = projected / FLEET_BUDGET * 100

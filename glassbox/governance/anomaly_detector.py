@@ -17,6 +17,7 @@ Reference:
 Author: Mohammed Akbar Ansari
 """
 
+import hashlib
 import math
 import threading
 from collections import defaultdict, deque
@@ -80,33 +81,43 @@ class RollingStatsWelford:
         self._adjust_add(value)
 
     def _adjust_add(self, value: float):
-        """Add value to Welford running stats (online algorithm)."""
-        self._n += 1
+        """Add value to Welford running stats (online algorithm).
+        
+        Welford's method for computing mean and variance incrementally:
+        - delta  = value - old_mean
+        - new_mean = old_mean + delta / n   (where n is window size after adding)
+        - M2 = M2 + delta * (value - new_mean)
+        
+        Key fix: Use self._count (effective window size) not self._n (total ever added).
+        This maintains O(1) mean updates even as window slides and values are evicted.
+        """
         self._count += 1
         self._sum += value
         
+        # Welford delta method: mean update based on window size
         delta = value - self._mean
-        self._mean += delta / self._n
+        self._mean += delta / self._count  # Use count (current window size), not _n
         delta2 = value - self._mean
         self._M2 += delta * delta2
 
     def _adjust_remove(self, value: float):
-        """Remove value from Welford stats when window evicts oldest."""
+        """Remove value from Welford stats using O(1) incremental formula."""
         if self._count <= 1:
             self._count = 0
             self._mean = 0.0
             self._M2 = 0.0
             return
-        
+
+        old_mean = self._mean
         self._count -= 1
         self._sum -= value
-        
-        # Revert Welford state by recalculating from current window
-        # (Could optimize further, but O(window_size) only on eviction)
-        if len(self._values) > 0:
-            values = list(self._values)
-            self._mean = sum(values) / len(values)
-            self._M2 = sum((v - self._mean) ** 2 for v in values)
+
+        # Reverse Welford update: derive new mean, then update M2 accordingly.
+        # new_mean = (old_mean * (count+1) - value) / count
+        self._mean = (old_mean * (self._count + 1) - value) / self._count
+        delta_old = value - old_mean
+        delta_new = value - self._mean
+        self._M2 = max(0.0, self._M2 - delta_old * delta_new)
 
     @property
     def count(self) -> int:
@@ -196,6 +207,7 @@ class AnomalyDetectorOptimized:
         min_samples:       int   = 10,
         window_size:       int   = 50,
         track_categorical: bool  = True,
+        lock_pool_size:    int   = 16,
     ):
         self.z_threshold       = z_threshold
         self.min_samples       = min_samples
@@ -209,11 +221,20 @@ class AnomalyDetectorOptimized:
         self._cat_stats: Dict[Tuple, CategoricalTracker] = defaultdict(
             lambda: CategoricalTracker(min_samples=max(min_samples * 2, 20))
         )
-        # Thread-safe: RLock protects all dicts
-        self._lock = threading.RLock()
+        # Lock-pool: hash (agent_id, decision_type) to one of N partitions.
+        # This reduces contention ~16x compared to a single RLock for systems
+        # with many concurrent agents across multiple decision types.
+        self._lock_pool_size = max(1, lock_pool_size)
+        self._lock_pool = [threading.RLock() for _ in range(self._lock_pool_size)]
 
     def _key(self, agent_id: str, decision_type: str, field: str) -> Tuple:
         return (agent_id, decision_type, field)
+
+    def _get_lock(self, agent_id: str, decision_type: str) -> threading.RLock:
+        """Hash (agent_id, decision_type) to a partition lock."""
+        h = hashlib.md5(f"{agent_id}:{decision_type}".encode()).digest()
+        idx = int.from_bytes(h[:2], "big") % self._lock_pool_size
+        return self._lock_pool[idx]
 
     def check(
         self,
@@ -233,7 +254,8 @@ class AnomalyDetectorOptimized:
         max_z = 0.0
         anomalous = []
 
-        with self._lock:
+        lock = self._get_lock(agent_id, decision_type)
+        with lock:
             for fname in fields:
                 value = payload.get(fname)
                 if value is None or not isinstance(value, (int, float)):
@@ -243,6 +265,7 @@ class AnomalyDetectorOptimized:
                 stats = self._stats[key]
 
                 # Check: enough baseline data?
+                is_anomalous = False
                 if stats.count >= self.min_samples:
                     z = stats.z_score(float(value))
                     if z is not None:
@@ -250,13 +273,16 @@ class AnomalyDetectorOptimized:
                         if abs_z > max_z:
                             max_z = abs_z
                         if abs_z > self.z_threshold:
+                            is_anomalous = True
                             anomalous.append(
                                 f"{fname}={value} (z={z:.2f}, baseline_mean={stats.mean:.2f}, "
                                 f"baseline_std={stats.std:.2f})"
                             )
 
-                # Always update the baseline (even on anomalous values - adaptive)
-                stats.add(float(value))
+                # Only add to baseline if NOT anomalous: prevent adversarial drift
+                # where repeated out-of-distribution values shift the baseline.
+                if not is_anomalous:
+                    stats.add(float(value))
 
         return len(anomalous) > 0, round(max_z, 3), anomalous
 
@@ -268,7 +294,8 @@ class AnomalyDetectorOptimized:
     ):
         """Update rolling stats without anomaly detection (used in replays)."""
         fields = MONITORED_FIELDS.get(decision_type, [])
-        with self._lock:
+        lock = self._get_lock(agent_id, decision_type)
+        with lock:
             for fname in fields:
                 value = payload.get(fname)
                 if value is not None and isinstance(value, (int, float)):
@@ -279,7 +306,8 @@ class AnomalyDetectorOptimized:
         """Return current rolling stats for a specific agent/decision_type. Thread-safe."""
         fields = MONITORED_FIELDS.get(decision_type, [])
         result = {}
-        with self._lock:
+        lock = self._get_lock(agent_id, decision_type)
+        with lock:
             for fname in fields:
                 key = self._key(agent_id, decision_type, fname)
                 stats = self._stats.get(key)
@@ -297,22 +325,25 @@ class AnomalyDetectorOptimized:
         """
         Pre-seed the rolling stats with historical data.
         Useful for production deployments where historical data is available.
-        Thread-safe: protected by the same RLock as check() and update_only().
+        Thread-safe: protected by the same lock-pool as check() and update_only().
         """
         key = self._key(agent_id, decision_type, field)
-        with self._lock:
+        lock = self._get_lock(agent_id, decision_type)
+        with lock:
             for v in historical_values:
                 self._stats[key].add(v)
 
     def reset_agent(self, agent_id: str, decision_type: str = None) -> None:
         """Reset rolling baselines for an agent (or specific type)."""
-        with self._lock:
-            keys_to_del = [
-                k for k in self._stats
-                if k[0] == agent_id and (decision_type is None or k[1] == decision_type)
-            ]
-            for k in keys_to_del:
-                del self._stats[k]
+        # Must acquire all locks when resetting by agent (different partition per decision_type).
+        for lock in self._lock_pool:
+            with lock:
+                keys_to_del = [
+                    k for k in self._stats
+                    if k[0] == agent_id and (decision_type is None or k[1] == decision_type)
+                ]
+                for k in keys_to_del:
+                    del self._stats[k]
 
 
 # Backwards compatibility alias (v1.0.0 used AnomalyDetector)

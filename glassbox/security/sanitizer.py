@@ -37,7 +37,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from glassbox.governance.logging_manager import get_logger
 
 log = get_logger("security")
-from typing import Any, Dict, List, Optional, Tuple
 
 
 # ── SQL injection patterns ────────────────────────────────────────────────────
@@ -52,7 +51,6 @@ _SQL_PATTERNS: List[re.Pattern] = [
     re.compile(r"(?i)\bunion\b.*\bselect\b"),
     re.compile(r"(?i)\bsleep\s*\(|benchmark\s*\(|waitfor\b"),
     re.compile(r"(?i)\bchar\s*\(\s*\d+"),                          # CHAR(65)
-    re.compile(r"'[\s\w]*'"),                                      # 'quoted'
     re.compile(r"(?i)\b(xp_cmdshell|openrowset|bulk\s+insert)\b"),
 ]
 
@@ -69,6 +67,8 @@ _SCRIPT_PATTERNS: List[re.Pattern] = [
 ]
 
 # ── Known malicious keywords ──────────────────────────────────────────────────
+# All entries MUST be lowercase; case-insensitive matching is applied in
+# _scan_string via s.lower(). Adding uppercase variants is NOT needed.
 _BLOCKED_KEYWORDS: List[str] = [
     "passwd", "/etc/shadow", "cmd.exe", "powershell",
     "base64_decode", "/etc/hosts", "/proc/self",
@@ -139,7 +139,7 @@ class PayloadSanitizer:
         max_string_length: int  = 4096,
         max_payload_depth: int  = 5,
         max_payload_keys:  int  = 50,
-        max_payload_size:  int  = 65_536,   # 64 KB
+        max_payload_size:  int  = 8_192,    # 8 KB — aligned with API _MAX_BODY_BYTES
         block_on_sql:      bool = True,
         block_on_script:   bool = True,
     ):
@@ -272,9 +272,11 @@ class PayloadSanitizer:
                 ))
                 break
 
-        # Blocked keywords — break after first to avoid finding spam
+        # Blocked keywords — case-insensitive match via s.lower().
+        # Break after first to avoid finding spam.
         s_lower = s.lower()
         for kw in _BLOCKED_KEYWORDS:
+            # kw is already lowercase; s_lower ensures case-insensitive comparison.
             if kw in s_lower:
                 findings.append(SecurityFinding(
                     severity="critical", category="blocked_keyword",

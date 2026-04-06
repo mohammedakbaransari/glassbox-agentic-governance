@@ -420,7 +420,7 @@ class OtelExporter:
                      for k, v in labels.items()]
             if data["kind"] == "counter":
                 metrics_data.append({
-                    "name": name.replace("_", "."),
+                    "name": name,  # Keep snake_case for OTLP/Prometheus compatibility
                     "sum": {"dataPoints": [{
                         "attributes": attrs,
                         "asDouble": data["value"],
@@ -431,7 +431,7 @@ class OtelExporter:
                 })
             elif data["kind"] == "histogram":
                 metrics_data.append({
-                    "name": name.replace("_", "."),
+                    "name": name,  # Keep snake_case for OTLP/Prometheus compatibility
                     "gauge": {"dataPoints": [
                         {"attributes": [*attrs, {"key": "quantile",
                             "value": {"stringValue": q}}],

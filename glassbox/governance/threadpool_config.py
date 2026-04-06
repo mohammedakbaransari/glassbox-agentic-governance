@@ -11,12 +11,13 @@ Configuration:
 import multiprocessing
 import threading
 import time
-import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict, Any, Callable
 from collections import deque
 
-log = logging.getLogger("glassbox.threadpool")
+from glassbox.governance.logging_manager import get_logger
+
+log = get_logger("threadpool")
 
 
 class ThreadPoolConfig:

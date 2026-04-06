@@ -831,10 +831,10 @@ GlassBox is designed to be extended at every layer:
 
 ## See Also
 
-- **[GLOSSARY.md](GLOSSARY.md)** — Definitions of architectural terms (policy, disposition, anomaly, etc.)
-- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** — Common architecture issues and solutions
-- **[API.md](API.md)** — REST API reference for remote governance
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** — Running GlassBox on Databricks, Kubernetes, Fabric
+- **[GLOSSARY.md](../GLOSSARY.md)** — Definitions of architectural terms (policy, disposition, anomaly, etc.)
+- **[TROUBLESHOOTING.md](../USER/troubleshooting.md)** — Common architecture issues and solutions
+- **[API/endpoint_reference.md](../API/endpoint_reference.md)** — REST API reference for remote governance
+- **[DEPLOYMENT.md](../DEPLOYMENT.md)** — Running GlassBox on Databricks, Kubernetes, Fabric
 - **Module READMEs** — [governance](../glassbox/governance/README.md), [rules](../glassbox/rules/README.md), [workflow](../glassbox/workflow/README.md), and 8 others
 
 ---

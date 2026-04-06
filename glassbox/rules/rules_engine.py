@@ -43,6 +43,9 @@ from glassbox.governance.models import (
     DecisionContext, DecisionType, PolicyEvaluation,
 )
 from glassbox.governance.policy_engine import Policy, PolicyEngine
+from glassbox.governance.logging_manager import get_logger
+
+log = get_logger("rules_engine")
 
 
 # ── Supported operators ───────────────────────────────────────────────────────
@@ -261,8 +264,7 @@ class RulesLoader:
                 rule = _parse_rule_dict(r)
                 policies.append(rule.to_policy())
             except Exception as exc:
-                import logging
-                logging.getLogger("glassbox.rules").error(
+                log.error(
                     "RulesLoader: failed to parse rule %s: %s",
                     r.get("policy_id", "?"), exc
                 )

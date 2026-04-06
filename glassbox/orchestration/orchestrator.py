@@ -201,7 +201,7 @@ class AgentOrchestrator:
             max_workers=max_parallel_workers,
             thread_name_prefix="glassbox-orch",
         )
-        self._default_context = default_context or {}
+        self._default_context = copy.deepcopy(default_context) if default_context else {}
 
     # ── Pattern 1: Linear Chain ───────────────────────────────────────────────
 
@@ -232,9 +232,7 @@ class AgentOrchestrator:
                 )
                 continue
 
-            t_node  = time.perf_counter()
             result  = self._execute_node(node, context, list(agent_chain))
-            result.duration_ms = (time.perf_counter() - t_node) * 1000
             node_results[node.node_id] = result
             agent_chain.append(node.agent_id)
 
@@ -313,7 +311,6 @@ class AgentOrchestrator:
 
             for fut in as_completed(futures):
                 node   = futures[fut]
-                t_node = time.perf_counter()
                 try:
                     result = fut.result(timeout=node.timeout_s)
                 except Exception as exc:
@@ -321,7 +318,6 @@ class AgentOrchestrator:
                         node_id=node.node_id, agent_id=node.agent_id,
                         status=NodeStatus.FAILED, error=str(exc),
                     )
-                result.duration_ms = (time.perf_counter() - t_node) * 1000
                 node_results[node.node_id] = result
                 completed.add(node.node_id)
 
@@ -370,9 +366,7 @@ class AgentOrchestrator:
         abort_node = None
 
         for step in steps:
-            t_step = time.perf_counter()
             result = self._execute_node(step, context, [])
-            result.duration_ms = (time.perf_counter() - t_step) * 1000
             node_results[step.node_id] = result
 
             if result.status in (NodeStatus.BLOCKED, NodeStatus.FAILED):
@@ -387,7 +381,7 @@ class AgentOrchestrator:
                             comp_node.compensate_fn(comp_result, context)
                             node_results[comp_node.node_id].compensated = True
                             node_results[comp_node.node_id].status = NodeStatus.COMPENSATED
-                            log.info(f"Saga step '{comp_node.node_id}' compensated successfully",
+                            log.info("Saga step %r compensated successfully", comp_node.node_id,
                                    extra={"component": "orchestrator", "execution_id": execution_id})
                         except Exception as exc:
                             # [v1.0.1 CRITICAL] Stop compensation chain on first error
@@ -395,7 +389,7 @@ class AgentOrchestrator:
                             compensation_error = exc
                             node_results[comp_node.node_id].error = f"Compensation failed: {exc}"
                             node_results[comp_node.node_id].status = NodeStatus.FAILED
-                            log.error(f"Saga compensation STOPPED at '{comp_node.node_id}': {exc}",
+                            log.error("Saga compensation STOPPED at %r: %s", comp_node.node_id, exc,
                                     extra={"component": "orchestrator", "execution_id": execution_id, 
                                            "severity": "CRITICAL"})
                             break
@@ -467,6 +461,7 @@ class AgentOrchestrator:
         agent_chain: List[str],
     ) -> NodeResult:
         """Execute one agent node through the governance pipeline."""
+        t_start = time.perf_counter()
         try:
             payload = node.payload_fn(context)
         except Exception as exc:
@@ -474,6 +469,7 @@ class AgentOrchestrator:
                 node_id=node.node_id, agent_id=node.agent_id,
                 status=NodeStatus.FAILED,
                 error=f"payload_fn raised: {exc}",
+                duration_ms=(time.perf_counter() - t_start) * 1000,
             )
 
         ctx = DecisionContext(
@@ -495,6 +491,7 @@ class AgentOrchestrator:
                 node_id=node.node_id, agent_id=node.agent_id,
                 status=NodeStatus.FAILED,
                 error=f"Pipeline error: {exc}",
+                duration_ms=(time.perf_counter() - t_start) * 1000,
             )
 
         if response.final_status == FinalStatus.BLOCKED:
@@ -506,6 +503,7 @@ class AgentOrchestrator:
                 status=NodeStatus.BLOCKED,
                 response=response,
                 error=reason,
+                duration_ms=(time.perf_counter() - t_start) * 1000,
             )
 
         # Extract output from response for next nodes
@@ -521,6 +519,7 @@ class AgentOrchestrator:
             status=NodeStatus.EXECUTED,
             response=response,
             output=output,
+            duration_ms=(time.perf_counter() - t_start) * 1000,
         )
 
     def shutdown(self) -> None:

@@ -28,7 +28,6 @@ Author: Mohammed Akbar Ansari
 from __future__ import annotations
 
 import asyncio
-import logging
 import random
 import time
 from typing import Any, Callable, Coroutine, Dict, Optional
@@ -36,8 +35,9 @@ from typing import Any, Callable, Coroutine, Dict, Optional
 from glassbox.governance.models import (
     AuditRecord, ExecutionResult, RetryConfig, RetryStrategy,
 )
+from glassbox.governance.logging_manager import get_logger
 
-log = logging.getLogger("glassbox.retry")
+log = get_logger("retry")
 
 
 class RetryExecutor:

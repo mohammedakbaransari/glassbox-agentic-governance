@@ -122,6 +122,13 @@ class MCPToolScanner:
     are loaded into an agent's tool registry.
 
     Thread-safe: all methods are stateless over their inputs.
+
+    Complexity note: the typosquatting scan in ``scan_tool_definition`` runs
+    ``_levenshtein`` once per trusted tool name, so its cost is
+    O(|trusted| × |name| × |trusted_name|) per call.  With the default list
+    of ~14 trusted names and typical short tool names this is negligible, but
+    callers that pass a large ``trusted_tool_names`` list should be aware of
+    the linear growth with that set size.
     """
 
     def __init__(self, trusted_tool_names: Optional[List[str]] = None):

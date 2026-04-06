@@ -65,6 +65,7 @@ class VelocityBreaker:
         cooldown_seconds: int = 300,
         ecosystem_max: Optional[int] = None,
         ecosystem_window_seconds: int = 60,
+        ecosystem_cooldown_seconds: int = 120,
     ):
         """
         Args:
@@ -73,12 +74,14 @@ class VelocityBreaker:
             cooldown_seconds: Cooldown after limit exceeded
             ecosystem_max: Optional: max decisions per ecosystem (all agents combined)
             ecosystem_window_seconds: Ecosystem window duration
+            ecosystem_cooldown_seconds: Cooldown after ecosystem limit exceeded
         """
         self.max_decisions = max_decisions
         self.window_seconds = window_seconds
         self.cooldown_seconds = cooldown_seconds
         self.ecosystem_max = ecosystem_max
         self.ecosystem_window_seconds = ecosystem_window_seconds
+        self.ecosystem_cooldown_seconds = ecosystem_cooldown_seconds
         
         # Per-agent time windows: agent_id -> [timestamps, ...]
         self._agent_windows: Dict[str, list] = {}
@@ -105,64 +108,65 @@ class VelocityBreaker:
             - window_count: Number of decisions in current window
         """
         now = time.time()
-        
-        # Get or create agent-specific lock
+
+        # ── Canonical lock order: always acquire _global_lock before agent_lock.
+        # Step 1: Get or create agent lock (under global lock).
         with self._global_lock:
             if agent_id not in self._agent_locks:
                 self._agent_locks[agent_id] = threading.RLock()
             agent_lock = self._agent_locks[agent_id]
-        
+
+        # ── Step 2: Agent-level check (under agent_lock only, no nesting). ──
         with agent_lock:
-            # ── Check cooldown ──
             cooldown_until = self._cooldown_until.get(agent_id, 0)
             if now < cooldown_until:
                 remaining = int(cooldown_until - now)
                 return (True, f"Cooldown for {remaining}s", 0)
-            
-            # ── Check agent window ──
+
             if agent_id not in self._agent_windows:
                 self._agent_windows[agent_id] = []
-            
+
             window = self._agent_windows[agent_id]
-            
-            # Remove old decisions outside window
             cutoff = now - self.window_seconds
             window = [t for t in window if t > cutoff]
             self._agent_windows[agent_id] = window
-            
             count = len(window)
-            
+
             if count >= self.max_decisions:
-                # Limit exceeded
                 self._cooldown_until[agent_id] = now + self.cooldown_seconds
                 return (
                     True,
                     f"Agent '{agent_id}' velocity limit ({self.max_decisions}/{self.window_seconds}s) exceeded",
                     count,
                 )
-            
-            # ── Check ecosystem window (if configured) ──
-            if self.ecosystem_max is not None:
-                with self._global_lock:
-                    cutoff_eco = now - self.ecosystem_window_seconds
-                    self._ecosystem_window = [t for t in self._ecosystem_window if t > cutoff_eco]
-                    eco_count = len(self._ecosystem_window)
-                    
-                    if eco_count >= self.ecosystem_max:
-                        # Ecosystem limit exceeded
-                        self._cooldown_until[agent_id] = now + self.cooldown_seconds
-                        return (
-                            True,
-                            f"Fleet ecosystem limit ({self.ecosystem_max}/{self.ecosystem_window_seconds}s) exceeded",
-                            eco_count,
-                        )
-                    
-                    # Add to ecosystem window
-                    self._ecosystem_window.append(now)
-            
-            # ── Both checks passed; add to window ──
-            window.append(now)
-            return (False, None, count + 1)
+
+        # ── Step 3: Ecosystem check (under _global_lock only; agent_lock NOT held). ──
+        # Acquiring _global_lock after releasing agent_lock avoids nested locking
+        # and the deadlock risk it would introduce.
+        if self.ecosystem_max is not None:
+            with self._global_lock:
+                cutoff_eco = now - self.ecosystem_window_seconds
+                self._ecosystem_window = [t for t in self._ecosystem_window if t > cutoff_eco]
+                eco_count = len(self._ecosystem_window)
+
+                if eco_count >= self.ecosystem_max:
+                    # Record per-agent cooldown (re-acquire agent_lock separately).
+                    with agent_lock:
+                        self._cooldown_until[agent_id] = now + self.ecosystem_cooldown_seconds
+                    return (
+                        True,
+                        f"Fleet ecosystem limit ({self.ecosystem_max}/{self.ecosystem_window_seconds}s) exceeded",
+                        eco_count,
+                    )
+
+                self._ecosystem_window.append(now)
+
+        # ── Step 4: Both checks passed; commit agent window entry. ──
+        with agent_lock:
+            if agent_id not in self._agent_windows:
+                self._agent_windows[agent_id] = []
+            self._agent_windows[agent_id].append(now)
+            return (False, None, len(self._agent_windows[agent_id]))
     
     def reset(self, agent_id: str) -> None:
         """
@@ -224,6 +228,48 @@ class VelocityBreaker:
                 "limit": self.max_decisions,
                 "cooldown_remaining": cooldown_remaining,
                 "active": count > 0,
+            }
+    
+    def ecosystem_status(self) -> dict:
+        """
+        Get ecosystem-level velocity status (fleet-wide).
+        
+        Returns:
+            Dict with keys:
+            - mode: Literal "local" (for single-instance)
+            - agents_tracked: Number of unique agents with recent windows
+            - agents_in_cooldown: Number of agents currently in cooldown
+            - current_ecosystem_count: Current decisions in ecosystem window
+            - ecosystem_limit: Max ecosystem decisions
+            - global_circuit_open: Always False for local mode
+        """
+        now = time.time()
+        
+        with self._global_lock:
+            # Count active agents (with decisions in current window)
+            agents_tracked = 0
+            agents_in_cooldown = 0
+            
+            for agent_id, window in self._agent_windows.items():
+                cutoff = now - self.window_seconds
+                if any(t > cutoff for t in window):
+                    agents_tracked += 1
+                
+                cooldown_until = self._cooldown_until.get(agent_id, 0)
+                if now < cooldown_until:
+                    agents_in_cooldown += 1
+            
+            # Count decisions in current ecosystem window
+            cutoff_eco = now - self.ecosystem_window_seconds
+            ecosystem_count = len([t for t in self._ecosystem_window if t > cutoff_eco])
+            
+            return {
+                "mode": "local",
+                "agents_tracked": agents_tracked,
+                "agents_in_cooldown": agents_in_cooldown,
+                "current_ecosystem_count": ecosystem_count,
+                "ecosystem_limit": self.ecosystem_max or float('inf'),
+                "global_circuit_open": False,
             }
 
 

@@ -1,5 +1,5 @@
 """
-GlassBox Framework — Core Data Models  (v1.0.0)
+GlassBox Framework — Core Data Models  (v1.1.0)
 Zero external dependencies — Python stdlib only.
 
 Formal decision model:  D = (τ, P, C, L)
@@ -84,6 +84,8 @@ class RetryConfig:
     base_delay_s:         float = 0.5
     max_delay_s:          float = 10.0
     backoff_factor:       float = 2.0
+    # OSError covers network/socket failures (BrokenPipeError, ConnectionResetError,
+    # etc.) which are subtypes on all major platforms.
     retryable_exceptions: tuple = (ConnectionError, TimeoutError, OSError)
 
     def to_dict(self) -> Dict[str, Any]:

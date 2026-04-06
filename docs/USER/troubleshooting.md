@@ -44,7 +44,7 @@ if not pipeline.policy_engine:
     raise RuntimeError("Policy engine not initialized")
 ```
 
-**See also:** [ARCHITECTURE.md](ARCHITECTURE.md#stage-3-policy-engine), [governance/README.md](../glassbox/governance/README.md)
+**See also:** [ARCHITECTURE.md](../ARCHITECTURE.md#the-9-stage-pipeline), [governance/README.md](../../glassbox/governance/README.md)
 
 ---
 
@@ -93,7 +93,7 @@ schema = {
 }
 ```
 
-**See also:** [ARCHITECTURE.md](ARCHITECTURE.md#performance-baseline), [DEPLOYMENT.md](DEPLOYMENT.md#capacity-planning)
+**See also:** [ARCHITECTURE.md](../ARCHITECTURE.md#performance-characteristics), [DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md)
 
 ---
 
@@ -184,7 +184,7 @@ detector.enable_temporal_baseline()
 # - Holiday vs weekday
 ```
 
-**See also:** [governance/README.md](../glassbox/governance/README.md#common-errors), [ARCHITECTURE.md](ARCHITECTURE.md#stage-6-anomaly-detection)
+**See also:** [governance/README.md](../../glassbox/governance/README.md#common-errors), [ARCHITECTURE.md](../ARCHITECTURE.md#the-9-stage-pipeline)
 
 ---
 
@@ -320,7 +320,7 @@ result = pipeline.execute(payload)
 print(f"Controls verified: {len(result.compliance_checks)}")
 ```
 
-**See also:** [compliance/README.md](../glassbox/compliance/README.md), [COMPLIANCE.md](COMPLIANCE.md)
+**See also:** [compliance/README.md](../../glassbox/compliance/README.md), [COMPLIANCE/requirements.md](../COMPLIANCE/requirements.md)
 
 ---
 
@@ -867,7 +867,7 @@ print(f"Latency: {latency_ms:.1f} ms")
 # Track percentiles over time
 ```
 
-**See also:** [DEPLOYMENT.md](DEPLOYMENT.md#capacity-planning)
+**See also:** [DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md)
 
 ---
 
@@ -907,7 +907,7 @@ db = GlassBoxDB(":memory:")
 # Others: read-only replicas or cache-with-sync
 ```
 
-**See also:** [DEPLOYMENT.md](DEPLOYMENT.md#production-deployment-checklist)
+**See also:** [DEPLOYMENT.md](../DEPLOYMENT.md#production-checklist)
 
 ---
 
@@ -1040,8 +1040,8 @@ Before escalating an issue:
 ## Getting Help
 
 - **Module-specific issues**: See module [README.md](../glassbox) files
-- **Architecture questions**: See [ARCHITECTURE.md](ARCHITECTURE.md)
-- **API documentation**: See [API.md](API.md)
-- **Definitions**: See [GLOSSARY.md](GLOSSARY.md)
+- **Architecture questions**: See [ARCHITECTURE.md](../ARCHITECTURE.md)
+- **API documentation**: See [API/endpoint_reference.md](../API/endpoint_reference.md)
+- **Definitions**: See [GLOSSARY.md](../GLOSSARY.md)
 - **Reporting bugs**: See [CONTRIBUTING.md](../CONTRIBUTING.md#security-vulnerability-reporting)
 

@@ -80,176 +80,138 @@ class TestPerformanceBaseline(unittest.TestCase):
         self.baseline = PerformanceBaseline()
 
     def test_decision_latency_baseline(self):
-        """Measure baseline decision latency."""
-        with patch('glassbox.governance.pipeline.get_logger'):
-            pipeline = GovernancePipeline()
-            
-            request = DecisionRequest(
-                agent_id="perf-agent",
-                payload={"test": "data"},
-                context={},
-            )
-            
-            # Mock internal components to measure just orchestration
-            with patch.object(pipeline.schema_validator, 'validate'):
-                with patch.object(pipeline.policy_engine, 'evaluate', 
-                                return_value=PolicyEvaluation(
-                                    policy_id="p-1",
-                                    compliant=True,
-                                    reasoning="OK",
-                                )):
-                    with patch.object(pipeline, '_run_pipeline',
-                                    return_value=ExecutionResult(
-                                        response=DecisionResponse(
-                                            decision_id="d-1",
-                                            request_id=request.request_id,
-                                            disposition=Disposition.APPROVED,
-                                            reasoning="OK",
-                                            final_status=FinalStatus.EXECUTED,
-                                        ),
-                                        decision_time_ms=0.5,
-                                        trace=None,
-                                    )):
-                        latencies = self.baseline.measure_decision_latency(
-                            pipeline, request, iterations=100
-                        )
-                        
-                        stats = self.baseline.compute_statistics(latencies)
-                        
-                        print("\n=== Decision Latency Baseline ===")
-                        print(f"  Min:     {stats['min']:.2f} ms")
-                        print(f"  P50:     {stats['p50']:.2f} ms")
-                        print(f"  P99:     {stats['p99']:.2f} ms")
-                        print(f"  Max:     {stats['max']:.2f} ms")
-                        print(f"  Mean:    {stats['mean']:.2f} ms")
-                        print(f"  StDev:   {stats['stdev']:.2f} ms")
-                        
-                        # P50 should be fast (baseline expectation: <5ms)
-                        self.assertLess(stats['p50'], 50)  # Generous baseline
+        """Measure baseline decision latency with real pipeline execution."""
+        pipeline = GovernancePipeline()
+        
+        request = DecisionRequest(
+            agent_id="perf-agent",
+            decision_type="PROCUREMENT",
+            payload={"amount": 50000, "supplier_id": "SUP-001", "category": "hardware"},
+        )
+        
+        # Measure real pipeline latency (no mocks)
+        latencies = self.baseline.measure_decision_latency(
+            pipeline, request, iterations=50
+        )
+        
+        stats = self.baseline.compute_statistics(latencies)
+        
+        print("\n=== Decision Latency Baseline (Real Pipeline) ===")
+        print(f"  Min:     {stats['min']:.2f} ms")
+        print(f"  P50:     {stats['p50']:.2f} ms")
+        print(f"  P99:     {stats['p99']:.2f} ms")
+        print(f"  Max:     {stats['max']:.2f} ms")
+        print(f"  Mean:    {stats['mean']:.2f} ms")
+        print(f"  StDev:   {stats['stdev']:.2f} ms")
+        
+        # Real pipeline should complete within reasonable time
+        self.assertLess(stats['p50'], 100)  # P50 latency < 100ms
 
     def test_throughput_single_thread(self):
-        """Measure single-threaded throughput."""
-        with patch('glassbox.governance.pipeline.get_logger'):
-            pipeline = GovernancePipeline()
-            
-            request = DecisionRequest(
-                agent_id="throughput-test",
-                payload={"test": "data"},
-                context={},
-            )
-            
-            with patch.object(pipeline, '_run_pipeline',
-                            return_value=ExecutionResult(
-                                response=DecisionResponse(
-                                    decision_id="d-1",
-                                    request_id=request.request_id,
-                                    disposition=Disposition.APPROVED,
-                                    reasoning="OK",
-                                    final_status=FinalStatus.EXECUTED,
-                                ),
-                                decision_time_ms=0.1,
-                                trace=None,
-                            )):
-                
-                start = time.perf_counter()
-                count = 0
-                duration = 1.0  # 1 second
-                
-                while time.perf_counter() - start < duration:
-                    try:
-                        pipeline.process(request)
-                        count += 1
-                    except Exception:
-                        pass
-                
-                throughput = count / (time.perf_counter() - start)
-                
-                print(f"\n=== Single Thread Throughput ===")
-                print(f"  Decisions/sec: {throughput:.0f}")
-                
-                # Baseline expectation: >100 decisions/sec
-                self.assertGreater(throughput, 10)
+        """Measure single-threaded throughput with real pipeline."""
+        pipeline = GovernancePipeline(echo=False)
+        
+        request = DecisionRequest(
+            agent_id="throughput-test",
+            decision_type="PROCUREMENT",
+            payload={"amount": 25000, "supplier_id": "SUP-002", "category": "office"},
+        )
+        
+        # Measure real throughput
+        start = time.perf_counter()
+        count = 0
+        duration = 2.0  # 2 second test
+        
+        while time.perf_counter() - start < duration:
+            try:
+                pipeline.process(request)
+                count += 1
+            except Exception:
+                pass
+        
+        elapsed = time.perf_counter() - start
+        throughput = count / elapsed
+        
+        print(f"\n=== Single Thread Throughput (Real Pipeline) ===")
+        print(f"  Test duration: {elapsed:.2f}s")
+        print(f"  Decisions processed: {count}")
+        print(f"  Throughput: {throughput:.0f} decisions/sec")
+        
+        # Baseline expectation: realistic throughput on real pipeline
+        self.assertGreater(throughput, 1)  # At least 1 decision/sec
 
     def test_throughput_multi_thread(self):
-        """Measure multi-threaded throughput."""
-        with patch('glassbox.governance.pipeline.get_logger'):
-            pipeline = GovernancePipeline()
+        """Measure multi-threaded throughput with real pipeline."""
+        pipeline = GovernancePipeline(echo=False)
+        
+        results = {'count': 0, 'lock': threading.Lock()}
+        
+        def worker(thread_id):
+            request = DecisionRequest(
+                agent_id=f"worker-{thread_id}",
+                decision_type="PROCUREMENT",
+                payload={"amount": 15000, "supplier_id": f"SUP-{thread_id}", "category": "supplies"},
+            )
             
-            results = {'count': 0, 'lock': threading.Lock()}
-            
-            def worker():
-                request = DecisionRequest(
-                    agent_id=f"worker-{threading.current_thread().ident}",
-                    payload={"test": "data"},
-                    context={},
-                )
-                
-                with patch.object(pipeline, '_run_pipeline',
-                                return_value=ExecutionResult(
-                                    response=DecisionResponse(
-                                        decision_id="d-1",
-                                        request_id=request.request_id,
-                                        disposition=Disposition.APPROVED,
-                                        reasoning="OK",
-                                        final_status=FinalStatus.EXECUTED,
-                                    ),
-                                    decision_time_ms=0.1,
-                                    trace=None,
-                                )):
-                    start = time.perf_counter()
-                    while time.perf_counter() - start < 1.0:
-                        try:
-                            pipeline.process(request)
-                            with results['lock']:
-                                results['count'] += 1
-                        except Exception:
-                            pass
-            
-            threads = []
-            for _ in range(5):
-                t = threading.Thread(target=worker)
-                threads.append(t)
-                t.start()
-            
-            for t in threads:
-                t.join()
-            
-            throughput = results['count'] / 5
-            
-            print(f"\n=== Multi-Thread Throughput (5 threads) ===")
-            print(f"  Total decisions: {results['count']}")
-            print(f"  Avg per thread:  {throughput:.0f} decisions/sec")
-            
-            # Baseline: >50 decisions/sec per thread
-            self.assertGreater(throughput, 10)
+            # Real pipeline execution (no mocks)
+            start = time.perf_counter()
+            while time.perf_counter() - start < 2.0:
+                try:
+                    pipeline.process(request)
+                    with results['lock']:
+                        results['count'] += 1
+                except Exception:
+                    pass
+        
+        threads = []
+        for i in range(5):
+            t = threading.Thread(target=worker, args=(i,))
+            threads.append(t)
+            t.start()
+        
+        for t in threads:
+            t.join()
+        
+        throughput = results['count'] / 10  # 2 sec per thread * 5 threads
+        
+        print(f"\n=== Multi-Thread Throughput (5 threads, real pipeline) ===")
+        print(f"  Total decisions: {results['count']}")
+        print(f"  Throughput: {throughput:.0f} decisions/sec (aggregate)")
+        
+        # Baseline: realistic throughput
+        self.assertGreater(throughput, 0.5)
 
     def test_memory_baseline(self):
         """Measure memory usage baseline."""
         tracemalloc.start()
         gc.collect()
         
-        with patch('glassbox.governance.pipeline.get_logger'):
-            pipeline = GovernancePipeline()
-            
-            snapshot1 = tracemalloc.take_snapshot()
-            
-            # Create many requests
-            for _ in range(1000):
-                request = DecisionRequest(
-                    agent_id="mem-test",
-                    payload={"test": "data"},
-                    context={},
-                )
-            
-            snapshot2 = tracemalloc.take_snapshot()
-            stats = snapshot2.compare_to(snapshot1, 'lineno')
-            
-            total_diff = sum(stat.size_diff for stat in stats)
-            
-            print(f"\n=== Memory Usage ===")
-            print(f"  Delta: {total_diff / 1024:.2f} KB")
-            
-            tracemalloc.stop()
+        pipeline = GovernancePipeline(echo=False)
+        
+        snapshot1 = tracemalloc.take_snapshot()
+        
+        # Create and process requests for memory measurement
+        for i in range(100):
+            request = DecisionRequest(
+                agent_id="mem-test",
+                decision_type="PROCUREMENT",
+                payload={"amount": 10000, "supplier_id": f"SUP-{i}", "category": "hardware"},
+            )
+            try:
+                pipeline.process(request)
+            except Exception:
+                pass
+        
+        snapshot2 = tracemalloc.take_snapshot()
+        stats = snapshot2.compare_to(snapshot1, 'lineno')
+        
+        total_diff = sum(stat.size_diff for stat in stats)
+        
+        print(f"\n=== Memory Usage (Real Pipeline) ===")
+        print(f"  Delta: {total_diff / 1024:.2f} KB")
+        print(f"  Audit records: {len(pipeline.audit_logger.get_all())}")
+        
+        tracemalloc.stop()
 
     def test_event_dispatcher_overhead(self):
         """Measure event dispatcher overhead."""

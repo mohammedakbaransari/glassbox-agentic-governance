@@ -36,7 +36,7 @@ Failsafe mechanism that trips when thresholds exceeded (e.g., > 1000 decisions/s
 
 **Compliance Catalogue**
 Registry of governance controls (e.g., "SOC2-C1.2 Access Control", "HIPAA-164.308") mapped to required checks. GlassBox validates each decision against active controls.
-- See: [compliance/catalogue.py](../glassbox/compliance/catalogue.py), [COMPLIANCE.md](COMPLIANCE.md)
+- See: [compliance/catalogue.py](../glassbox/compliance/catalogue.py), [COMPLIANCE/requirements.md](COMPLIANCE/requirements.md)
 
 **Context Capture**
 Process of automatically recording decision context (payload, agent metadata, environment) for audit and analysis. Includes payload sanitization, agent validation, and timestamp recording.
@@ -104,7 +104,7 @@ Stage 4 disposition where a decision is routed to a manual approval queue (workf
 
 **Idempotency**
 Property where repeating the same decision with identical inputs always produces identical outputs. GlassBox uses idempotency keys for safe retries.
-- See: [docs/API.md](API.md#idempotency-key)
+- See: [API/endpoint_reference.md](API/endpoint_reference.md#idempotency--retry-strategy)
 
 **Injection Attack**
 Malicious payload containing SQL/command/template code intended to execute unintended actions. GlassBox sanitizer detects and blocks before Stage 0. Examples: SQL injection, SSTI, XSS.
@@ -132,7 +132,7 @@ Architecture where single GlassBox instance serves multiple organizations, each 
 
 **Policy**
 Declarative rule defining governance constraints. Examples: "Procurement > $100K requires approval", "US-only vendor access". Policies evaluated in Stage 3.
-- See: [rules/README.md](../glassbox/rules/README.md), [USECASES.md](USECASES.md)
+- See: [rules/README.md](../glassbox/rules/README.md), [USER/use_cases.md](USER/use_cases.md)
 
 **Policy Violation**
 Outcome when decision payload fails policy evaluation. Recorded in audit trail; may trigger fail-fast block or advisory review depending on configuration.
@@ -204,7 +204,7 @@ System managing multi-stage approval processes. Maintains state (pending → in_
 
 **Zero Mandatory Dependencies**
 Core GlassBox (glassbox/governance, glassbox/compliance, glassbox/rules) uses only Python standard library; no external package requirements. Optional dependencies available for integrations (Flask, prometheus_client, etc.).
-- See: [README.md](../README.md), [requirements.txt](../requirements.txt)
+- See: [README.md](../README.md), [pyproject.toml](../pyproject.toml)
 
 ---
 
@@ -240,4 +240,4 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#9-stage-pipeline) for full pipeline refere
 - Multitenancy, Hot Reload
 - Idempotency, Retry Policy
 
-See also: [API.md](API.md), [ARCHITECTURE.md](ARCHITECTURE.md), [USECASES.md](USECASES.md)
+See also: [API/endpoint_reference.md](API/endpoint_reference.md), [ARCHITECTURE.md](ARCHITECTURE.md), [USER/use_cases.md](USER/use_cases.md)

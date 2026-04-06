@@ -21,8 +21,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install optional dependencies
-        run: pip install pytest flask>=3.0.0 pyyaml>=6.0
+      - name: Install dependencies
+        run: pip install pytest flask>=3.0.0 pyyaml>=6.0 cryptography>=42.0.0
 
       - name: Run all tests (550+ total)
         env:

@@ -30,6 +30,7 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 
 from __future__ import annotations
 
+import copy
 import re
 import threading
 import time
@@ -175,15 +176,9 @@ class TenantRegistry:
         # Validate tenant_id
         self._validate_tenant_id(tenant_id)
 
-        # Fast path: already exists
-        if tenant_id in self._tenants:
-            with self._lock:
-                self._tenant_last_access[tenant_id] = time.time()
-            return self._tenants[tenant_id]
-
-        # Slow path: create under lock
+        # All access (read and write) happens inside the lock to prevent
+        # a TOCTOU race between the fast-path check and evict_inactive().
         with self._lock:
-            # Double-check in case another thread created it
             if tenant_id in self._tenants:
                 self._tenant_last_access[tenant_id] = time.time()
                 return self._tenants[tenant_id]
@@ -318,8 +313,8 @@ class MultiTenantPipeline:
         self._lock = threading.RLock()
 
     def _get_pipeline(self, tenant_id: str) -> "GovernancePipeline":
-        if tenant_id in self._pipelines:
-            return self._pipelines[tenant_id]
+        # All access inside the lock to prevent TOCTOU between fast-path
+        # check and concurrent registration/removal of pipelines.
         with self._lock:
             if tenant_id not in self._pipelines:
                 comps = self.registry.get(tenant_id)
@@ -336,8 +331,12 @@ class MultiTenantPipeline:
         The tenant's policy engine, velocity breaker, and anomaly detector
         are used — completely isolated from other tenants.
         """
-        # Stamp tenant_id into context metadata
+        # Shallow-copy the request and its context so that stamping tenant_id
+        # into context.metadata does NOT mutate the caller's original object.
+        request = copy.copy(request)
         if request.context:
+            request.context = copy.copy(request.context)
+            request.context.metadata = dict(request.context.metadata)
             request.context.metadata["tenant_id"] = tenant_id
         else:
             request.context = DecisionContext(
@@ -351,8 +350,14 @@ class MultiTenantPipeline:
         request:   DecisionRequest,
         tenant_id: str,
     ) -> DecisionResponse:
+        # Copy request to avoid mutating caller's object (same safety as process()).
+        request = copy.copy(request)
         if request.context:
+            request.context = copy.copy(request.context)
+            request.context.metadata = dict(request.context.metadata)
             request.context.metadata["tenant_id"] = tenant_id
+        else:
+            request.context = DecisionContext(metadata={"tenant_id": tenant_id})
         pipeline = self._get_pipeline(tenant_id)
         return await pipeline.process_async(request)
 

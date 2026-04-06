@@ -13,12 +13,13 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 
 from __future__ import annotations
 
-import logging
 import threading
 import time
 from typing import Any, Callable, Optional
 
-log = logging.getLogger("glassbox.event_dispatcher")
+from glassbox.governance.logging_manager import get_logger
+
+log = get_logger("event_dispatcher")
 
 
 class CircuitBreakerState:
@@ -120,16 +121,18 @@ class ResilientEventDispatcher:
         try:
             self.event_bus.publish(event)
 
-            # Success: decay failure count
+            # Success: reset or decay failure count.
             with self._lock:
-                self._failure_count = max(0, self._failure_count - 1)
-
                 if self._state == CircuitBreakerState.HALF_OPEN:
+                    # Full reset on successful recovery transition.
+                    self._failure_count = 0
                     self._state = CircuitBreakerState.CLOSED
                     log.info(
                         "EventBus circuit breaker: CLOSED (recovered)",
                         extra={"component": "event_dispatcher"},
                     )
+                else:
+                    self._failure_count = max(0, self._failure_count - 1)
 
             return True
 

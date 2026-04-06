@@ -46,11 +46,12 @@ from __future__ import annotations
 import os
 import threading
 import time
-import logging
 from pathlib import Path
 from typing import Callable, Dict, Optional, Set
 
-log = logging.getLogger("glassbox.hot_reload")
+from glassbox.governance.logging_manager import get_logger
+
+log = get_logger("hot_reload")
 
 
 class PolicyHotReloader:

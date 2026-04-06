@@ -114,6 +114,38 @@ class RequestContext:
             "metadata": self.metadata,
         }
 
+    def to_decision_context(self):
+        """Convert HTTP request context to a governance DecisionContext.
+
+        Propagates tenant_id, user_id, and correlation_id into the
+        DecisionContext so that policy evaluation can access them.
+        """
+        from glassbox.governance.models import DecisionContext
+        return DecisionContext(
+            session_id=self.request_id,
+            environment=self.metadata.get("environment", "production"),
+            source_system=self.metadata.get("source_system", "api"),
+            metadata={
+                "tenant_id": self.tenant_id,
+                "user_id": self.user_id,
+                "correlation_id": self.correlation_id,
+                **self.metadata,
+            },
+        )
+
+    @classmethod
+    def from_decision_context(cls, ctx) -> "RequestContext":
+        """Reconstruct an HTTP RequestContext from a governance DecisionContext."""
+        meta = ctx.metadata or {}
+        return cls(
+            request_id=ctx.session_id or str(__import__("uuid").uuid4()),
+            user_id=meta.get("user_id"),
+            tenant_id=meta.get("tenant_id"),
+            correlation_id=meta.get("correlation_id") or ctx.session_id,
+            metadata={k: v for k, v in meta.items()
+                      if k not in ("user_id", "tenant_id", "correlation_id")},
+        )
+
     def __repr__(self) -> str:
         return (
             f"RequestContext(request_id={self.request_id}, "

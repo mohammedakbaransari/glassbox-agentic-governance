@@ -159,7 +159,7 @@ GET  /policies               List registered policies
 GET  /health                 K8s-compatible health check
 ```
 
-See [docs/API.md](API.md) for full reference.
+See [API/endpoint_reference.md](../API/endpoint_reference.md) for full reference.
 
 ---
 
@@ -776,10 +776,10 @@ sudo mount /dev/mapper/glassbox_encrypted /var/log/glassbox
 
 ## See Also
 
-- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md#deployment)** — Common deployment issues and solutions
-- **[GLOSSARY.md](GLOSSARY.md)** — Definitions of deployment and infrastructure terms
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Technical architecture for deployment decisions
-- **[COMPLIANCE.md](COMPLIANCE.md)** — Compliance requirements for production
+- **[TROUBLESHOOTING.md](../USER/troubleshooting.md#deployment)** — Common deployment issues and solutions
+- **[GLOSSARY.md](../GLOSSARY.md)** — Definitions of deployment and infrastructure terms
+- **[ARCHITECTURE.md](../ARCHITECTURE.md)** — Technical architecture for deployment decisions
+- **[COMPLIANCE/requirements.md](../COMPLIANCE/requirements.md)** — Compliance requirements for production
 - **[adapters/README.md](../glassbox/adapters/README.md)** — Platform-specific adapter documentation
 
 ---
