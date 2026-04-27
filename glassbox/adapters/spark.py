@@ -41,6 +41,11 @@ import json
 import os
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
+try:
+    import pyspark as _pyspark  # noqa: F401
+except ImportError:
+    _pyspark = None
+
 
 # ── Lazy PySpark imports (only required at runtime, not import time) ─────────
 
@@ -111,7 +116,7 @@ def _row_to_response(row_dict: Dict[str, Any]) -> Dict[str, Any]:
     agent_id      = str(row_dict.get("agent_id", "unknown"))
     dtype_raw     = str(row_dict.get("decision_type", "custom")).lower()
     payload_json  = row_dict.get("payload_json", "{}")
-    confidence    = float(row_dict.get("confidence", 1.0))
+    confidence    = row_dict.get("confidence", 1.0)
     environment   = str(row_dict.get("environment", "production"))
     chain_json    = row_dict.get("agent_chain_json", "[]")
 
@@ -119,11 +124,20 @@ def _row_to_response(row_dict: Dict[str, Any]) -> Dict[str, Any]:
         payload = json.loads(payload_json) if isinstance(payload_json, str) else payload_json
     except (json.JSONDecodeError, TypeError):
         payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
 
     try:
         agent_chain = json.loads(chain_json) if isinstance(chain_json, str) else []
     except (json.JSONDecodeError, TypeError):
         agent_chain = []
+    if not isinstance(agent_chain, list):
+        agent_chain = []
+
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError):
+        confidence = 1.0
 
     try:
         dtype = DecisionType(dtype_raw)
@@ -144,6 +158,78 @@ def _row_to_response(row_dict: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     return request
+
+
+def _spark_row_factory(**kwargs):
+    from pyspark.sql.types import Row
+    return Row(**kwargs)
+
+
+def _process_partition_rows(
+    rows: Iterator,
+    *,
+    log_dir: Optional[str],
+    policies: List,
+    build_pipeline: Callable = _build_pipeline,
+    row_factory: Optional[Callable[..., Any]] = None,
+) -> Iterator[Any]:
+    """Govern a partition and always release its local pipeline."""
+    pipeline = build_pipeline(log_dir=log_dir, echo=False)
+    row_factory = row_factory or _spark_row_factory
+    try:
+        for policy in policies:
+            pipeline.policy_engine.register(policy)
+
+        for row in rows:
+            row_dict = row.asDict()
+            try:
+                request = _row_to_response(row_dict)
+                resp = pipeline.process(request)
+                yield row_factory(**{
+                    **row_dict,
+                    "decision_id": resp.decision_id,
+                    "final_status": resp.final_status.value,
+                    "risk_score": resp.risk_score,
+                    "risk_level": resp.risk_level.value if resp.risk_level else None,
+                    "policy_violations": resp.policy_violations,
+                    "blocked": resp.final_status.value == "blocked",
+                    "latency_ms": resp.pipeline_latency_ms,
+                })
+            except Exception as exc:
+                yield row_factory(**{
+                    **row_dict,
+                    "decision_id": None,
+                    "final_status": "error",
+                    "risk_score": None,
+                    "risk_level": None,
+                    "policy_violations": [str(exc)],
+                    "blocked": True,
+                    "latency_ms": None,
+                })
+    finally:
+        pipeline.shutdown()
+
+
+def _batch_is_empty(batch_df) -> bool:
+    """Check emptiness without forcing a full count when Spark exposes better options."""
+    is_empty = getattr(batch_df, "isEmpty", None)
+    if callable(is_empty):
+        return bool(is_empty())
+    return batch_df.limit(1).count() == 0
+
+
+def _write_governed_stream_batch(adapter, batch_df, output_path: str, output_format: str) -> bool:
+    """Govern and write one micro-batch, skipping empty batches."""
+    if _batch_is_empty(batch_df):
+        return False
+
+    governed = adapter.govern_dataframe(batch_df, partition_mode=True)
+    (governed.write
+        .format(output_format)
+        .mode("append")
+        .option("mergeSchema", "true")
+        .save(output_path))
+    return True
 
 
 class GlassBoxSparkAdapter:
@@ -294,10 +380,7 @@ class GlassBoxSparkAdapter:
         Parallel governance via mapPartitions.
         Each executor partition creates its own GovernancePipeline instance.
         """
-        from pyspark.sql.types import (
-            ArrayType, BooleanType, DoubleType, Row,
-            StringType, StructField, StructType
-        )
+        from pyspark.sql.types import ArrayType, BooleanType, DoubleType, StringType, StructField, StructType
 
         out_schema = StructType(
             df.schema.fields + [
@@ -314,35 +397,8 @@ class GlassBoxSparkAdapter:
         log_dir  = self.log_dir
         policies = self.policies
 
-        def process_partition(rows: Iterator) -> Iterator[Row]:
-            # Each executor creates its own pipeline — no shared state
-            pipeline = _build_pipeline(log_dir=log_dir, echo=False)
-            for p in policies:
-                pipeline.policy_engine.register(p)
-
-            for row in rows:
-                row_dict = row.asDict()
-                try:
-                    request = _row_to_response(row_dict)
-                    resp    = pipeline.process(request)
-                    yield Row(**{
-                        **row_dict,
-                        "decision_id":      resp.decision_id,
-                        "final_status":     resp.final_status.value,
-                        "risk_score":       resp.risk_score,
-                        "risk_level":       resp.risk_level.value if resp.risk_level else None,
-                        "policy_violations": resp.policy_violations,
-                        "blocked":          resp.final_status.value == "blocked",
-                        "latency_ms":       resp.pipeline_latency_ms,
-                    })
-                except Exception as exc:
-                    yield Row(**{
-                        **row_dict,
-                        "decision_id": None, "final_status": "error",
-                        "risk_score": None, "risk_level": None,
-                        "policy_violations": [str(exc)], "blocked": True,
-                        "latency_ms": None,
-                    })
+        def process_partition(rows: Iterator):
+            return _process_partition_rows(rows, log_dir=log_dir, policies=policies)
 
         return df.rdd.mapPartitions(process_partition).toDF(out_schema)
 
@@ -375,14 +431,7 @@ class GlassBoxSparkAdapter:
         adapter_ref = self
 
         def process_batch(batch_df, batch_id: int):
-            if batch_df.count() == 0:
-                return
-            governed = adapter_ref.govern_dataframe(batch_df, partition_mode=True)
-            (governed.write
-                .format(output_format)
-                .mode("append")
-                .option("mergeSchema", "true")
-                .save(output_path))
+            _write_governed_stream_batch(adapter_ref, batch_df, output_path, output_format)
 
         return (
             stream_df.writeStream
@@ -443,3 +492,7 @@ class GlassBoxSparkAdapter:
         """Return driver-side audit stats as a single-row Spark DataFrame."""
         stats = self._driver_pipeline.stats
         return self.spark.createDataFrame([stats])
+
+    def shutdown(self) -> None:
+        """Release driver-side governance resources held by the adapter."""
+        self._driver_pipeline.shutdown()

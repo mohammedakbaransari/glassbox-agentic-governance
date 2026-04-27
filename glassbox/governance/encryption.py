@@ -57,6 +57,11 @@ try:
 except ImportError:
     HAS_CRYPTO = False
 
+_INSTALL_HINT = (
+    "Field-level encryption requires the 'cryptography' package. "
+    "Install with: pip install 'glassbox-governance[crypto]' or pip install cryptography>=38.0.0"
+)
+
 from glassbox.governance.logging_manager import get_logger
 
 log = get_logger("encryption")
@@ -87,22 +92,27 @@ class CryptoManager:
 
     def __init__(self, key: Optional[bytes] = None):
         if not HAS_CRYPTO:
-            raise RuntimeError(
-                "Encryption requires: pip install cryptography"
-            )
+            raise ImportError(_INSTALL_HINT)
 
         # Use provided key or generate random 256-bit key
         if key:
             if len(key) != 32:
                 raise ValueError("Key must be exactly 32 bytes (256 bits)")
-            self.key = key
+            self._key = key
         else:
-            self.key = os.urandom(32)
+            self._key = os.urandom(32)
 
-        self._lock = threading.Lock()
+        # Re-entrant lock avoids deadlocks in encrypt_field/decrypt_field,
+        # which call encrypt/decrypt internally.
+        self._lock = threading.RLock()
         self._stats = {"encryptions": 0, "decryptions": 0, "errors": 0}
 
         log.info("CryptoManager initialized with 256-bit key")
+
+    @property
+    def key(self) -> bytes:
+        """Backward-compatible read-only key accessor."""
+        return self._key
 
     @staticmethod
     def from_passphrase(
@@ -153,7 +163,7 @@ class CryptoManager:
         try:
             nonce = os.urandom(12)  # 96-bit nonce for GCM
             cipher = Cipher(
-                algorithms.AES(self.key),
+                algorithms.AES(self._key),
                 modes.GCM(nonce),
                 backend=default_backend(),
             )
@@ -194,7 +204,7 @@ class CryptoManager:
             tag = encrypted[-16:]
 
             cipher = Cipher(
-                algorithms.AES(self.key),
+                algorithms.AES(self._key),
                 modes.GCM(nonce, tag),
                 backend=default_backend(),
             )
@@ -347,7 +357,7 @@ class CryptoManager:
             "encryptions": self._stats["encryptions"],
             "decryptions": self._stats["decryptions"],
             "errors": self._stats["errors"],
-            "key_size_bits": len(self.key) * 8,
+            "key_size_bits": len(self._key) * 8,
         }
 
 

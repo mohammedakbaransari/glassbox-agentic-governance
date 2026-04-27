@@ -57,7 +57,8 @@ class ContextCapture:
         Produce an enriched DecisionContext from the incoming request.
         Merges any existing context on the request with runtime metadata.
         """
-        base = request.context or DecisionContext()
+        request_context = request.context
+        base = request_context or DecisionContext()
 
         enriched_metadata = {
             "governance_entry_utc": datetime.now(timezone.utc).isoformat(),
@@ -73,8 +74,8 @@ class ContextCapture:
         # Caller-supplied metadata takes precedence
         merged = {**enriched_metadata, **(base.metadata or {})}
 
-        # Environment resolution: caller-supplied context wins; fall back to pipeline default
-        env = base.environment if base.environment not in ("production", "") else self.environment
+        # Only an explicit request context may override the pipeline environment.
+        env = request_context.environment if request_context and request_context.environment else self.environment
         source = base.source_system if base.source_system not in ("unknown", "") else "api"
 
         return DecisionContext(

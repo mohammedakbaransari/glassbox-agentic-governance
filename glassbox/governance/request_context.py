@@ -43,6 +43,7 @@ Author: Mohammed Akbar Ansari
 
 import os
 import json
+import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -156,6 +157,8 @@ class RequestContext:
 class Config:
     """Enterprise configuration management."""
 
+    _SENSITIVE_TOKEN_RE = ("secret", "token", "password", "credential", "api_key", "private_key")
+
     def __init__(self):
         self.data: Dict[str, Any] = {}
         self._lock = threading.RLock()
@@ -180,6 +183,7 @@ class Config:
             or config_path
             or "/etc/glassbox/config.yaml"
         )
+        path = Config._validate_config_path(path)
 
         # Try to load
         if os.path.exists(path):
@@ -210,6 +214,31 @@ class Config:
             log.warning("Config file not found: %s", path)
 
         return config
+
+    @staticmethod
+    def _validate_config_path(path: str) -> str:
+        normalized = os.path.realpath(os.path.abspath(path))
+        allowed_roots = {
+            os.path.realpath(os.path.abspath(os.getcwd())),
+            os.path.realpath(os.path.expanduser("~")),
+            os.path.realpath(tempfile.gettempdir()),
+            os.path.realpath(os.path.join(os.sep, "etc", "glassbox")),
+        }
+        if not any(
+            normalized == root or normalized.startswith(root + os.sep)
+            for root in allowed_roots
+        ):
+            raise ValueError(
+                f"Config path is outside approved roots: {normalized}"
+            )
+        return normalized
+
+    @classmethod
+    def _redact_value(cls, key: str, value: Any) -> Any:
+        lowered = key.lower()
+        if any(token in lowered for token in cls._SENSITIVE_TOKEN_RE):
+            return "<redacted>"
+        return value
 
     def get(
         self,
@@ -284,7 +313,7 @@ class Config:
                 current = current[k]
 
             current[keys[-1]] = value
-            log.debug("Config set: %s = %s", key, value)
+            log.debug("Config set: %s = %s", key, self._redact_value(key, value))
 
     def get_section(self, section: str) -> Dict[str, Any]:
         """Get entire config section."""

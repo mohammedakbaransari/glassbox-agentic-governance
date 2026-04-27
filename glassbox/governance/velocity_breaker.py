@@ -33,6 +33,7 @@ Author: Mohammed Akbar Ansari
 import logging
 import threading
 import time
+from collections import deque
 from typing import Dict, Optional, Tuple
 
 from glassbox.governance.logging_manager import get_logger
@@ -83,16 +84,29 @@ class VelocityBreaker:
         self.ecosystem_window_seconds = ecosystem_window_seconds
         self.ecosystem_cooldown_seconds = ecosystem_cooldown_seconds
         
-        # Per-agent time windows: agent_id -> [timestamps, ...]
-        self._agent_windows: Dict[str, list] = {}
+        # Per-agent time windows: agent_id -> deque of monotonic timestamps (sorted ascending).
+        # Using deque + popleft() gives O(k) amortised eviction where k = expired entries,
+        # vs. O(n) list-comprehension filter on every check call.
+        self._agent_windows: Dict[str, deque] = {}
         self._agent_locks: Dict[str, threading.RLock] = {}
         self._global_lock = threading.RLock()
-        
+
         # Per-agent cooldown tracking
         self._cooldown_until: Dict[str, float] = {}
-        
-        # Ecosystem window
-        self._ecosystem_window: list = []
+
+        # Ecosystem window (deque for same O(k) amortised eviction)
+        self._ecosystem_window: deque = deque()
+
+    @staticmethod
+    def _now() -> float:
+        """Use a monotonic clock for breaker windows and cooldowns."""
+        return time.monotonic()
+
+    def _get_agent_lock(self, agent_id: str) -> threading.RLock:
+        with self._global_lock:
+            if agent_id not in self._agent_locks:
+                self._agent_locks[agent_id] = threading.RLock()
+            return self._agent_locks[agent_id]
     
     def check(self, agent_id: str) -> Tuple[bool, Optional[str], int]:
         """
@@ -107,14 +121,11 @@ class VelocityBreaker:
             - reason: Human-readable explanation (if triggered)
             - window_count: Number of decisions in current window
         """
-        now = time.time()
+        now = self._now()
 
         # ── Canonical lock order: always acquire _global_lock before agent_lock.
         # Step 1: Get or create agent lock (under global lock).
-        with self._global_lock:
-            if agent_id not in self._agent_locks:
-                self._agent_locks[agent_id] = threading.RLock()
-            agent_lock = self._agent_locks[agent_id]
+        agent_lock = self._get_agent_lock(agent_id)
 
         # ── Step 2: Agent-level check (under agent_lock only, no nesting). ──
         with agent_lock:
@@ -124,12 +135,15 @@ class VelocityBreaker:
                 return (True, f"Cooldown for {remaining}s", 0)
 
             if agent_id not in self._agent_windows:
-                self._agent_windows[agent_id] = []
+                self._agent_windows[agent_id] = deque()
 
             window = self._agent_windows[agent_id]
             cutoff = now - self.window_seconds
-            window = [t for t in window if t > cutoff]
-            self._agent_windows[agent_id] = window
+            # O(k) amortised: only pop entries that have expired from the left.
+            # Because timestamps are appended in monotonically increasing order,
+            # the deque is always sorted — popleft() is safe.
+            while window and window[0] <= cutoff:
+                window.popleft()
             count = len(window)
 
             if count >= self.max_decisions:
@@ -146,7 +160,8 @@ class VelocityBreaker:
         if self.ecosystem_max is not None:
             with self._global_lock:
                 cutoff_eco = now - self.ecosystem_window_seconds
-                self._ecosystem_window = [t for t in self._ecosystem_window if t > cutoff_eco]
+                while self._ecosystem_window and self._ecosystem_window[0] <= cutoff_eco:
+                    self._ecosystem_window.popleft()
                 eco_count = len(self._ecosystem_window)
 
                 if eco_count >= self.ecosystem_max:
@@ -164,7 +179,7 @@ class VelocityBreaker:
         # ── Step 4: Both checks passed; commit agent window entry. ──
         with agent_lock:
             if agent_id not in self._agent_windows:
-                self._agent_windows[agent_id] = []
+                self._agent_windows[agent_id] = deque()
             self._agent_windows[agent_id].append(now)
             return (False, None, len(self._agent_windows[agent_id]))
     
@@ -175,9 +190,11 @@ class VelocityBreaker:
         Args:
             agent_id: Agent to reset
         """
+        agent_lock = self._get_agent_lock(agent_id)
         with self._global_lock:
-            self._agent_windows.pop(agent_id, None)
-            self._cooldown_until.pop(agent_id, None)
+            with agent_lock:
+                self._agent_windows.pop(agent_id, None)
+                self._cooldown_until.pop(agent_id, None)
     
     def reset_ecosystem(self) -> None:
         """Reset ecosystem-level velocity window."""
@@ -187,9 +204,16 @@ class VelocityBreaker:
     def reset_all(self) -> None:
         """Reset all agents and ecosystem state."""
         with self._global_lock:
-            self._agent_windows.clear()
-            self._cooldown_until.clear()
-            self._ecosystem_window.clear()
+            agent_locks = list(self._agent_locks.values())
+            for agent_lock in agent_locks:
+                agent_lock.acquire()
+            try:
+                self._agent_windows.clear()
+                self._cooldown_until.clear()
+                self._ecosystem_window.clear()
+            finally:
+                for agent_lock in reversed(agent_locks):
+                    agent_lock.release()
     
     def status(self, agent_id: str) -> dict:
         """
@@ -202,7 +226,7 @@ class VelocityBreaker:
             - cooldown_remaining: Seconds left in cooldown (0 if none)
             - active: True if agent has recent decisions
         """
-        now = time.time()
+        now = self._now()
         
         with self._global_lock:
             agent_lock = self._agent_locks.get(agent_id)
@@ -216,9 +240,9 @@ class VelocityBreaker:
             }
         
         with agent_lock:
-            window = self._agent_windows.get(agent_id, [])
+            window = self._agent_windows.get(agent_id, deque())
             cutoff = now - self.window_seconds
-            count = len([t for t in window if t > cutoff])
+            count = sum(1 for t in window if t > cutoff)
             
             cooldown_until = self._cooldown_until.get(agent_id, 0)
             cooldown_remaining = max(0, int(cooldown_until - now))
@@ -243,7 +267,7 @@ class VelocityBreaker:
             - ecosystem_limit: Max ecosystem decisions
             - global_circuit_open: Always False for local mode
         """
-        now = time.time()
+        now = self._now()
         
         with self._global_lock:
             # Count active agents (with decisions in current window)
@@ -261,7 +285,7 @@ class VelocityBreaker:
             
             # Count decisions in current ecosystem window
             cutoff_eco = now - self.ecosystem_window_seconds
-            ecosystem_count = len([t for t in self._ecosystem_window if t > cutoff_eco])
+            ecosystem_count = sum(1 for t in self._ecosystem_window if t > cutoff_eco)
             
             return {
                 "mode": "local",
@@ -448,7 +472,7 @@ class DistributedVelocityBreaker:
     
     def __init__(
         self,
-        redis_client,
+        redis_client=None,
         max_decisions: int = 20,
         window_seconds: int = 60,
         cooldown_seconds: int = 300,
@@ -607,7 +631,7 @@ class DistributedVelocityBreaker:
             
             # Add new entry
             window.append(now)
-            return (False, None, count)
+            return (False, None, count + 1)
     
     def _get_window_count(self, agent_id: str, now: float) -> int:
         """Get current window count."""
@@ -734,6 +758,218 @@ class DistributedVelocityBreaker:
             "tripped": tripped,
             "cooldown_remaining": 0,  # Not tracked in distributed mode
         }
+
+
+# ── O3: Distributed Fleet Budget ─────────────────────────────────────────────
+#
+# Problem: FleetBudgetPolicy.self.spent is an instance variable — each
+# horizontal replica tracks spend independently, so N replicas each allow
+# the full budget, multiplying effective budget by N.
+#
+# Solution: RedisFleetBudgetBackend uses a single Redis key to track
+# cumulative spend atomically.  DistributedFleetBudgetPolicy wraps it with
+# the same interface as FleetBudgetPolicy (drop-in replacement).
+
+class RedisFleetBudgetBackend:
+    """
+    Redis-backed cumulative budget tracker.
+
+    Uses a single sorted-set key per policy_id where the score is the
+    cumulative spend. Atomic INCRBYFLOAT ensures no double-counting under
+    concurrent replicas.
+
+    Usage:
+        backend = RedisFleetBudgetBackend(redis_client, policy_id="LOG-001")
+        new_total = backend.add_spend(1500.0)   # → total after this spend
+        backend.reset()                          # start of new period
+    """
+
+    def __init__(
+        self,
+        redis_client,
+        policy_id: str = "LOG-001",
+        namespace: str = "glassbox:fleet_budget",
+    ):
+        self.redis     = redis_client
+        self.policy_id = policy_id
+        self.namespace = namespace
+
+    def _key(self) -> str:
+        return f"{self.namespace}:{self.policy_id}:spent"
+
+    def add_spend(self, amount: float) -> float:
+        """
+        Atomically add amount to cumulative spend and return new total.
+        INCRBYFLOAT is atomic in Redis — safe under N concurrent replicas.
+        """
+        new_total = self.redis.incrbyfloat(self._key(), amount)
+        return float(new_total)
+
+    def get_spent(self) -> float:
+        """Return current cumulative spend (non-atomic read)."""
+        raw = self.redis.get(self._key())
+        return float(raw) if raw is not None else 0.0
+
+    def reset(self) -> None:
+        """Reset cumulative spend to zero (start of new budget period)."""
+        self.redis.set(self._key(), 0.0)
+
+    def set_spent(self, value: float) -> None:
+        """Directly set the cumulative spend (e.g., for seeding from audit history)."""
+        self.redis.set(self._key(), value)
+
+
+class DistributedFleetBudgetPolicy:
+    """
+    Fleet budget policy backed by Redis for multi-replica deployments.
+
+    Drop-in replacement for FleetBudgetPolicy.  All replicas share one Redis
+    counter so the effective budget is always the configured value regardless
+    of replica count.
+
+    Falls back to local in-memory tracking if Redis is unavailable.
+
+    Usage:
+        policy = DistributedFleetBudgetPolicy(
+            redis_client=redis.Redis(),
+            budget=100_000.0,
+            warn_threshold=0.80,
+        )
+        pipeline.policy_engine.register(policy.as_policy())
+    """
+
+    def __init__(
+        self,
+        redis_client=None,
+        budget: float = 100_000.0,
+        warn_threshold: float = 0.80,
+        policy_id: str = "LOG-001",
+        namespace: str = "glassbox:fleet_budget",
+        fallback_mode: bool = True,
+    ):
+        from glassbox.governance.models import DecisionType, PolicyEvaluation
+        self._DecisionType    = DecisionType
+        self._PolicyEvaluation = PolicyEvaluation
+
+        self.budget         = float(budget)
+        self.warn_threshold = float(warn_threshold)
+        self.policy_id      = policy_id
+        self.fallback_mode  = fallback_mode
+
+        self._redis_backend: Optional[RedisFleetBudgetBackend] = None
+        self._redis_ok      = False
+        self._local_spent   = 0.0
+        self._local_lock    = threading.Lock()
+
+        if redis_client is not None:
+            try:
+                redis_client.ping()
+                self._redis_backend = RedisFleetBudgetBackend(
+                    redis_client, policy_id=policy_id, namespace=namespace,
+                )
+                self._redis_ok = True
+                log.info(
+                    "DistributedFleetBudgetPolicy: Redis connected (policy=%s)", policy_id
+                )
+            except Exception as exc:
+                log.warning(
+                    "DistributedFleetBudgetPolicy: Redis unavailable, using local fallback: %s", exc
+                )
+                if not fallback_mode:
+                    raise
+
+    def _add_spend(self, amount: float) -> float:
+        """Add amount to cumulative spend; return new total. Prefers Redis."""
+        if self._redis_ok and self._redis_backend:
+            try:
+                return self._redis_backend.add_spend(amount)
+            except Exception as exc:
+                log.warning("DistributedFleetBudgetPolicy: Redis add_spend failed: %s", exc)
+                self._redis_ok = False
+
+        # Local fallback
+        with self._local_lock:
+            self._local_spent += amount
+            return self._local_spent
+
+    def _get_spent(self) -> float:
+        """Return current cumulative spend without modifying it."""
+        if self._redis_ok and self._redis_backend:
+            try:
+                return self._redis_backend.get_spent()
+            except Exception as exc:
+                log.warning("DistributedFleetBudgetPolicy: Redis get_spent failed: %s", exc)
+                self._redis_ok = False
+        with self._local_lock:
+            return self._local_spent
+
+    def reset(self) -> None:
+        """Reset cumulative spend (call at start of each budget period)."""
+        if self._redis_ok and self._redis_backend:
+            try:
+                self._redis_backend.reset()
+            except Exception as exc:
+                log.warning("DistributedFleetBudgetPolicy: Redis reset failed: %s", exc)
+        with self._local_lock:
+            self._local_spent = 0.0
+
+    def _rule(self, payload: dict, ctx) -> object:
+        amount     = float(
+            payload.get("amount", payload.get("fleet_spend", payload.get("total_cost", 0))) or 0
+        )
+        # We preview projected spend WITHOUT committing (Redis read + local add).
+        current    = self._get_spent()
+        projected  = current + amount
+
+        if projected > self.budget:
+            return self._PolicyEvaluation(
+                policy_id=self.policy_id,
+                policy_name="Fleet Budget Policy (Distributed)",
+                result="fail",
+                message=(
+                    f"Fleet spend ${projected:,.2f} exceeds budget ${self.budget:,.2f} "
+                    f"(current=${current:,.2f}, this_request=${amount:,.2f})"
+                ),
+            )
+
+        if projected >= self.budget * self.warn_threshold:
+            return self._PolicyEvaluation(
+                policy_id=self.policy_id,
+                policy_name="Fleet Budget Policy (Distributed)",
+                result="warn",
+                message=(
+                    f"Fleet spend ${projected:,.2f} is {projected / self.budget:.0%} "
+                    f"of budget ${self.budget:,.2f}"
+                ),
+            )
+
+        return self._PolicyEvaluation(
+            policy_id=self.policy_id,
+            policy_name="Fleet Budget Policy (Distributed)",
+            result="pass",
+            message="Fleet within budget",
+        )
+
+    def record_execution(self, amount: float) -> None:
+        """
+        Commit spend after a decision is executed.
+
+        Call this only once per executed decision to avoid double-counting.
+        Typically invoked from an EventBus handler for DecisionExecuted events.
+        """
+        self._add_spend(float(amount or 0.0))
+
+    def as_policy(self):
+        """Return a Policy object suitable for PolicyEngine.register()."""
+        from glassbox.governance.policy_engine import Policy
+        return Policy(
+            policy_id=self.policy_id,
+            policy_name="Fleet Budget Policy (Distributed)",
+            decision_types=[
+                self._DecisionType.LOGISTICS, self._DecisionType.FINANCIAL,
+            ],
+            rule=self._rule,
+        )
 
 
 # Compatibility helper

@@ -20,6 +20,12 @@ from glassbox.governance.logging_manager import get_logger
 log = get_logger("threadpool")
 
 
+def default_async_workers() -> int:
+    """Return the supported production default for async worker pools."""
+    cpu_count = multiprocessing.cpu_count()
+    return max(8, min(32, cpu_count * 4))
+
+
 class ThreadPoolConfig:
     """Thread pool configuration for GlassBox."""
     
@@ -31,9 +37,7 @@ class ThreadPoolConfig:
             async_workers: Number of async workers. If None, uses 50 * cpu_count()
         """
         if async_workers is None:
-            # Default: 50 workers per CPU core
-            cpu_count = multiprocessing.cpu_count()
-            self.async_workers = 50 * cpu_count
+            self.async_workers = default_async_workers()
         else:
             self.async_workers = async_workers
         
@@ -74,7 +78,7 @@ class QueueDepthMonitor:
         """Register a queue for monitoring."""
         with self._lock:
             if queue_id not in self._queues:
-                self._queues[queue_id] = deque(maxlen=int(self.max_depth_alert * 1.5))
+                self._queues[queue_id] = deque()
                 self._queue_stats[queue_id] = {
                     "max_depth": 0,
                     "current_depth": 0,
@@ -102,20 +106,23 @@ class QueueDepthMonitor:
             if current_depth > self.max_depth_alert:
                 self._trigger_alert(queue_id, current_depth)
     
-    def record_completion(self, queue_id: str) -> None:
+    def record_completion(self, queue_id: str, item: Any = None) -> None:
         """Record item processed/completed."""
         self.register_queue(queue_id)
         
         with self._lock:
+            queue = self._queues[queue_id]
+            if item is None:
+                if queue:
+                    queue.popleft()
+            else:
+                try:
+                    queue.remove(item)
+                except ValueError:
+                    pass
             stats = self._queue_stats[queue_id]
             stats["items_processed"] += 1
-            
-            # Update current depth
-            current_depth = len(self._queues[queue_id])
-            if current_depth > 0:
-                current_depth -= 1
-            
-            stats["current_depth"] = current_depth
+            stats["current_depth"] = len(queue)
     
     def _trigger_alert(self, queue_id: str, depth: int) -> None:
         """Trigger alert for queue depth exceeded."""
@@ -146,10 +153,14 @@ class QueueDepthMonitor:
     def get_all_stats(self) -> Dict[str, Dict[str, Any]]:
         """Get stats for all queues."""
         with self._lock:
-            result = {}
-            for queue_id in self._queues:
-                result[queue_id] = self.get_stats(queue_id)
-            return result
+            return {
+                queue_id: {
+                    **self._queue_stats[queue_id],
+                    "queue_id": queue_id,
+                    "current_depth": len(self._queues.get(queue_id, [])),
+                }
+                for queue_id in self._queues
+            }
     
     def health_check(self) -> bool:
         """Check if any queue is critical (depth > threshold * 2)."""
@@ -193,7 +204,7 @@ class AsyncWorkQueue:
         """
         self.queue_id = queue_id
         self.executor = executor or ThreadPoolExecutor(
-            max_workers=50 * multiprocessing.cpu_count()
+            max_workers=default_async_workers()
         )
         self.monitor = monitor or QueueDepthMonitor()
         
@@ -201,6 +212,11 @@ class AsyncWorkQueue:
         
         self._futures: Dict[Any, Any] = {}
         self._lock = threading.Lock()
+
+    def _on_future_done(self, future: Any) -> None:
+        with self._lock:
+            self._futures.pop(id(future), None)
+        self.monitor.record_completion(self.queue_id, future)
     
     def submit(
         self,
@@ -214,18 +230,16 @@ class AsyncWorkQueue:
         with self._lock:
             self._futures[id(future)] = future
             self.monitor.record_item(self.queue_id, future)
+        future.add_done_callback(self._on_future_done)
         
         return future
     
     def get_result(self, future: Any, timeout: Optional[float] = None) -> Any:
         """Get result from completed future."""
         try:
-            result = future.result(timeout=timeout)
-            self.monitor.record_completion(self.queue_id)
-            return result
+            return future.result(timeout=timeout)
         except Exception as exc:
             log.error(f"Task failed in queue {self.queue_id}: {exc}")
-            self.monitor.record_completion(self.queue_id)
             raise
     
     def shutdown(self, wait: bool = True) -> None:

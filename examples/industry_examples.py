@@ -160,7 +160,7 @@ def example_02_healthcare():
         (allergy_check_policy,        [DecisionType.CUSTOM]),
     ]:
         pipeline.policy_engine.register(Policy(
-            p.__name__, p.__name__, types, p))
+            policy_id=p.__name__, policy_name=p.__name__, decision_types=types, rule=p))
 
     _section("Standard antibiotic prescription — should execute")
     _show(pipeline.process(_req("clinical_ai", DecisionType.CUSTOM,
@@ -513,8 +513,8 @@ def example_06_energy_grid():
 
     for p in [critical_grid_operation_policy, renewable_dispatch_limit_policy,
               energy_trading_position_policy]:
-        pipeline.policy_engine.register(Policy(p.__name__, p.__name__,
-            [DecisionType.IT_OPS, DecisionType.CUSTOM], p))
+        pipeline.policy_engine.register(Policy(policy_id=p.__name__, policy_name=p.__name__,
+            decision_types=[DecisionType.IT_OPS, DecisionType.CUSTOM], rule=p))
 
     _section("Routine grid optimisation — should execute")
     _show(pipeline.process(_req("grid_ai", DecisionType.IT_OPS,
@@ -593,8 +593,8 @@ def example_07_manufacturing():
 
     for p in [production_capacity_policy, maintenance_window_policy,
               quality_parameter_policy]:
-        pipeline.policy_engine.register(Policy(p.__name__, p.__name__,
-            [DecisionType.CUSTOM, DecisionType.INVENTORY], p))
+        pipeline.policy_engine.register(Policy(policy_id=p.__name__, policy_name=p.__name__,
+            decision_types=[DecisionType.CUSTOM, DecisionType.INVENTORY], rule=p))
 
     _section("Standard production run — should execute")
     _show(pipeline.process(_req("factory_ai", DecisionType.CUSTOM,
@@ -668,8 +668,8 @@ def example_08_insurance():
 
     for p in [large_claim_approval_policy, fraud_indicator_policy,
               solvency_reserve_policy]:
-        pipeline.policy_engine.register(Policy(p.__name__, p.__name__,
-            [DecisionType.FINANCIAL, DecisionType.CUSTOM], p))
+        pipeline.policy_engine.register(Policy(policy_id=p.__name__, policy_name=p.__name__,
+            decision_types=[DecisionType.FINANCIAL, DecisionType.CUSTOM], rule=p))
 
     _section("Standard property claim — auto-settlement")
     _show(pipeline.process(_req("claims_ai", DecisionType.FINANCIAL,
@@ -738,8 +738,8 @@ def example_09_logistics():
 
     for p in [cold_chain_integrity_policy, hazmat_compliance_policy,
               carrier_qualification_policy]:
-        pipeline.policy_engine.register(Policy(p.__name__, p.__name__,
-            [DecisionType.LOGISTICS], p))
+        pipeline.policy_engine.register(Policy(policy_id=p.__name__, policy_name=p.__name__,
+            decision_types=[DecisionType.LOGISTICS], rule=p))
 
     _section("Standard pharmaceutical shipment — should execute")
     _show(pipeline.process(_req("logistics_ai", DecisionType.LOGISTICS,
@@ -885,8 +885,8 @@ def example_11_retail():
         return PolicyEvaluation("RTL-002", "Below-Cost Promotion", "pass", "OK")
 
     for p in [price_gouging_policy, promotional_cannibalisation_policy]:
-        pipeline.policy_engine.register(Policy(p.__name__, p.__name__,
-            [DecisionType.PRICING], p))
+        pipeline.policy_engine.register(Policy(policy_id=p.__name__, policy_name=p.__name__,
+            decision_types=[DecisionType.PRICING], rule=p))
 
     _section("Normal price optimisation — should execute")
     _show(pipeline.process(_req("pricing_ai", DecisionType.PRICING,
@@ -951,8 +951,8 @@ def example_12_hr():
         return PolicyEvaluation("HR-003", "Termination Legal Review", "pass", "OK")
 
     for p in [pay_equity_policy, termination_process_policy]:
-        pipeline.policy_engine.register(Policy(p.__name__, p.__name__,
-            [DecisionType.HR], p))
+        pipeline.policy_engine.register(Policy(policy_id=p.__name__, policy_name=p.__name__,
+            decision_types=[DecisionType.HR], rule=p))
 
     _section("Standard salary adjustment within equity band — should execute")
     _show(pipeline.process(_req("hr_ai", DecisionType.HR,
@@ -1125,8 +1125,8 @@ def example_15_policy_replay():
                 f"[PROC-001-STRICT] Amount ${amount:,.0f} exceeds strict $200K limit")
         return PolicyEvaluation("PROC-001-STRICT", "Strict $200K Limit", "pass", "OK")
 
-    tight_engine.register(Policy("PROC-001-STRICT", "Strict Procurement Limit",
-        [DecisionType.PROCUREMENT], strict_limit))
+    tight_engine.register(Policy(policy_id="PROC-001-STRICT", policy_name="Strict Procurement Limit",
+        decision_types=[DecisionType.PROCUREMENT], rule=strict_limit))
 
     replay_pipeline = GovernancePipeline(echo=False, policy_engine=tight_engine)
     from glassbox.governance.decision_replay import DecisionReplay
@@ -1347,7 +1347,7 @@ def main():
     print("\n" + "=" * 70)
     print("  GlassBox v1.0.0 — Runtime Decision Governance Framework")
     print("  18 Industry Use Cases  ·  Apache 2.0")
-    print("  Mohammed Akbar Ansari — Independent Researcher, Navi Mumbai")
+    print("  Mohammed Akbar Ansari — Independent Researcher Navi Mumbai")
     print("=" * 70)
 
     for eid, (name, fn) in EXAMPLES.items():

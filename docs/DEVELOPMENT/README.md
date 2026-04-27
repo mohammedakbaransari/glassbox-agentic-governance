@@ -28,31 +28,41 @@ This directory contains technical documentation for developers, architects, and 
 
 ## 🏗️ System Architecture
 
-### 9-Stage Pipeline
-GlassBox processes decisions through 9 sequential stages:
+### 9-Stage Pipeline (+ 2 Security Pre-checks)
 
-1. **Payload Sanitization** - Validate & clean input
-2. **Schema Validation** - Check decision type schema
-3. **Velocity Checking** - Per-agent rate limiting
-4. **Anomaly Detection** - Statistical outlier detection
-5. **Policy Evaluation** - Apply business rules
-6. **Risk Scoring** - Calculate composite risk
-7. **Context Enrichment** - Add contextual data
-8. **Audit Logging** - Record all decisions
-9. **Execution** - Execute or queue for review
+Every `DecisionRequest` passes through these steps in order. Any step can **block** execution; subsequent steps are skipped.
+
+| Step | Name | Module | Blocks On |
+|------|------|--------|-----------|
+| Pre-1 | Security Sanitization | `security/sanitizer.py` | SQL/XSS/SSTI/path-traversal in payload or `agent_id` |
+| Pre-2 | Agent-ID Sanitization | `security/sanitizer.py` | Unicode homoglyphs, null bytes |
+| 0 | AgentContract Validation | `governance/pipeline.py` | Unauthorised `decision_type`, amount limit exceeded |
+| 1 | Context Capture | `governance/context_capture.py` | — (enrichment only) |
+| 2 | Schema Validation | `governance/schema_validator.py` | Missing/wrong-type required fields |
+| 3 | Velocity Breaker | `governance/velocity_breaker.py` | Per-agent > 100 req/min; ecosystem limit |
+| 4 | Anomaly Detection | `governance/anomaly_detector.py` | Z-score > 3σ after min_samples |
+| 5 | Policy Enforcement | `governance/policy_engine.py` | Any registered policy returns `fail` |
+| 6 | Risk Evaluation | `governance/risk_evaluator.py` | Composite risk score routing |
+| 7 | Disposition + Finalise | `governance/pipeline.py` | WAL + audit persist + EventBus publish |
+
+**Disposition thresholds:** risk ≤ 35 → `AUTO_EXECUTE` · 36–70 → `HUMAN_REVIEW` · > 70 → `BLOCK`
 
 ### Key Components
 
 | Component | Purpose | Location |
 |-----------|---------|----------|
-| GovernancePipeline | Main orchestrator | governance/ |
-| PolicyEngine | Rule evaluation | governance/ |
-| VelocityBreaker | Rate limiting | governance/ |
-| AnomalyDetector | Statistical analysis | governance/ |
-| RiskEvaluator | Risk scoring | governance/ |
-| AuditLogger | Decision recording | governance/ |
-| EventBus | System events | events/ |
-| DecisionStore | Decision persistence | store/ |
+| `GovernancePipeline` | Main 9-stage orchestrator | `governance/pipeline.py` |
+| `PolicyEngine` | 35 built-in policies + custom registry | `governance/policy_engine.py` |
+| `VelocityBreaker` | Per-agent + fleet-wide rate limiting | `governance/velocity_breaker.py` |
+| `AnomalyDetector` | Welford Z-score baselines (O(1)) | `governance/anomaly_detector.py` |
+| `RiskEvaluator` | Weighted composite risk scoring (0–100) | `governance/risk_evaluator.py` |
+| `AuditLogger` | Lock-pooled ring buffer + JSONL rotation | `governance/audit_logger.py` |
+| `TamperEvidentAuditLogger` | SHA-256 hash-chained immutable audit | `governance/advanced_audit.py` |
+| `WriteAheadLog` | Crash-safe two-phase side-effect tracking | `governance/write_ahead_log.py` |
+| `EventBus` | Domain events (async handlers, webhooks) | `events/event_bus.py` |
+| `GlassBoxDB` / `Repository` | SQLite/PostgreSQL/SQL Server persistence | `store/` |
+| `AccessController` | Enterprise RBAC with role hierarchy | `governance/access_control.py` |
+| `TenantRegistry` | Strict multi-tenant isolation | `governance/multitenancy.py` |
 
 ## 👨‍💻 Developer Workflows
 
@@ -105,7 +115,7 @@ python scripts/validate.py
 
 ```
 glassbox/
-├── governance/          # Core decision pipeline (35 modules)
+├── governance/          # Core decision pipeline (32 modules)
 ├── adapters/           # Platform-specific integrations
 ├── api/                # REST API layer
 ├── authoring/          # Policy authoring tools
@@ -132,7 +142,58 @@ glassbox/
 ### Running Tests
 
 ```bash
-# All tests
+# Recommended full-suite path: isolated batch harness
+python scripts/run_test_batches.py
+
+# List available batches
+python scripts/run_test_batches.py --list-batches
+
+# Rerun only failed batches from a previous run
+python scripts/run_test_batches.py --rerun-failed-from test-results/<run-id>/summary.json
+
+# Rerun failed batches from the latest recorded run in the output root
+python scripts/run_test_batches.py --rerun-failed-latest
+
+# Run only one batch
+python scripts/run_test_batches.py --batch governance
+
+# Run all shard batches for governance and exclude full-suite batches
+python scripts/run_test_batches.py --tag governance --tag shard
+
+# Run only security-related batches
+python scripts/run_test_batches.py --tag security
+
+# Emit a one-line CI summary instead of the human-readable report
+python scripts/run_test_batches.py --ci-summary
+
+# CI summary mode now emits both BATCH_RUN and RUN_ANALYSIS_SUMMARY lines
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --max-workers 2 --ci-summary
+
+# Emit only the CI-oriented run analysis line
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --max-workers 2 --ci-analysis-summary
+
+# Fail CI if plan-vs-actual drift exceeds your tolerance
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --max-workers 2 --ci-analysis-summary --max-order-changes 0 --max-runner-changes 0
+
+# Use history-aware scheduling to start with the longest known batches
+python scripts/run_test_batches.py --schedule longest-first
+
+# Preview the selected execution order without running anything
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --plan
+
+# Emit the same preview as JSON for automation or CI wrappers
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --plan-json
+
+# Write the JSON execution plan directly to a file
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --plan-json-file artifacts/plan.json
+
+# Preview expected worker-lane assignment for parallel-safe batches
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --max-workers 2 --plan
+
+# Emit a compact single-line preview for CI logs
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --max-workers 2 --plan-summary
+
+# Raw pytest still works for direct local debugging
 python -m pytest tests/ -v
 
 # Specific test file
@@ -145,17 +206,32 @@ python -m pytest tests/test_core.py::TestPolicyEngine -v
 python -m pytest tests/ --cov=glassbox --cov-report=html
 ```
 
-## 🚀 Performance Optimization
+The batch runner writes one artifact directory per run under `test-results/harness-shards/<run-id>/` (all test results consolidated into `test-results/`).
+Each batch gets its own `stdout.txt`, `stderr.txt`, `junit.xml`, and `batch.json`, and the run root contains `execution_plan.json`, `execution_plan.txt`, `run_analysis.json`, `run_analysis_summary.txt`, `run_analysis.txt`, `summary.json`, `summary.txt`, `latest.json`, and `history.json` for aggregation-friendly reporting and rerun workflows.
+The manifest also supports `tags`, so large file-level suites can coexist with class-level shard batches and be selected without editing commands.
+When `history.json` exists, `--schedule longest-first` or `--schedule shortest-first` can reorder batches using recorded durations rather than static manifest order.
+Use `--plan` to preview the exact post-filter, post-scheduling execution order before starting a run.
+Use `--plan-summary` when CI logs need one compact line instead of the full text preview.
+Use `--plan-json` when a script or CI job needs that same execution plan in a machine-readable form.
+Use `--plan-json-file` when automation should persist the plan directly to disk instead of capturing stdout.
+When `--max-workers` is greater than 1, plan output also shows the expected worker lane for parallel-safe batches.
+Actual runs persist that resolved execution plan into the run directory so post-run analysis can compare planned order with observed results.
+The human-readable summary now includes a compact comparison line, while `run_analysis.json`, `run_analysis_summary.txt`, and `run_analysis.txt` expose plan-versus-actual ordering for CI and downstream tooling.
 
-Key performance optimizations in v1.1:
+## Performance Optimization
+
+Key performance optimizations in v1.2.0:
 
 | Optimization | Impact | Location |
 |--------------|--------|----------|
-| Lock pooling (audit) | 95% contention reduction | audit_logger.py |
-| Welford's algorithm (anomaly) | O(n) → O(1) stats | anomaly_detector.py |
-| Snapshot pattern (policy) | Eliminate deep copies | policy_engine.py |
-| Distributed velocity breaking | Multi-instance support | velocity_breaker.py |
-| Redis caching | Sub-millisecond lookups | govenance/models.py |
+| Lock pooling (audit) | 95% contention reduction | `audit_logger.py` |
+| Welford's algorithm (anomaly) | O(n) → O(1) stats | `anomaly_detector.py` |
+| Snapshot pattern (policy) | Eliminate deep copies during eval | `policy_engine.py` |
+| DistributedFleetBudgetPolicy | Redis INCRBYFLOAT — multi-replica fleet budget | `velocity_breaker.py` |
+| DistributedAnomalyDetector | Redis Lua Welford — shared baselines | `anomaly_detector.py` |
+| BoundedQueue | Backpressure-safe async audit writes | `bounded_queue.py` |
+| StageRegistry P50/P99 | Per-stage latency in `/health` endpoint | `stage_registry.py` |
+| PolicyParameterStore | Runtime threshold updates — no restart | `policy_parameters.py` |
 
 ## 📊 Design Patterns
 
@@ -199,7 +275,7 @@ See main [CONTRIBUTING.md](../../CONTRIBUTING.md) for:
 
 - ✅ Type hints on all public APIs
 - ✅ Docstrings on all classes/methods
-- ✅ 90%+ test coverage target
+- ✅ 80% minimum test coverage enforced in CI (`fail_under = 80`)
 - ✅ No hard-coded values (use config)
 - ✅ Thread-safe by default
 - ✅ Zero mandatory dependencies

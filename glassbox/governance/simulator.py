@@ -27,8 +27,8 @@ Usage:
                 "[STRICT-001] Amount exceeds strict $200K limit")
         return PolicyEvaluation("STRICT-001", "Strict Limit", "pass", "OK")
 
-    new_policy = Policy("STRICT-001", "Strict Procurement Limit",
-                        [DecisionType.PROCUREMENT], strict_limit)
+    new_policy = Policy(policy_id="STRICT-001", policy_name="Strict Procurement Limit",
+                        decision_types=[DecisionType.PROCUREMENT], rule=strict_limit)
 
     result = sim.simulate_policy(new_policy, lookback_hours=24*7)
     print(result.summary_text)
@@ -42,14 +42,19 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from glassbox.security.sanitizer import validate_agent_id
 from glassbox.governance.models import (
-    DecisionContext, DecisionRequest, DecisionType,
-    FinalStatus, PolicyEvaluation,
+    AuditRecord, CircuitBreakerResult, DecisionContext, DecisionRequest, DecisionResponse,
+    DecisionType, Disposition, FinalStatus, PolicyEvaluation, PolicyResult,
+    RiskLevel, RiskResult,
 )
 
 
@@ -142,6 +147,145 @@ class PolicySimulator:
         self._source = pipeline_or_audit_logger
         self._lock   = threading.Lock()
 
+    def simulate(
+        self,
+        request: DecisionRequest,
+        request_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Dry-run a single decision request without persisting audit state."""
+        pipeline = self._resolve_pipeline()
+        if pipeline is None:
+            raise ValueError("Request simulation requires a GovernancePipeline source.")
+
+        with self._lock:
+            prepared = pipeline._prepare_request(request)
+            if isinstance(prepared.decision_type, str):
+                prepared = DecisionRequest(
+                    agent_id=prepared.agent_id,
+                    decision_type=DecisionType(prepared.decision_type.lower()),
+                    payload=prepared.payload,
+                    context=prepared.context,
+                    request_id=prepared.request_id,
+                )
+
+            active_stages = pipeline._resolve_stage_plan(prepared.agent_id, request_metadata)
+
+            def _stage_enabled(stage_name: str) -> bool:
+                if active_stages is None:
+                    return True
+                return stage_name in active_stages
+
+            try:
+                tenant_id = pipeline._tenant_id_from_request(prepared, request_metadata)
+            except ValueError as exc:
+                return self._blocked_simulation(prepared, str(exc), "TENANT-001")
+
+            access_denial = pipeline._authorize_request(prepared)
+            if access_denial:
+                return self._blocked_simulation(prepared, access_denial, "ENTERPRISE-RBAC")
+
+            ok, err = validate_agent_id(prepared.agent_id)
+            if not ok:
+                return self._blocked_simulation(prepared, err or "Invalid agent_id", "SECURITY-001")
+
+            sec_report = pipeline.sanitizer.check(prepared.payload, agent_id=prepared.agent_id)
+            if sec_report.blocked:
+                detail = "; ".join(
+                    f"{finding.category}@{finding.field_path}"
+                    for finding in sec_report.findings
+                    if finding.severity in ("critical", "high")
+                ) or "Security violation"
+                return self._blocked_simulation(prepared, f"Security violation: {detail}", "SECURITY-001")
+
+            clean_payload = copy.deepcopy(sec_report.clean_payload or prepared.payload)
+
+            contract = None
+            if _stage_enabled("agent_contract_validation"):
+                if tenant_id:
+                    contract = pipeline.get_tenant_contract(tenant_id, prepared.agent_id)
+                if contract is None:
+                    contract = pipeline.get_contract(prepared.agent_id)
+            if contract:
+                violation = pipeline._check_contract(prepared, contract)
+                if violation:
+                    return self._blocked_simulation(prepared, violation, "CONTRACT-001")
+
+            context = pipeline.context_capture.enrich(prepared, request_metadata)
+            record = AuditRecord(
+                agent_id=prepared.agent_id,
+                decision_type=prepared.decision_type,
+                payload=clean_payload,
+                context=context,
+                contract_validated=(contract is not None),
+            )
+
+            schema_ok, schema_error = True, None
+            if _stage_enabled("schema_validation"):
+                schema_ok, schema_error = pipeline.schema_validator.validate(
+                    prepared.decision_type,
+                    clean_payload,
+                )
+            if not schema_ok:
+                blocked = pipeline._blocked_early(record, schema_error or "Schema error", "SCHEMA-001")
+                return self._response_to_dict(prepared, blocked)
+
+            policy_result = PolicyResult(passed=True)
+            if _stage_enabled("policy_enforcement"):
+                policy_result = pipeline.policy_engine.evaluate(
+                    decision_type=prepared.decision_type,
+                    payload=clean_payload,
+                    context=context,
+                )
+            record.policy_result = policy_result
+
+            if _stage_enabled("risk_evaluation"):
+                risk_result = pipeline.risk_evaluator.evaluate(
+                    decision_type=prepared.decision_type,
+                    payload=clean_payload,
+                    context=context,
+                    policy_result=policy_result,
+                )
+            elif policy_result.passed:
+                risk_result = RiskResult(
+                    risk_score=0.0,
+                    risk_level=RiskLevel.LOW,
+                    disposition=Disposition.AUTO_EXECUTE,
+                    factors=[],
+                )
+            else:
+                risk_result = RiskResult(
+                    risk_score=100.0,
+                    risk_level=RiskLevel.CRITICAL,
+                    disposition=Disposition.BLOCK,
+                    factors=[],
+                )
+            record.risk_result = risk_result
+            record.circuit_breaker_result = CircuitBreakerResult(triggered=False)
+
+            if risk_result.disposition == Disposition.BLOCK:
+                final_status = FinalStatus.BLOCKED
+            elif risk_result.disposition == Disposition.HUMAN_REVIEW:
+                final_status = FinalStatus.PENDING_REVIEW
+            else:
+                final_status = FinalStatus.EXECUTED
+            record.final_status = final_status
+
+            response = DecisionResponse(
+                decision_id=record.decision_id,
+                request_id=prepared.request_id,
+                final_status=final_status,
+                risk_level=risk_result.risk_level,
+                risk_score=risk_result.risk_score,
+                disposition=risk_result.disposition,
+                policy_violations=policy_result.violations,
+                policy_warnings=policy_result.warnings,
+                circuit_breaker_triggered=False,
+                ecosystem_breaker=False,
+                message="Simulated decision evaluated without persistence.",
+                audit_record=record,
+            )
+            return self._response_to_dict(prepared, response)
+
     def simulate_policy(
         self,
         policy,                       # Policy object with .rule, .policy_id, .policy_name
@@ -232,6 +376,24 @@ class PolicySimulator:
         if self._source is None:
             return []
 
+        audit_repo = getattr(self._source, "audit_repo", None)
+        if audit_repo is not None and hasattr(audit_repo, "query"):
+            query_kwargs: Dict[str, Any] = {
+                "agent_id": agent_filter,
+                "decision_type": type_filter,
+                "limit": max_records,
+                "offset": 0,
+            }
+            if lookback_hours > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+                query_kwargs["from_ts"] = cutoff.isoformat()
+            try:
+                repo_records = audit_repo.query(**query_kwargs)
+            except TypeError:
+                repo_records = audit_repo.query(limit=max_records, offset=0)
+            if repo_records:
+                return [self._coerce_record(record) for record in repo_records]
+
         # Support both GovernancePipeline and AuditLogger as source
         logger = getattr(self._source, "audit_logger", self._source)
         if not hasattr(logger, "get_all"):
@@ -241,10 +403,8 @@ class PolicySimulator:
 
         # Filter by lookback window
         if lookback_hours > 0:
-            from datetime import datetime, timezone, timedelta
             cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-            records = [r for r in records
-                       if self._parse_ts(r.timestamp) >= cutoff]
+            records = [r for r in records if self._parse_ts(r.timestamp) >= cutoff]
 
         if agent_filter:
             records = [r for r in records if r.agent_id == agent_filter]
@@ -254,6 +414,114 @@ class PolicySimulator:
                        or str(r.decision_type) == type_filter]
 
         return records[:max_records]
+
+    def _resolve_pipeline(self):
+        if self._source is None:
+            return None
+        if hasattr(self._source, "process") and hasattr(self._source, "policy_engine"):
+            return self._source
+        return None
+
+    def _blocked_simulation(
+        self,
+        request: DecisionRequest,
+        message: str,
+        policy_id: str,
+    ) -> Dict[str, Any]:
+        context = request.context or DecisionContext()
+        record = AuditRecord(
+            agent_id=request.agent_id,
+            decision_type=request.decision_type,
+            payload=request.payload,
+            context=context,
+        )
+        response = DecisionResponse(
+            decision_id=record.decision_id,
+            request_id=request.request_id,
+            final_status=FinalStatus.BLOCKED,
+            disposition=Disposition.BLOCK,
+            policy_violations=[f"[{policy_id}] {message}"],
+            message=f"Blocked: {message}",
+            audit_record=record,
+        )
+        return self._response_to_dict(request, response)
+
+    def _response_to_dict(
+        self,
+        request: DecisionRequest,
+        response: DecisionResponse,
+    ) -> Dict[str, Any]:
+        blocking_policy = None
+        if response.policy_violations:
+            first_violation = response.policy_violations[0]
+            if first_violation.startswith("[") and "]" in first_violation:
+                blocking_policy = first_violation[1:first_violation.index("]")]
+
+        return {
+            "simulation": True,
+            "predicted_decision_id": response.decision_id,
+            "request_id": request.request_id,
+            "agent_id": request.agent_id,
+            "decision_type": request.decision_type.value,
+            "predicted_status": response.final_status.value,
+            "predicted_disposition": response.disposition.value if response.disposition else None,
+            "blocking_policy": blocking_policy,
+            "risk_score": response.risk_score,
+            "risk_level": response.risk_level.value if response.risk_level else None,
+            "policy_violations": list(response.policy_violations or []),
+            "policy_warnings": list(response.policy_warnings or []),
+            "note": "This is a simulated decision - no audit record was created.",
+        }
+
+    def _coerce_record(self, record: Any) -> Any:
+        if hasattr(record, "decision_id"):
+            return record
+        if not isinstance(record, dict):
+            return record
+
+        decision_type = record.get("decision_type")
+        try:
+            decision_type = DecisionType(decision_type)
+        except Exception:
+            pass
+
+        final_status = record.get("final_status")
+        try:
+            final_status = FinalStatus(final_status) if final_status else None
+        except Exception:
+            final_status = None
+
+        context_data = record.get("context") or {}
+        context = self._coerce_context(context_data)
+
+        return SimpleNamespace(
+            decision_id=record.get("decision_id", ""),
+            agent_id=record.get("agent_id", ""),
+            decision_type=decision_type,
+            final_status=final_status,
+            payload=record.get("payload") or {},
+            context=context,
+            timestamp=record.get("timestamp", datetime.now(timezone.utc).isoformat()),
+        )
+
+    def _coerce_context(self, context: Any) -> DecisionContext:
+        if isinstance(context, DecisionContext):
+            return context
+        if not isinstance(context, dict):
+            return DecisionContext()
+        return DecisionContext(
+            session_id=context.get("session_id") or context.get("request_id") or DecisionContext().session_id,
+            environment=context.get("environment", "production"),
+            source_system=context.get("source_system", "unknown"),
+            user_override=bool(context.get("user_override", False)),
+            confidence=float(context.get("confidence", 1.0)),
+            agent_chain=list(context.get("agent_chain") or []),
+            metadata=dict(context.get("metadata") or {}),
+            currency=context.get("currency", "USD"),
+            jurisdiction=context.get("jurisdiction", "US"),
+            patient_id=context.get("patient_id"),
+            account_type=context.get("account_type", "unknown"),
+        )
 
     def _simulate_sequential(self, policy, records: List) -> List[SimulationOutcome]:
         return [self._evaluate_one(policy, r) for r in records]
@@ -306,10 +574,12 @@ class PolicySimulator:
             direction        = "unchanged"
             simulated_status = original_status
 
+        dt = record.decision_type
+        dt_value = dt.value if hasattr(dt, 'value') else str(dt)
         return SimulationOutcome(
             decision_id      = record.decision_id,
             agent_id         = record.agent_id,
-            decision_type    = record.decision_type.value,
+            decision_type    = dt_value,
             original_status  = original_status,
             simulated_status = simulated_status,
             changed          = direction != "unchanged",

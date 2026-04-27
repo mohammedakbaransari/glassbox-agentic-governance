@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import json
 import threading
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
@@ -66,6 +67,13 @@ def _infer_decision_type(tool_name: str) -> DecisionType:
     if any(w in name for w in ["hr","hire","fire","salary","employee"]):
         return DecisionType.HR
     return DecisionType.CUSTOM
+
+
+async def _await_or_run_sync(fn: Callable, *args, **kwargs) -> Any:
+    """Await coroutine callables and move sync fallbacks off the event loop."""
+    if inspect.iscoroutinefunction(fn):
+        return await fn(*args, **kwargs)
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 class GovernanceBlockedError(Exception):
@@ -130,6 +138,7 @@ class LangChainAdapter:
         adapter = self
 
         original_run = tool._run if hasattr(tool, '_run') else tool.run
+        original_arun = getattr(tool, '_arun', None)
 
         @functools.wraps(original_run)
         def governed_run(*args, **kwargs):
@@ -147,7 +156,7 @@ class LangChainAdapter:
             return await adapter._govern_and_run_async(
                 tool_name=tool.name,
                 tool_input=tool_input,
-                original_fn=original_run,
+                original_fn=original_arun or original_run,
                 args=args, kwargs=kwargs,
             )
 
@@ -224,9 +233,7 @@ class LangChainAdapter:
             raise GovernanceBlockedError(
                 tool_name, response.policy_violations, response.decision_id)
 
-        if asyncio.iscoroutinefunction(original_fn):
-            return await original_fn(*args, **kwargs)
-        return original_fn(*args, **kwargs)
+        return await _await_or_run_sync(original_fn, *args, **kwargs)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -306,11 +313,9 @@ class LangGraphAdapter:
             if response.final_status == FinalStatus.BLOCKED:
                 raise GovernanceBlockedError(
                     agent_id, response.policy_violations, response.decision_id)
-            if asyncio.iscoroutinefunction(node_fn):
-                return await node_fn(state)
-            return node_fn(state)
+            return await _await_or_run_sync(node_fn, state)
 
-        if asyncio.iscoroutinefunction(node_fn):
+        if inspect.iscoroutinefunction(node_fn):
             return governed_node_async
         return governed_node
 
@@ -343,12 +348,14 @@ class AutoGenAdapter:
     def __init__(
         self,
         pipeline:  "GovernancePipeline",
-        agent_id:  str = "autogen_agent",
+        agent_id:  str   = "autogen_agent",
         confidence: float = 1.0,
+        extract_fields: List[str] = ("amount", "quantity", "target", "account", "reference"),
     ):
-        self.pipeline   = pipeline
-        self.agent_id   = agent_id
-        self.confidence = confidence
+        self.pipeline       = pipeline
+        self.agent_id       = agent_id
+        self.confidence     = confidence
+        self.extract_fields = extract_fields
 
     def govern_function_map(self, function_map: Dict[str, Callable]) -> Dict[str, Callable]:
         """Return a new function_map with every function wrapped with governance."""
@@ -361,6 +368,7 @@ class AutoGenAdapter:
         pipeline   = self.pipeline
         agent_id   = self.agent_id
         confidence = self.confidence
+        extract_fields = self.extract_fields
 
         @functools.wraps(fn)
         def governed(*args, **kwargs):
@@ -370,8 +378,7 @@ class AutoGenAdapter:
                 "kwargs": kwargs,
             }
             # Extract known fields from kwargs for better policy evaluation
-            payload.update({k: v for k, v in kwargs.items()
-                            if k in ("amount","quantity","target","account","reference")})
+            payload.update({k: v for k, v in kwargs.items() if k in extract_fields})
             dtype   = _infer_decision_type(fn_name)
             ctx     = DecisionContext(confidence=confidence, source_system="autogen")
             request = DecisionRequest(
@@ -471,10 +478,8 @@ class GenericToolAdapter:
             if response.final_status == FinalStatus.BLOCKED:
                 raise GovernanceBlockedError(
                     fn.__name__, response.policy_violations, response.decision_id)
-            if asyncio.iscoroutinefunction(fn):
-                return await fn(*args, **kwargs)
-            return fn(*args, **kwargs)
+            return await _await_or_run_sync(fn, *args, **kwargs)
 
-        if asyncio.iscoroutinefunction(fn):
+        if inspect.iscoroutinefunction(fn):
             return governed_async
         return governed

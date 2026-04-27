@@ -54,6 +54,10 @@ from glassbox.governance.models import (
     AgentContract, DecisionContext, DecisionRequest, DecisionResponse,
     DecisionType, FinalStatus,
 )
+from glassbox.governance.logging_manager import get_logger
+
+log = get_logger("orchestrator")
+
 
 
 # ── Orchestration models ───────────────────────────────────────────────────────
@@ -429,9 +433,7 @@ class AgentOrchestrator:
         initial_context: Optional[Dict] = None,
         abort_on_block: bool = True,
     ) -> OrchestrationResult:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._pool, self.run_chain, nodes, initial_context, abort_on_block)
+        return await asyncio.to_thread(self.run_chain, nodes, initial_context, abort_on_block)
 
     async def run_graph_async(
         self,
@@ -439,18 +441,14 @@ class AgentOrchestrator:
         initial_context: Optional[Dict] = None,
         abort_on_block: bool = True,
     ) -> OrchestrationResult:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._pool, self.run_graph, nodes, initial_context, abort_on_block)
+        return await asyncio.to_thread(self.run_graph, nodes, initial_context, abort_on_block)
 
     async def run_saga_async(
         self,
         steps: List[AgentNode],
         initial_context: Optional[Dict] = None,
     ) -> OrchestrationResult:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._pool, self.run_saga, steps, initial_context)
+        return await asyncio.to_thread(self.run_saga, steps, initial_context)
 
     # ── Internal node execution ────────────────────────────────────────────────
 

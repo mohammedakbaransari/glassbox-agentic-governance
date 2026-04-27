@@ -1,6 +1,6 @@
 # GlassBox — Architecture Reference
 
-**v1.0.0 | Mohammed Akbar Ansari | Independent Researcher | Navi Mumbai, India**
+**v1.2.0 | Mohammed Akbar Ansari | Independent Researcher |  **
 
 ---
 
@@ -11,460 +11,303 @@ It implements the *decision-semantic layer* — the missing tier between AI agen
 enterprise execution systems. Every AI-generated operational decision passes through
 GlassBox before it reaches any downstream system.
 
+**Formal model:** Every decision `D = (agent, type, context, metadata, payload)` is governed by:
+
 ```
-AI Agent
-   │
-   ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                    GlassBox Framework                            │
-│                                                                  │
-│  Security → Contract → Schema → Velocity → Anomaly              │
-│     → Policy → Risk → Disposition → Audit                       │
-│                                                                  │
-│  ┌──────────┐  ┌───────────┐  ┌──────────────┐  ┌──────────┐  │
-│  │ Policy   │  │ Audit     │  │  Workflow    │  │  Event   │  │
-│  │ Store    │  │ Repository│  │  Engine      │  │  Bus     │  │
-│  │(SQLite)  │  │ (SQLite)  │  │  (SQLite)    │  │ (async)  │  │
-│  └──────────┘  └───────────┘  └──────────────┘  └──────────┘  │
-└──────────────────────────────────────────────────────────────────┘
-   │           │               │
-   ▼           ▼               ▼
-EXECUTE    BLOCK          HUMAN_REVIEW
-   │                           │
-   ▼                           ▼
-Enterprise System         Workflow Queue
-(ERP, CRM, Trading)       (approval UI)
+G(D) = Φ₈ ∘ Φ₇ ∘ Φ₆ ∘ Φ₅ ∘ Φ₄ ∘ Φ₃ ∘ Φ₂ ∘ Φ₁ ∘ Φ₀(D)
+```
+
+where each `Φₙ` is an ordered stage that may `PASS` or `BLOCK` the decision.
+
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+flowchart LR
+    A([AI Agent]) -->|DecisionRequest| GB[GlassBox\n9-Stage Governance]
+    GB -->|AUTO_EXECUTE| ENT[Enterprise System\nERP · CRM · Trading · SCADA]
+    GB -->|HUMAN_REVIEW| WFQ[Workflow Queue\nApproval UI]
+    GB -->|BLOCK| REJ([Rejected])
+    GB -->|all paths| AUD[(Audit Trail\n+ Events\n+ WAL)]
 ```
 
 ---
 
-## 2. Layer Architecture
+## 2. Four-Tier Architecture
 
-GlassBox is a three-tier framework:
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+flowchart TB
+    classDef t4 fill:#6c5ce7,stroke:#4a3ab5,color:#fff
+    classDef t3 fill:#0984e3,stroke:#044f8c,color:#fff
+    classDef t2 fill:#00b894,stroke:#00695c,color:#fff
+    classDef t1 fill:#fdcb6e,stroke:#e17055,color:#000
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│  Tier 3 — Integration Layer                                    │
-│  REST API · PySpark Adapter · Platform Adapters · Event Bus    │
-├────────────────────────────────────────────────────────────────┤
-│  Tier 2 — Application Layer                                    │
-│  GovernancePipeline · WorkflowEngine · RulesLoader             │
-│  DecisionReplay · RetryExecutor                                │
-├────────────────────────────────────────────────────────────────┤
-│  Tier 1 — Core Framework                                       │
-│  PolicyEngine · RiskEvaluator · AnomalyDetector                │
-│  VelocityBreaker · SchemaValidator · SecuritySanitizer         │
-│  AuditLogger · PolicyRepository · AuditRepository             │
-│  WorkflowRepository · EventBus · ExecutionTrace                │
-└────────────────────────────────────────────────────────────────┘
+    T4["Tier 4 — Integration Layer\nREST API (15 endpoints) · PySpark Adapter · LangChain · LangGraph · AutoGen · MCP Gateway · OPA · CrewAI"]:::t4
+    T3["Tier 3 — Orchestration & AI Layer\nAgentOrchestrator (Chain/DAG/Saga) · AgenticRAG · MultiTenantPipeline · EnterprisePipeline"]:::t3
+    T2["Tier 2 — Application Layer\nGovernancePipeline · WorkflowEngine · DecisionReplay · RulesLoader · PolicySimulator · DecisionExplainer"]:::t2
+    T1["Tier 1 — Core Framework\nPolicyEngine (35 policies) · PolicyParameterStore · RiskEvaluator\nAnomalyDetector + DistributedAnomalyDetector · VelocityBreaker + DistributedFleetBudgetPolicy\nStageRegistry (P50/P99) · WriteAheadLog · TamperEvidentAuditLogger · AuditLogger\nEventBus · EventDispatcher · BoundedQueue · AccessControl · Encryption\nSQLite/PostgreSQL Repositories · TenantRegistry · PayloadSanitizer"]:::t1
+
+    T4 --> T3 --> T2 --> T1
 ```
 
 ---
 
-## 3. Component Map
+## 3. The 9-Stage Pipeline — Detailed
 
-```
-glassbox/
-├── governance/              Core pipeline and domain logic
-│   ├── pipeline.py          GovernancePipeline — 9-stage orchestrator
-│   ├── models.py            All domain models (DecisionRequest, AuditRecord, …)
-│   ├── policy_engine.py     PolicyEngine — thread-safe registry + evaluator
-│   ├── risk_evaluator.py    RiskEvaluator — weighted composite scoring (0–100)
-│   ├── anomaly_detector.py  AnomalyDetector — Z-score rolling baselines
-│   ├── velocity_breaker.py  VelocityBreaker — per-agent + ecosystem rate limits
-│   ├── schema_validator.py  SchemaValidator — payload structure validation
-│   ├── audit_logger.py      AuditLogger — in-memory ring buffer + JSONL files
-│   ├── decision_replay.py   DecisionReplay — sync + async + parallel replay
-│   ├── retry_policy.py      RetryExecutor — sync + async retry with backoff
-│   ├── context_capture.py   ContextCapture — platform-safe metadata enrichment
-│   ├── logging_manager.py   GlassBoxLogger — JSON/text, rotating, GLASSBOX_LOG_LEVEL
-│   └── execution_trace.py   ExecutionTrace — per-stage pipeline trace (opt-in)
-│
-├── store/                   Repository pattern — pluggable storage backends
-│   └── repository.py        PolicyRepository, AuditRepository, WorkflowRepository
-│                            InMemory + SQLite implementations, RepositoryFactory
-│
-├── events/                  Domain event system
-│   └── event_bus.py         EventBus, 8 domain events, async handlers, webhooks
-│
-├── rules/                   Declarative rules engine
-│   └── rules_engine.py      RuleCondition, DeclarativeRule, RulesLoader
-│                            YAML/JSON → Policy compilation, 12 operators
-│
-├── workflow/                Approval workflow engine
-│   └── workflow_engine.py   WorkflowEngine, WorkflowInstance, SLA monitoring
-│                            States: pending → in_review → approved/rejected
-│
-├── security/                Input sanitisation and injection prevention
-│   └── sanitizer.py         PayloadSanitizer — SQL, SSTI, XSS, path traversal
-│                            validate_agent_id() — log injection prevention
-│
-├── adapters/                Platform integration adapters
-│   ├── platforms.py         DatabricksAdapter, KubernetesAdapter, FabricAdapter
-│   │                        BaseAdapter, auto_detect_adapter()
-│   └── spark.py             GlassBoxSparkAdapter — UDF, mapPartitions, Streaming
-│
-├── api/                     REST API
-│   └── app.py               Flask — 12 endpoints, security headers, UUID validation
-│
-├── scenarios/               Industry scenario demonstrations (8 built-in)
-│   └── run_scenarios.py
-│
-├── benchmarks/              Performance benchmark suite
-│   └── run_benchmarks.py
-│
-tests/
-├── test_glassbox.py         Core test suite — 172 tests, 27 classes
-├── test_load_stress_security.py  Load/stress/security — 60 tests, 12 classes
-└── test_framework.py        Framework components — 66 tests, 11 classes
+### 3.1 Stage Flow
 
-examples/
-└── industry_examples.py     12 industry use-case examples
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+flowchart TD
+    REQ([DecisionRequest\nagent_id · decision_type\npayload · context]) --> SEC
+
+    SEC{Security\nPre-check\nvalidate_agent_id\nPayloadSanitizer}
+    SEC -->|"SQL/XSS/SSTI\npath traversal"| BLK_SEC([BLOCKED\nSECURITY-001\nrisk=100])
+    SEC -->|clean| S0
+
+    S0{Stage 0\nAgentContract\nValidation}
+    S0 -->|"type not permitted\nor amount > limit"| BLK_S0([BLOCKED\nCONTRACT-001])
+    S0 -->|ok| S1
+
+    S1[Stage 1\nContext Capture\ntimestamp · hostname\nplatform · chain] --> S2
+
+    S2[Stage 2\nAuditRecord Init\nimmutable record\ncreated] --> S3
+
+    S3{Stage 3\nSchema Validation\nrequired fields\ntypes · constraints}
+    S3 -->|"missing or\nwrong type"| BLK_S3([BLOCKED\nSCHEMA-001])
+    S3 -->|ok| S4
+
+    S4{Stage 4\nVelocity Breaker\nper-agent window\necosystem limit}
+    S4 -->|"rate exceeded"| BLK_S4([BLOCKED\nVELOCITY-001\nor ECOSYSTEM-001])
+    S4 -->|ok| S5
+
+    S5{Stage 5\nAnomaly Detection\nWelford Z-score\nvs rolling baseline}
+    S5 -->|"z-score > 3σ\nafter min_samples"| BLK_S5([BLOCKED\nANOMALY-001\nfield descriptions])
+    S5 -->|ok| S6
+
+    S6{Stage 6\nPolicy Enforcement\n35 built-in policies\n+ custom + YAML}
+    S6 -->|"any policy\nreturns fail"| BLK_S6([BLOCKED\npolicy violation list\nsanitized messages])
+    S6 -->|pass| S7
+
+    S7[Stage 7\nRisk Evaluation\ncomposite 0-100\ndomain factors]
+    S7 --> S8
+
+    S8{Stage 8\nDisposition\n+ Finalise}
+    S8 -->|"risk ≤ 35"| AE([AUTO_EXECUTE\nexecutor called])
+    S8 -->|"35 < risk ≤ 70"| HR([HUMAN_REVIEW\nWorkflowEngine\nidempotent create])
+    S8 -->|"risk > 70\nor policy BLOCK"| BK([BLOCK\nevent emitted])
+    S8 --> WAL[(WAL begin → commit\nAuditLogger\nAuditRepository\nEventBus.publish)]
+
+    AE --> RESP([DecisionResponse\n+ ExecutionTrace])
+    HR --> RESP
+    BK --> RESP
 ```
+
+### 3.2 Fail-Fast Semantics
+
+Any stage may emit `BLOCKED`. Subsequent stages are skipped. The audit record is always written, even for blocked decisions. Malicious payloads (security pre-check) are **not** persisted to audit to prevent log injection.
+
+### 3.3 StageRegistry Runtime Contract
+
+`StageRegistry` gates built-in stage execution via feature flags, canary percentages, and cohort rules. It also accumulates per-stage latency samples for P50/P99 computation.
+
+**Important boundary:** custom `stage_impl` objects can be registered but the current pipeline does not dynamically invoke them. The registry controls *whether* built-in stages run, not *what* custom stages run.
 
 ---
 
-## 4. Pipeline Stages — Detailed
+## 4. Component Architecture
 
-The `GovernancePipeline` runs every decision through 9 ordered stages.
-Stages are fail-fast: a block at any stage short-circuits all remaining stages.
+### 4.1 Core Component Dependencies
 
-```
-DecisionRequest
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ SECURITY PRE-CHECK (before Stage 0)                         │
-│  validate_agent_id() → rejects SQL/XSS/path-traversal       │
-│  PayloadSanitizer.check() → scans for 25+ injection patterns│
-│  Blocked → SECURITY-001 violation                           │
-└─────────────────────────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ STAGE 0: AgentContract Validation                           │
-│  Checks: permitted_types, max_amount, max_delegation_depth   │
-│  Blocked → CONTRACT-001 violation                           │
-└─────────────────────────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ STAGE 1: Context Capture                                    │
-│  Enriches: timestamp, hostname, platform, agent_chain       │
-│  Platform-safe: env-var precedence for hostname             │
-└─────────────────────────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ STAGE 2: AuditRecord initialisation                         │
-│  Creates the immutable audit record with enriched context   │
-└─────────────────────────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ STAGE 3: Schema Validation                                  │
-│  Required fields, type checks, min/max constraints          │
-│  Blocked → SCHEMA-001 violation                             │
-└─────────────────────────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ STAGE 4: Velocity Breaker                                   │
-│  Per-agent: sliding window, cooldown, circuit breaker       │
-│  Ecosystem: fleet-wide aggregate rate limit                 │
-│  Blocked → VELOCITY-001 or ECOSYSTEM-001                    │
-└─────────────────────────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ STAGE 5: Anomaly Detection                                  │
-│  Z-score against per-agent rolling baseline                 │
-│  Activates after min_samples (default: 10)                  │
-│  Blocked → ANOMALY-001 with anomalous field descriptions    │
-└─────────────────────────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ STAGE 6: Policy Enforcement                                 │
-│  Evaluates all applicable registered policies               │
-│  Built-in: 12 policies across 7 domains                     │
-│  Custom: Python callables + YAML/JSON declarative rules     │
-│  Blocked → policy violation list                            │
-└─────────────────────────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ STAGE 7: Risk Evaluation                                    │
-│  Composite weighted score 0–100                             │
-│  Domain-specific factor extractors per decision type        │
-│  Disposition: AUTO_EXECUTE ≤35 / HUMAN_REVIEW ≤70 / BLOCK  │
-└─────────────────────────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ STAGE 8: Disposition + Finalise                             │
-│  AUTO_EXECUTE  → call executor (with retry), emit executed  │
-│  HUMAN_REVIEW  → create WorkflowInstance, emit pending      │
-│  BLOCK         → emit blocked event                         │
-│  Audit: AuditLogger (in-memory) + AuditRepository (SQLite)  │
-└─────────────────────────────────────────────────────────────┘
-      │
-      ▼
-DecisionResponse
-(+ ExecutionTrace if trace_enabled=True)
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+graph TD
+    GP[GovernancePipeline] --> PE[PolicyEngine]
+    GP --> RE[RiskEvaluator]
+    GP --> AD[AnomalyDetector]
+    GP --> VB[VelocityBreaker]
+    GP --> SV[SchemaValidator]
+    GP --> PS[PayloadSanitizer]
+    GP --> AL[AuditLogger]
+    GP --> AR[AuditRepository]
+    GP --> WF[WorkflowEngine]
+    GP --> EB[EventBus]
+    GP --> SR[StageRegistry]
+    GP --> WAL[WriteAheadLog]
+    GP --> CC[ContextCapture]
+    GP --> ET[ExecutionTrace]
+
+    PE --> PP[PolicyParameterStore]
+    PE --> RO[ReadOnlySnapshot]
+
+    AD --> RAS[(RedisAnomalyStore\noptional)]
+    VB --> RFB[(RedisFleetBudget\noptional)]
+
+    WF --> WR[WorkflowRepository]
+    WF --> EB
+
+    AL --> BQ[BoundedQueue]
+    AL --> ED[EventDispatcher]
+
+    MT[MultiTenantPipeline] --> TR[TenantRegistry]
+    TR --> GP
+
+    EP[EnterprisePipeline] --> GP
+    EP --> AC[AccessControl]
+    EP --> CRM[CryptoManager]
+    EP --> TEAL[TamperEvidentAuditLogger]
 ```
 
----
-
-## 4a. Error Path Scenarios
-
-While the happy path shows a decision flowing through all stages, real systems encounter failures. Here are key error scenarios and how GlassBox handles them:
-
-### Scenario 1: Security Violation (Early Exit — Pre-Stage 0)
+### 4.2 Governance Module Map
 
 ```
-Request with SQL injection payload
-      │
-      ▼ SECURITY PRE-CHECK
-    [PayloadSanitizer detects: " OR 1=1' in field]
-      │
-      ▼ BLOCKED
-┌────────────────────────────────────┐
-│ response.final_status = BLOCKED    │
-│ response.flaw detected: security   │
-│ policy_violations[0] = "SECURITY-001: SQL injection pattern detected" │
-│ response.risk_score = 100 (critical) │
-└────────────────────────────────────┘
-      │
-      ▼ Event: security.violation
-      │ (alert SIEM immediately)
-      │
-   LOGGED (immutable audit record)
-  (No downstream system sees this)
+glassbox/governance/                     32 modules
+│
+├── PIPELINE CORE
+│   ├── pipeline.py           GovernancePipeline — 9-stage orchestrator
+│   ├── models.py             All domain models (DecisionRequest, AuditRecord, …)
+│   ├── execution_trace.py    Per-stage timer + outcome (opt-in)
+│   └── stage_registry.py     Feature flags, canary, P50/P99 latency tracking
+│
+├── POLICY LAYER
+│   ├── policy_engine.py      Thread-safe registry + evaluator
+│   │                         ReadOnlySnapshot prevents mutation during eval
+│   │                         Lock pooling (16 partitions) for audit writes
+│   ├── policy_parameters.py  PolicyParameterStore — runtime threshold updates
+│   └── simulator.py          PolicySimulator — dry-run impact analysis
+│
+├── RISK & ANOMALY
+│   ├── risk_evaluator.py     Weighted composite 0-100 with domain extractors
+│   ├── anomaly_detector.py   AnomalyDetectorOptimized (Welford O(1))
+│   │                         DistributedAnomalyDetector — Redis Lua shared stats
+│   └── velocity_breaker.py   Per-agent sliding window + ecosystem limit
+│                             DistributedFleetBudgetPolicy — Redis INCRBYFLOAT
+│
+├── AUDIT LAYER
+│   ├── audit_logger.py       AuditLogger — deque ring buffer + JSONL rotation
+│   │                         Lock pool (16 partitions) for parallel writes
+│   ├── advanced_audit.py     TamperEvidentAuditLogger — HMAC/SHA-256 chain
+│   ├── bounded_queue.py      BoundedQueue — backpressure-safe async audit writes
+│   └── write_ahead_log.py    WriteAheadLog — PENDING→COMMITTED two-phase tracking
+│
+├── EVENT LAYER
+│   ├── event_dispatcher.py   EventDispatcher — fan-out to handlers
+│   └── logging_manager.py    GlassBoxLogger — JSON/text, GLASSBOX_LOG_LEVEL
+│
+├── INPUT VALIDATION
+│   ├── schema_validator.py   Per-type required fields and type checks
+│   └── context_capture.py   Platform-safe metadata (hostname, env, chain)
+│
+├── WORKFLOW
+│   └── [workflow_engine.py is in glassbox/workflow/, not governance/]
+│       Idempotent create_from_decision() — WAL replay safe
+│
+├── MULTI-TENANCY & SECURITY
+│   ├── multitenancy.py       TenantRegistry — quota, eviction, path-safe IDs
+│   │                         MultiTenantPipeline — per-tenant isolated components
+│   ├── access_control.py     RBAC — role hierarchy, permission caching
+│   ├── encryption.py         AES-256-GCM + PBKDF2 + HMAC
+│   ├── api_gateway.py        Middleware — auth, rate-limit, CORS, validation
+│   └── request_context.py    Thread-local tenant/trace context
+│
+├── RETRY & REPLAY
+│   ├── decision_replay.py    Sync + async + parallel batch replay
+│   └── retry_policy.py       RetryExecutor — sync/async with backoff
+│
+├── AI FEATURES
+│   ├── trust.py              TrustLevel — agent trust chain scoring
+│   ├── explainer.py          DecisionExplainer — NL rationale generation
+│   └── currency.py           CurrencyConverter — multi-currency normalisation
+│
+└── INFRASTRUCTURE
+    ├── threadpool_config.py  ThreadPoolConfig — async worker pool
+    ├── idempotency.py        IdempotencyStore — request deduplication
+    └── enterprise_pipeline.py  EnterprisePipeline — full-stack wrapper
 ```
-
-**Outcome:** Malicious payload blocked before reaching policy engine. No risk of downstream system compromise.
-
----
-
-### Scenario 2: Policy Violation (Fail-Fast Exit at Stage 5)
-
-```
-Valid request but violates policy
-      │
-      ▼ STAGES 0–4 pass
-      │ (contract OK, schema OK, velocity OK, anomaly OK)
-      │
-      ▼ STAGE 5: POLICY ENFORCEMENT
-    [PolicyEngine evaluates: amount=$750,000 > limit=$500,000]
-      │
-      ▼ BLOCKED
-┌────────────────────────────────────────┐
-│ response.final_status = BLOCKED        │
-│ policy_violations[0] = "[PROC-001] Amount $750K exceeds $500K approval limit" │
-│ response.risk_score = 92 (very high)   │
-│ response.disposition = BLOCK           │
-└────────────────────────────────────────┘
-      │
-      ▼ Event: policy.violated
-      │ Event: decision.blocked
-      │
-   LOGGED + ESCALATED
-  (Alert compliance team)
-```
-
-**Outcome:** Invalid decision blocked with minimal latency. Compliance evidence recorded.
-
----
-
-### Scenario 3: Anomaly Detection Trip (Advisory Block at Stage 4)
-
-```
-Statistically unusual request
-      │
-      ▼ STAGES 0–3 pass
-      │
-      ▼ STAGE 4: ANOMALY DETECTION
-    [AnomalyDetector: agent_x avg_amount=$10K, this request=$500K]
-    [Z-score: 9.8 (threshold 3.0)]
-      │
-      ▼ ANOMALY DETECTED
-┌────────────────────────────────────────┐
-│ response.final_status = BLOCKED        │
-│ anomaly_fields = ["amount"]            │
-│ anomaly_detector_message = "Amount deviates 9.8σ from baseline" │
-│ response.risk_score = 85 (high)        │
-└────────────────────────────────────────┘
-      │
-      ▼ Event: anomaly.detected
-      │ Suggest: manual review
-      │
-   LOGGED + ALERT
-  (Optional: escalate to human)
-```
-
-**Outcome:** Unusual pattern detected early, blocking cascade from undetected bugs. Can configure `anomaly_enabled=False` for permissive mode.
-
----
-
-### Scenario 4: Velocity Breaker Trip (Rate Limit Block at Stage 3)
-
-```
-Agent exceeded rate limits
-      │
-      ▼ STAGES 0–2 pass
-      │
-      ▼ STAGE 3: VELOCITY BREAKER
-    [Agent "procurement_ai" sent 101 decisions in 60 seconds]
-    [Limit: 100/60sec — BREACHED]
-      │
-      ▼ CIRCUIT BREAKER TRIPS
-┌────────────────────────────────────────┐
-│ response.final_status = BLOCKED        │
-│ circuit_breaker_triggered = true       │
-│ message = "Agent procurement_ai rate limit exceeded" │
-│ cooldown_until = 60 seconds            │
-│ response.disposition = BLOCK           │
-└────────────────────────────────────────┘
-      │
-      ▼ Event: circuit_breaker.tripped
-      │ (retry after cooldown)
-      │
-   LOGGED
-  (Subsequent requests blocked until cooldown expires)
-```
-
-**Outcome:** Runaway agent stopped. Protects downstream systems and database. Cooldown prevents repeated violations.
-
----
-
-### Scenario 5: Disposition → Human Review (Non-Error Path, Stage 7)
-
-```
-Decision is valid but risky → routes to human
-      │
-      ▼ STAGES 0–6 pass (no blocks, high risk score)
-      │
-      ▼ STAGE 7: DISPOSITION
-    [Risk score = 72 (above HUMAN_REVIEW threshold 70)]
-    [Disposition = HUMAN_REVIEW, not AUTO_EXECUTE or BLOCK]
-      │
-      ▼ CREATE WORKFLOW
-┌────────────────────────────────────────┐
-│ response.final_status = PENDING_REVIEW │
-│ response.disposition = HUMAN_REVIEW    │
-│ workflow_id = "wf-xyz-12345"           │
-│ sla_expires_at = now + 120 minutes     │
-└────────────────────────────────────────┘
-      │
-      ▼ Event: decision.pending_review
-      │ (to approval queue UI)
-      │
-   LOGGED
-  (Waits for human approval/rejection)
-```
-
-**Outcome:** High-risk decisions get human eyes without blocking. SLA tracking ensures timely review.
 
 ---
 
 ## 5. Storage Architecture — Repository Pattern
 
-All storage is abstracted behind repository interfaces. The pipeline and
-workflow engine never depend on a concrete storage class — they depend on
-the abstract interface. This makes it trivially easy to add new backends
-(PostgreSQL, Elasticsearch, DynamoDB) without touching pipeline logic.
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+classDiagram
+    class PolicyRepository {
+        <<interface>>
+        +save(policy)
+        +get_by_id(id)
+        +list_all()
+        +delete(id)
+    }
+    class AuditRepository {
+        <<interface>>
+        +save(record)
+        +get_by_id(id)
+        +query(**filters)
+        +aggregate_spend(...)
+        +count(**filters)
+    }
+    class WorkflowRepository {
+        <<interface>>
+        +save(workflow)
+        +get_by_id(id)
+        +get_by_decision(decision_id)
+        +list_pending()
+        +update_status(id, status)
+    }
 
-```
-                    ┌─────────────────────┐
-                    │  PolicyRepository   │  (interface)
-                    └──────────┬──────────┘
-                               │
-                 ┌─────────────┴──────────────┐
-                 │                            │
-    ┌────────────▼──────┐         ┌──────────▼──────────┐
-    │  InMemoryPolicy   │         │  SQLitePolicy        │
-    │  Repository       │         │  Repository          │
-    │  (tests, dev)     │         │  (production)        │
-    └───────────────────┘         └──────────────────────┘
-
-                    ┌─────────────────────┐
-                    │  AuditRepository    │  (interface)
-                    └──────────┬──────────┘
-                               │
-                 ┌─────────────┴──────────────┐
-                 │                            │
-    ┌────────────▼──────┐         ┌──────────▼──────────┐
-    │  AuditLogger      │         │  SQLiteAudit         │
-    │  (deque ring buf) │         │  Repository          │
-    │  in-memory        │         │  (indexed, queryable)│
-    └───────────────────┘         └──────────────────────┘
-
-                    ┌─────────────────────┐
-                    │  WorkflowRepository │  (interface)
-                    └──────────┬──────────┘
-                               │
-                 ┌─────────────┴──────────────┐
-                 │                            │
-    ┌────────────▼──────┐         ┌──────────▼──────────┐
-    │  In-memory via    │         │  SQLiteWorkflow      │
-    │  :memory: SQLite  │         │  Repository          │
-    │  (tests)          │         │  (production)        │
-    └───────────────────┘         └──────────────────────┘
+    PolicyRepository <|-- InMemoryPolicyRepository
+    PolicyRepository <|-- SQLitePolicyRepository
+    AuditRepository <|-- AuditLogger
+    AuditRepository <|-- SQLiteAuditRepository
+    WorkflowRepository <|-- InMemoryWorkflowRepository
+    WorkflowRepository <|-- SQLiteWorkflowRepository
 ```
 
-**Adding PostgreSQL backend:**
+**Adding a PostgreSQL backend:**
 
 ```python
 class PostgreSQLAuditRepository(AuditRepository):
-    def save(self, record): ...  # implement the 5 methods
+    def save(self, record): ...
     def get_by_id(self, id): ...
     def query(self, **filters): ...
     def aggregate_spend(self, ...): ...
     def count(self, **filters): ...
 
-# Inject into pipeline — nothing else changes
 pipeline = GovernancePipeline(audit_repo=PostgreSQLAuditRepository(...))
 ```
+
+### 5.1 Two WAL Systems (Do Not Confuse)
+
+| WAL | Location | Purpose |
+|---|---|---|
+| SQLite journal WAL mode | `store/database_abstraction.py` | Improves SQLite read/write concurrency |
+| Governance WAL | `governance/write_ahead_log.py` | Crash-safe two-phase side-effect tracking |
+
+The governance WAL begins **after** disposition is chosen. It tracks: audit logger write, optional audit repo persist, event emission, and workflow creation. Executor calls and compliance evidence collection are outside the current WAL boundary.
 
 ---
 
 ## 6. Event-Driven Architecture
 
-```
-                GovernancePipeline
-                        │
-        ┌───────────────┼───────────────┐
-        │               │               │
-        ▼               ▼               ▼
-  decision.executed  decision.blocked  policy.violated
-  decision.pending_review  anomaly.detected
-  circuit_breaker.tripped  security.violation
-  workflow.sla_breached
-        │
-        ▼
-┌───────────────────────────────────────────────────────┐
-│                     EventBus                          │
-│  Thread-safe · async handlers · wildcard subscriptions│
-└───────┬───────────────┬───────────────┬───────────────┘
-        │               │               │
-        ▼               ▼               ▼
-LoggingHandler    WebhookHandler   CustomHandler
-(structured logs) (HTTP POST)      (your code)
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+flowchart LR
+    GP[GovernancePipeline] -->|"decision.executed\ndecision.blocked\ndecision.pending_review\npolicy.violated\nanomaly.detected\ncircuit_breaker.tripped\nsecurity.violation\nworkflow.sla_breached"| EB[EventBus]
+
+    EB -->|subscribe| LH[LoggingHandler\nstructured logs]
+    EB -->|subscribe| WH[WebhookHandler\nHTTP POST]
+    EB -->|subscribe| SSE[SSE Stream\n/events/stream]
+    EB -->|subscribe| CH[Custom Handler\nyour code]
 ```
 
 **Integration example:**
 
 ```python
-from glassbox.events.event_bus import EventBus, DecisionBlocked
+from glassbox.events.event_bus import EventBus
 
 bus = EventBus()
-
-# Alert on any block
 bus.subscribe("decision.blocked",
     lambda e: send_slack_alert(e.payload["agent_id"], e.payload["violations"]))
-
-# Webhook to external system
 bus.subscribe("*", WebhookEventHandler("https://my-siem.company.com/glassbox"))
 
 pipeline = GovernancePipeline(event_bus=bus)
@@ -472,89 +315,140 @@ pipeline = GovernancePipeline(event_bus=bus)
 
 ---
 
-## 7. Declarative Rules — Policy-as-Data
+## 7. Multi-Tenancy Architecture
 
-GlassBox supports two policy formats:
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+flowchart TD
+    MT[MultiTenantPipeline] --> TR[TenantRegistry]
 
-**Format 1 — Python callable (for complex logic):**
-```python
-def my_rule(payload, context):
-    if payload.get("amount", 0) > 500_000:
-        return PolicyEvaluation("MY-001", "My Policy", "fail", "Over limit")
-    return PolicyEvaluation("MY-001", "My Policy", "pass", "OK")
+    TR -->|get_or_create| T1["Tenant: org_a\nPolicyEngine\nVelocityBreaker\nAnomalyDetector\nAuditLogger"]
+    TR -->|get_or_create| T2["Tenant: org_b\nPolicyEngine\nVelocityBreaker\nAnomalyDetector\nAuditLogger"]
+    TR -->|get_or_create| TN["Tenant: org_n\n..."]
 
-engine.register(Policy("MY-001", "My Policy", [DecisionType.PROCUREMENT], my_rule))
+    T1 --> GP1[GovernancePipeline\norg_a isolated]
+    T2 --> GP2[GovernancePipeline\norg_b isolated]
+    TN --> GPN[GovernancePipeline\norg_n isolated]
 ```
 
-**Format 2 — Declarative YAML (no Python required):**
-```yaml
-rules:
-  - policy_id: ORG-001
-    name: Departmental Spending Cap
-    applies_to: [procurement]
-    logic: and
-    conditions:
-      - field: amount
-        op: gt
-        value: 100000
-      - field: department_code
-        op: in
-        value: [DEPT-A, DEPT-B]
-      - field: approval_ref
-        op: missing
-    result: fail
-    message: "Amount {amount} in controlled department requires approval_ref."
+**Tenant ID validation:** alphanumeric + hyphens, 3–128 chars, no path separators, no null bytes, no `../` traversal patterns.
 
-  - policy_id: ORG-002
-    name: Low Confidence Warning
-    applies_to: [procurement, financial, pricing]
-    conditions:
-      - field: ctx.confidence
-        op: lt
-        value: 0.6
-    result: warn
-    message: "Low AI confidence — manual verification recommended."
-```
-
-```python
-loader = RulesLoader()
-loader.load_and_register("rules/org_policies.yaml", pipeline.policy_engine)
-```
-
-**Supported operators:** `gt`, `gte`, `lt`, `lte`, `eq`, `neq`, `in`, `not_in`,
-`missing`, `present`, `contains`, `startswith`, `regex`
+**Quota enforcement:** `max_tenants` cap with LRU eviction of inactive tenants.
 
 ---
 
-## 8. Workflow Engine — State Machine
+## 8. Distributed Components (v1.2.0)
 
-```
-                    ┌─────────┐
-                    │ pending │ ◄── created by pipeline on HUMAN_REVIEW
-                    └────┬────┘
-                         │ start_review()
-                         ▼
-                   ┌───────────┐
-                   │ in_review │ ◄── reviewer picks it up
-                   └─────┬─────┘
-                         │
-           ┌─────────────┼──────────────┐
-           │             │              │
-    approve()        reject()      escalate()
-           │             │              │
-           ▼             ▼              ▼
-       ┌────────┐  ┌──────────┐  ┌───────────┐
-       │approved│  │ rejected │  │ escalated │
-       └────────┘  └──────────┘  └───────────┘
+### 8.1 Fleet Budget — Redis-backed
 
-SLA monitoring (background thread, opt-in):
-  → timed_out if not resolved within sla_minutes
-  → auto-escalate if escalate_to is set
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+sequenceDiagram
+    participant A as Agent
+    participant P as GovernancePipeline
+    participant DFB as DistributedFleetBudgetPolicy
+    participant REDIS as Redis
+
+    A->>P: process(request, amount=50000)
+    P->>DFB: _rule(payload) [preview]
+    DFB->>REDIS: GET fleet:budget:YYYY-MM-DD
+    REDIS-->>DFB: 800000.0
+    DFB->>DFB: 800000 + 50000 = 850000 < 1000000
+    DFB-->>P: pass (warn if > 80%)
+    P-->>A: DecisionResponse
+    Note over P,REDIS: after execution:
+    P->>DFB: record_execution(50000)
+    DFB->>REDIS: INCRBYFLOAT fleet:budget:YYYY-MM-DD 50000
 ```
+
+### 8.2 Anomaly Baselines — Redis Welford
+
+The `RedisAnomalyStore` uses an atomic Lua script to update Welford running statistics (`count`, `mean`, `M2`) per `{namespace}:{agent_id}:{decision_type}:{field}` key:
+
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+flowchart LR
+    DA[DistributedAnomalyDetector] -->|update_and_get| RAS[RedisAnomalyStore]
+    RAS -->|EVALSHA Lua| R[(Redis Hash\ncount · mean · M2\nTTL=86400s)]
+    RAS -->|fallback if Redis down| IM[In-process stats\nparent class]
+    DA -->|z-score| CHECK{z > threshold?}
+    CHECK -->|yes| BLOCK([BLOCK])
+    CHECK -->|no| PASS([PASS])
+```
+
+**Exponential forgetting** when `count >= maxn`: `mean = mean*(1-α) + x*α` where `α = 1/maxn`. This keeps the algorithm O(1) in Redis space without storing individual values.
 
 ---
 
-## 9. Thread-Safety Model
+## 9. Workflow Engine — State Machine
+
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+stateDiagram-v2
+    [*] --> pending: pipeline creates workflow\n(HUMAN_REVIEW disposition)
+    pending --> in_review: start_review(actor)
+    in_review --> approved: approve(actor, notes)
+    in_review --> rejected: reject(actor, notes)
+    in_review --> escalated: escalate(to_level, reason)
+    escalated --> in_review: reassigned to Level 2
+    approved --> [*]: workflow complete
+    rejected --> [*]: workflow complete
+    pending --> timed_out: SLA expires
+    timed_out --> escalated: auto-escalate if configured
+```
+
+**Idempotency (v1.2.0):** `create_from_decision(decision_id)` checks `repo.get_by_decision(decision_id)` before creating. Duplicate calls (e.g., from WAL replay) return the existing `WorkflowInstance`.
+
+---
+
+## 10. Async Architecture
+
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+flowchart TD
+    CALLER[Caller\nasync code] -->|"await pipeline.process_async(req)"| LOOP[asyncio event loop\nnon-blocking]
+    LOOP -->|run_in_executor| TP["ThreadPoolExecutor\nglassbox-async\nmax_workers=8"]
+    TP -->|sync call| PP["pipeline._run_pipeline()\nall 9 stages\nfully synchronous"]
+    PP --> RESP[DecisionResponse]
+    RESP --> LOOP
+    LOOP --> CALLER
+```
+
+- The asyncio event loop is never blocked
+- All existing synchronous code works unchanged in async contexts
+- `RetryExecutor.async_execute()` uses `asyncio.sleep()` (not `time.sleep()`)
+- `DecisionReplay.async_replay_many()` uses `asyncio.Semaphore` for concurrency cap
+
+---
+
+## 11. Security Model
+
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+flowchart TD
+    REQ([Incoming Request]) --> V1
+
+    V1{1. agent_id\nvalidation\n^[a-zA-Z0-9_\\-.@:]+$\nmax 128 chars}
+    V1 -->|path traversal\nSQL characters\nscript chars| BLK1([BLOCKED\nno audit record])
+    V1 -->|ok| V2
+
+    V2{2. PayloadSanitizer\n25+ injection patterns}
+    V2 -->|"SQL injection\nXSS / SSTI\npath traversal\nnull bytes\n64KB limit"| BLK2([BLOCKED\nmalicious payload\nNOT logged])
+    V2 -->|ok| V3
+
+    V3{3. AgentContract\nStage 0}
+    V3 -->|"type not permitted\namount > limit\ndepth > max"| BLK3([BLOCKED\nCONTRACT-001])
+    V3 -->|ok| PIPELINE[Stages 1–8\nGovernance Pipeline]
+
+    PIPELINE --> EXCEPT[Exception Sanitization]
+    EXCEPT -->|"internal stack traces\nnever reach caller"| SAFE[Sanitized error message\nfull detail in audit log only]
+```
+
+**Exception sanitization (v1.2.0 — O5):** When a policy rule raises an exception, the caller receives `"Policy evaluation error (see audit log for details)"`. The full stack trace is written to the structured audit log only.
+
+---
+
+## 12. Thread-Safety Model
 
 Every mutable shared state in GlassBox is protected:
 
@@ -562,258 +456,192 @@ Every mutable shared state in GlassBox is protected:
 |---|---|---|
 | `AnomalyDetector._stats` | `threading.RLock` | All reads and writes |
 | `PolicyEngine._policies` | `threading.RLock` | register, disable, evaluate |
-| `AuditLogger._records` | `threading.Lock` | append, snapshot |
+| `AuditLogger._records` | `threading.Lock` + pool | append, snapshot |
 | `AuditLogger._file_locks` | per-path `threading.Lock` | JSONL file writes |
 | `VelocityBreaker._windows` | per-agent `threading.Lock` | sliding window |
 | `VelocityBreaker._ecosystem` | `threading.Lock` | ecosystem deque |
 | `GovernancePipeline._contracts` | `threading.RLock` | contract registry |
+| `GovernancePipeline._stage_latency_lock` | `threading.Lock` | P50/P99 sample buffer |
 | `GlassBoxLogger._loggers` | `threading.Lock` | double-checked locking |
 | `SQLite repositories` | `threading.Lock` | all DB operations |
 | `EventBus._handlers` | `threading.Lock` | subscribe, publish |
+| `TenantRegistry._tenants` | `threading.RLock` | create, lookup, evict |
+| `StageRegistry._stats_lock` | `threading.Lock` | stage stats + latencies |
 
-The pipeline itself is stateless per-request — `process()` can be called
-from any number of threads simultaneously.
+`process()` is stateless per-request — callable from any number of concurrent threads.
 
----
+**Lock pooling:** `AuditLogger` uses 16 hash-partitioned `RLock` instances, reducing lock contention by ~16× under concurrent audit writes.
 
-## 10. Async Architecture
-
-```
-asyncio event loop
-        │
-        │  await pipeline.process_async(request)
-        │
-        ▼
-┌───────────────────────────────────────────┐
-│  ThreadPoolExecutor (glassbox-async)      │
-│  max_workers=8 (configurable)             │
-│                                           │
-│  Worker thread:                           │
-│    pipeline._run_pipeline()               │
-│    (all 9 stages, fully synchronous)      │
-└───────────────────────────────────────────┘
-        │
-        │  result returned to event loop
-        ▼
-DecisionResponse
-```
-
-This design means:
-- The asyncio event loop is never blocked
-- All existing synchronous code works unchanged in async contexts
-- `RetryExecutor.async_execute()` uses `asyncio.sleep()` (not `time.sleep()`)
-- `DecisionReplay.async_replay_many()` uses `asyncio.Semaphore` to cap concurrency
+**WeakSet atexit pattern:** A single module-level `atexit` handler (using `WeakSet`) prevents per-instance handler accumulation under high instantiation rates.
 
 ---
 
-## 11. Platform Deployment Patterns
+## 13. Platform Deployment Patterns
 
 ### Standard VM / Docker
+
 ```python
 pipeline = GovernancePipeline(
     log_dir="/var/log/glassbox",
     environment="production",
+    recover_wal_on_startup=True,
 )
 ```
 
 ### Kubernetes
+
 ```python
 from glassbox.adapters.platforms import KubernetesAdapter
 adapter  = KubernetesAdapter()
 pipeline = adapter.create_pipeline()
 
-# K8s health probes
 app.get("/ready",  adapter.readiness_check(pipeline))
 app.get("/alive",  adapter.liveness_check())
 ```
 
 ### Databricks / Microsoft Fabric (PySpark)
+
 ```python
 from glassbox.adapters.spark import GlassBoxSparkAdapter
 adapter = GlassBoxSparkAdapter(spark)
 
-# Govern entire DataFrame
 result_df = adapter.govern_dataframe(decisions_df)
-
-# Structured Streaming
 query = adapter.govern_stream(
     stream_df, output_path="/dbfs/governed", checkpoint="/dbfs/ckpt")
 ```
 
-### Full production stack
-```python
-from glassbox.store.repository     import RepositoryFactory
-from glassbox.events.event_bus     import EventBus, LoggingEventHandler
-from glassbox.workflow.workflow_engine import WorkflowEngine
-from glassbox.rules.rules_engine   import RulesLoader
+### Full Production Stack
 
-repos     = RepositoryFactory.sqlite(db_dir="/var/lib/glassbox")
+```python
+from glassbox.store.database_abstraction import DatabaseFactory
+from glassbox.events.event_bus           import EventBus, LoggingEventHandler
+from glassbox.workflow.workflow_engine   import WorkflowEngine
+from glassbox.rules.rules_engine         import RulesLoader
+from glassbox.governance.velocity_breaker import DistributedFleetBudgetPolicy
+from glassbox.governance.anomaly_detector import DistributedAnomalyDetector, RedisAnomalyStore
+import redis
+
+repos     = DatabaseFactory.create("sqlite", db_path="/var/lib/glassbox/glassbox.db")
 bus       = EventBus()
 bus.subscribe("*", LoggingEventHandler().handle)
-wf_engine = WorkflowEngine(repository=repos["workflow"], event_bus=bus,
+wf_engine = WorkflowEngine(repository=repos.workflow_repo(), event_bus=bus,
                             monitor_sla=True, default_sla_minutes=60)
 
-pipeline  = GovernancePipeline(
-    event_bus=bus, audit_repo=repos["audit"],
-    workflow_engine=wf_engine, trace_enabled=True,
-)
+# Optional: Redis-backed distributed components
+redis_client = redis.Redis(host="redis", port=6379, decode_responses=True)
+fleet_policy  = DistributedFleetBudgetPolicy(budget=1_000_000, redis_client=redis_client)
+dist_detector = DistributedAnomalyDetector(
+    store=RedisAnomalyStore(redis_client=redis_client, namespace="prod"))
 
-# Load declarative policies from YAML files
+pipeline = GovernancePipeline(
+    event_bus=bus,
+    audit_repo=repos.audit_repo(),
+    workflow_engine=wf_engine,
+    anomaly_detector=dist_detector,
+    trace_enabled=True,
+    recover_wal_on_startup=True,
+)
+pipeline.policy_engine.register(fleet_policy.as_policy())
+
 RulesLoader().load_and_register("rules/", pipeline.policy_engine, is_directory=True)
 ```
 
 ---
 
-## 12. Data Flow — Decision Lifecycle
+## 14. Data Flow Timeline
 
 ```
-t=0ms   AI Agent submits DecisionRequest
-t=0.01  Security pre-check (agent_id + payload sanitization)
-t=0.02  AgentContract checked (permitted types, limits)
-t=0.05  Schema validated
-t=0.07  Velocity window checked (per-agent + ecosystem)
-t=0.10  Anomaly detection Z-score computed
-t=0.15  All applicable policies evaluated
-t=0.18  Risk score computed (0–100)
-t=0.20  Disposition determined (execute/review/block)
-t=0.22  AuditLogger.log() — in-memory ring buffer
-t=0.23  AuditRepository.save() — SQLite (if configured)
-t=0.24  EventBus.publish() — async, non-blocking
-t=0.25  WorkflowEngine.create() — if HUMAN_REVIEW (async)
-t=0.25  DecisionResponse returned to caller
+t=0.000 ms  AI Agent submits DecisionRequest
+t=0.005     Security pre-check (agent_id + PayloadSanitizer)
+t=0.010     AgentContract checked (permitted types, amounts, depth)
+t=0.020     Context captured (timestamp, hostname, platform)
+t=0.030     AuditRecord initialised
+t=0.040     Schema validated
+t=0.060     Velocity window checked (per-agent + ecosystem)
+t=0.090     Anomaly detection Z-score computed (Welford O(1))
+t=0.140     All applicable policies evaluated (sanitized exceptions)
+t=0.170     Risk score computed (0–100 composite)
+t=0.185     Disposition determined (execute/review/block)
+t=0.190     WAL begin_transaction()
+t=0.200     AuditLogger.append() — in-memory ring buffer
+t=0.210     AuditRepository.save() — SQLite (if configured)
+t=0.215     WorkflowEngine.create_from_decision() — idempotent
+t=0.220     WAL commit()
+t=0.225     EventBus.publish() — async, non-blocking
+t=0.230     DecisionResponse returned to caller
 ```
 
-Typical end-to-end latency: **P50 = 0.11ms, P99 = 0.47ms** (single-thread, no DB)
+P50 = 0.11 ms · P99 = 0.47 ms (single-thread, in-memory, no DB)
 
 ---
 
-## 13. Security Model
+## 15. Built-In Policies (35 total)
 
-```
-Every request passes through three security checks before Stage 0:
+| Policy ID | Domain | Rule |
+|---|---|---|
+| PROC-001 | Procurement | Amount >$500K requires `contract_id` |
+| PROC-002 | Procurement | Supplier must be on approved registry |
+| PROC-003 | Procurement | High-risk categories require `approval_ref` |
+| PROC-004 | Procurement | Duplicate order detection |
+| PROC-005 | Procurement | Sole-source justification required |
+| PROC-006 | Procurement | Sanctions / debarment check (runtime-configurable lists) |
+| PRICE-001 | Pricing | Max 30% single-decision price change |
+| PRICE-002 | Pricing | New price must not go below floor |
+| PRICE-003 | Pricing | Price change requires `approval_ref` above threshold |
+| PRICE-004 | Pricing | Algorithmic pricing circuit breaker |
+| FIN-001 | Financial | Single transfer limit $1M |
+| FIN-002 | Financial | Destination account must be on approved list |
+| FIN-003 | Financial | GDPR Art.22 — automated decision gate |
+| FIN-004 | Financial | BSA structuring detection (round amounts near $10K CTR) |
+| FIN-005 | Financial | Cumulative daily transfer limit |
+| IT-OPS-002 | IT Ops | Destructive actions require `change_window_approved` |
+| IT-OPS-003 | IT Ops | Production changes require `ticket_id` |
+| IT-OPS-004 | IT Ops | Off-hours production access blocked |
+| LOG-001 | Logistics | High-value shipments require `approval_ref` |
+| HR-001 | HR | Compensation decisions >$50K require `approval_ref` |
+| HR-002 | HR | Terminations require HR manager sign-off |
+| HR-003 | HR | GDPR data rights — personal data access gate |
+| CLIN-001 | Clinical | Dosage must not exceed safety threshold |
+| CLIN-002 | Clinical | Clinical trial protocol compliance gate |
+| TRADE-001 | Trading | Position size limit enforcement |
+| TRADE-002 | Trading | Algorithmic trading circuit breaker |
+| COMPLIANCE-001 | All | Regulatory compliance gate (configurable) |
+| COMPLIANCE-002 | All | Data residency compliance |
+| COMPLIANCE-003 | All | Consent verification gate |
+| RISK-001 | All | Composite risk threshold enforcement |
+| POL-001 | All | Organizational policy gate |
+| GEN-001 | All | Generic amount threshold gate |
+| GEN-002 | All | Generic approval reference gate |
+| AI-001 | All (incl. Clinical, Trading) | Model confidence must be ≥ 0.30 |
+| SECURITY-001 | All (incl. Clinical, Trading) | No `user_override` in production |
 
-1. agent_id validation
-   Regex: ^[a-zA-Z0-9_\-\.@:]+$  (max 128 chars)
-   Rejects: path traversal, SQL, script characters
-   If blocked: SECURITY-001, no audit record with malicious data
-
-2. Payload sanitization (PayloadSanitizer)
-   SQL injection:    15+ patterns (OR 1=1, UNION SELECT, xp_cmdshell, …)
-   Script injection: XSS, SSTI (Jinja/EL), command injection, eval()
-   Path traversal:   ../ and ..\\ detection
-   Null bytes:       \x00 rejection
-   Blocked keywords: /etc/passwd, cmd.exe, powershell, …
-   Size limits:      64KB max payload, depth 5, width 50 keys
-   If blocked: SECURITY-001, malicious payload NOT logged
-
-3. AgentContract (Stage 0)
-   Restricts decision types, amounts, and delegation depth per agent
-```
-
----
-
-## 14. Component Dependencies
-
-This matrix shows which components depend on which others:
-
-| Component | Depends On | Used By | Purpose |
-|-----------|-----------|---------|---------|
-| **GovernancePipeline** | All stage components, repositories, event bus | REST API, orchestrators, adapters | Central orchestrator |
-| **PolicyEngine** | — | GovernancePipeline, RiskEvaluator | Policy registry + evaluation |
-| **RiskEvaluator** | PolicyEngine | GovernancePipeline | Composite risk scoring |
-| **AnomalyDetector** | — | GovernancePipeline | Statistical anomaly detection |
-| **VelocityBreaker** | — | GovernancePipeline | Rate limiting |
-| **SchemaValidator** | — | GovernancePipeline | Payload schema validation |
-| **PayloadSanitizer** | — | GovernancePipeline (pre-check) | Security threat detection |
-| **AuditLogger** | — | GovernancePipeline | In-memory audit ring buffer |
-| **AuditRepository** | — | GovernancePipeline, REST API | Persistent audit storage |
-| **PolicyRepository** | — | PolicyEngine, GovernancePipeline | Policy persistence |
-| **WorkflowRepository** | — | WorkflowEngine, REST API | Workflow state storage |
-| **WorkflowEngine** | WorkflowRepository, EventBus | GovernancePipeline | Approval workflow orchestration |
-| **EventBus** | — | All components | Event publishing + subscription |
-| **RulesLoader** | PolicyEngine | (admin tools) | YAML/JSON rule compilation |
-| **ContextCapture** | — | GovernancePipeline (stage 1) | Metadata enrichment |
-| **ExecutionTrace** | — | GovernancePipeline (optional) | Per-stage debugging |
-| **AgentContract** | — | GovernancePipeline (stage 0) | Agent authority validation |
-| **MultiTenantPipeline** | GovernancePipeline, TenantRegistry | Multi-tenant deployments | Tenant isolation |
-| **AgentOrchestrator** | GovernancePipeline | Multi-agent workflows | Chain/DAG/Saga orchestration |
-| **RAGQueryGovernor** | — | AgenticRAGOrchestrator | Query validation + filtering |
-| **RAGRetrievalGovernor** | — | AgenticRAGOrchestrator | Retrieved chunk validation |
-| **AgenticRAGOrchestrator** | GovernancePipeline, RAG governors | RAG applications | RAG governance orchestrator |
-| **GlassBoxSparkAdapter** | GovernancePipeline | PySpark/Databricks | DataFrame/Streaming governance |
-| **LangChainAdapter** | GovernancePipeline | LangChain agents | Transparent tool governance |
-| **LangGraphAdapter** | GovernancePipeline | LangGraph workflows | Node + state governance |
-| **AutoGenAdapter** | GovernancePipeline | AutoGen agents | Function mapping governance |
-| **REST API (app.py)** | GovernancePipeline, all repositories | HTTP clients | REST endpoint handler |
-
-**Key insight:** `GovernancePipeline` is the hub — all components eventually feed into it or are used by it. This keeps coupling low and testability high.
+> **v1.2.0 change (O7):** `SECURITY-001` and `AI-001` now enforce on `CLINICAL` and `TRADING` decision types.
+> **v1.2.0 change (O6):** `PROC-006` sanctions/debarment lists are runtime-configurable via `PolicyParameterStore`.
+> **v1.2.0 change (O5):** All policy exception messages are sanitized — no internal stack traces reach callers.
 
 ---
 
-## 15. Configuration Parameters & Tuning
+## 16. Configuration Parameters & Tuning
 
-| Parameter | Component | Type | Default | Range | When to Modify |
-|-----------|-----------|------|---------|-------|-----------------|
-| `anomaly_min_samples` | AnomalyDetector | int | 10 | 5–100 | Lower = faster activation; Higher = fewer false positives |
-| `anomaly_z_threshold` | AnomalyDetector | float | 3.0 | 1.5–5.0 | Tighter = fewer anomalies; Looser = catch more outliers |
-| `velocity_window_seconds` | VelocityBreaker | int | 60 | 10–600 | Shorter = tighter rate limiting; Longer = more permissive |
-| `max_decisions_per_window` | VelocityBreaker | int | 100 | 10–10K | Adjust per agent throughput needs |
-| `velocity_cooldown_seconds` | VelocityBreaker | int | 60 | 10–600 | Shorter = faster recovery; Longer = stronger braking |
-| `ecosystem_max_decisions` | VelocityBreaker | int | 10K | 1K–1M | Fleet-wide aggregate limit |
-| `risk_threshold_execute` | RiskEvaluator | int | 35 | 0–50 | Scores ≤ this auto-execute immediately |
-| `risk_threshold_review` | RiskEvaluator | int | 70 | 50–100 | Scores ≤ this route to HUMAN_REVIEW; above = BLOCK |
-| `async_audit_writes` | AuditLogger | bool | True | bool | False = sync (safer) vs True = async (faster) |
-| `trace_enabled` | ExecutionTrace | bool | False | bool | Enable for debugging; disable for performance |
-| `max_payload_bytes` | PayloadSanitizer | int | 1M | 100K–50M | Small = DoS protection; Large = flexibility |
-| `policy_engine_cache_size` | PolicyEngine | int | 1000 | 100–10K | Larger = more memory, lower latency |
-| `audit_ring_buffer_size` | AuditLogger | int | 50K | 1K–1M | Memory vs coverage tradeoff |
-| `default_sla_minutes` | WorkflowEngine | int | 120 | 10–1440 | Approval deadline for human review |
-| `monitor_sla` | WorkflowEngine | bool | False | bool | Enable to auto-escalate on SLA breach |
-| `log_level` | GlassBoxLogger | str | INFO | DEBUG/INFO/WARNING/ERROR/CRITICAL | Vebosity |
-| `include_payload` | AuditLogger | bool | True | bool | False = PII protection (don't log sensitive data) |
-
-### Tuning Strategies
-
-**For Latency (sub-1ms target):**
-```python
-pipeline = GovernancePipeline(
-    trace_enabled=False,           # disable per-stage tracing
-    async_audit_writes=True,       # non-blocking I/O
-    anomaly_detector=None,         # disable if optional
-)
-engine.policy_engine.cache_size = 10_000  # increase cache
-```
-
-**For Consistency (safety-first):**
-```python
-pipeline = GovernancePipeline(
-    trace_enabled=True,            # detailed debugging
-    async_audit_writes=False,      # synchronous audit (safer)
-)
-breaker.configure(
-    max_decisions=50,              # aggressive rate limit
-    window_seconds=10,             # tight window
-)
-```
-
-**For Throughput (high volume):**
-```python
-pipeline = GovernancePipeline(
-    async_audit_writes=True,
-    environment="production",
-)
-breaker.configure(
-    max_decisions=5_000,           # permissive
-    window_seconds=60,
-    cooldown_seconds=30,           # faster recovery
-)
-```
+| Parameter | Component | Default | Notes |
+|---|---|---|---|
+| `anomaly_min_samples` | AnomalyDetector | 10 | Lower = faster activation |
+| `anomaly_z_threshold` | AnomalyDetector | 3.0 | Tighter = fewer anomalies |
+| `velocity_window_seconds` | VelocityBreaker | 60 | Per-agent window |
+| `max_decisions_per_window` | VelocityBreaker | 100 | Per-agent limit |
+| `ecosystem_max_decisions` | VelocityBreaker | 10K | Fleet-wide aggregate |
+| `risk_threshold_execute` | RiskEvaluator | 35 | Scores ≤ this auto-execute |
+| `risk_threshold_review` | RiskEvaluator | 70 | Scores above this BLOCK |
+| `async_audit_writes` | AuditLogger | True | False = sync (safer) |
+| `trace_enabled` | ExecutionTrace | False | Enable for debugging |
+| `recover_wal_on_startup` | GovernancePipeline | False | Enable for crash safety |
+| `max_tenants` | TenantRegistry | 100 | Max concurrent tenants |
+| `default_sla_minutes` | WorkflowEngine | 120 | Human review deadline |
+| `_LATENCY_WINDOW` | StageRegistry | 1000 | Samples per stage |
 
 ---
 
-## 14. Extension Points
-
-GlassBox is designed to be extended at every layer:
+## 17. Extension Points
 
 | Extension point | How |
 |---|---|
@@ -826,18 +654,23 @@ GlassBox is designed to be extended at every layer:
 | Pipeline stage | Subclass `GovernancePipeline`, override `_run_pipeline()` |
 | Schema | Add entry to `SCHEMAS` dict in `schema_validator.py` |
 | Decision type | Add to `DecisionType` enum and schema + risk factor extractor |
+| Distributed anomaly | `GovernancePipeline(anomaly_detector=DistributedAnomalyDetector(...))` |
+| Distributed budget | `pipeline.policy_engine.register(DistributedFleetBudgetPolicy(...).as_policy())` |
+| Runtime parameters | `_param_store.set(policy_id, param_name, value, updated_by=...)` |
 
 ---
 
 ## See Also
 
-- **[GLOSSARY.md](../GLOSSARY.md)** — Definitions of architectural terms (policy, disposition, anomaly, etc.)
-- **[TROUBLESHOOTING.md](../USER/troubleshooting.md)** — Common architecture issues and solutions
-- **[API/endpoint_reference.md](../API/endpoint_reference.md)** — REST API reference for remote governance
-- **[DEPLOYMENT.md](../DEPLOYMENT.md)** — Running GlassBox on Databricks, Kubernetes, Fabric
-- **Module READMEs** — [governance](../glassbox/governance/README.md), [rules](../glassbox/rules/README.md), [workflow](../glassbox/workflow/README.md), and 8 others
+- **[../GLOSSARY.md](../GLOSSARY.md)** — Architectural terms defined
+- **[../USER/troubleshooting.md](../USER/troubleshooting.md)** — Common issues
+- **[../API/endpoint_reference.md](../API/endpoint_reference.md)** — REST API reference
+- **[../DEPLOYMENT.md](../DEPLOYMENT.md)** — Deployment on Databricks, Kubernetes, Fabric
+- **Module READMEs** — [governance/](../../glassbox/governance/README.md), [workflow/](../../glassbox/workflow/README.md), [store/](../../glassbox/store/README.md)
 
 ---
 
-*GlassBox v1.0.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher · Navi Mumbai, India*
+*GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher ·  *
 *Not affiliated with any employer, vendor, or customer engagement.*
+
+

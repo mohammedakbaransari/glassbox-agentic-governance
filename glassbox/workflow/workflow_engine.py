@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from glassbox.governance.models import FinalStatus
+from glassbox.governance.logging_manager import get_logger
 from glassbox.store.repository import (
     WorkflowInstance, WorkflowStep, WorkflowRepository,
     SQLiteWorkflowRepository,
@@ -38,6 +39,8 @@ from glassbox.store.repository import (
 
 if TYPE_CHECKING:
     from glassbox.events.event_bus import EventBus
+
+log = get_logger("workflow")
 
 
 class WorkflowEngine:
@@ -99,7 +102,28 @@ class WorkflowEngine:
     ) -> WorkflowInstance:
         """
         Create a new workflow instance for a decision pending human review.
+
+        Idempotent: if a workflow already exists for decision_id (e.g. after
+        WAL crash-recovery replay), the existing instance is returned unchanged
+        rather than creating a duplicate.
         """
+        # O8: Idempotency guard — WAL recovery may call this more than once for
+        # the same decision_id if the process crashed between creating the workflow
+        # and marking the WAL side-effect as successful.
+        existing = self.repo.get_by_decision(decision_id)
+        if existing is not None:
+            log.info(
+                "Workflow already exists for decision %s (workflow_id=%s); returning existing",
+                decision_id, existing.workflow_id,
+                extra={
+                    "component": "workflow_engine",
+                    "event": "create_idempotent_skip",
+                    "decision_id": decision_id,
+                    "workflow_id": existing.workflow_id,
+                },
+            )
+            return existing
+
         workflow_id = str(uuid.uuid4())
         instance = WorkflowInstance(
             workflow_id   = workflow_id,
@@ -307,6 +331,8 @@ class WorkflowEngine:
     # ── SLA monitoring background thread ─────────────────────────────────────
 
     def _start_sla_monitor(self) -> None:
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            return
         self._stop_monitor.clear()
         self._monitor_thread = threading.Thread(
             target=self._sla_monitor_loop,
@@ -339,12 +365,23 @@ class WorkflowEngine:
                             notes=f"Auto-escalated: SLA of {wf.sla_minutes}min breached after {elapsed:.1f}min",
                         )
             except Exception:
-                pass  # monitor must never crash
+                log.exception("SLA monitor iteration failed")
 
     def stop_monitor(self) -> None:
         self._stop_monitor.set()
         if self._monitor_thread:
             self._monitor_thread.join(timeout=5)
+            self._monitor_thread = None
+
+    def shutdown(self) -> None:
+        """Stop background work and release repository resources."""
+        self.stop_monitor()
+        if hasattr(self.repo, "close"):
+            self.repo.close()
+
+    def close(self) -> None:
+        """Alias for shutdown to support generic lifecycle cleanup."""
+        self.shutdown()
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 

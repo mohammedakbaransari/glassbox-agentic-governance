@@ -32,7 +32,7 @@ Usage:
     from glassbox.authoring.nl_policy import NLPolicyAuthor
 
     # With Claude API (recommended)
-    author = NLPolicyAuthor(api_key="sk-ant-...")
+    author = NLPolicyAuthor(api_key=os.getenv("ANTHROPIC_API_KEY"))
     result = author.generate(
         description="Block any procurement over $200,000 that does not have both "
                     "a contract_id and an approval_ref from the category manager",
@@ -141,7 +141,7 @@ class NLPolicyAuthor:
     if the API is not configured.
 
     Usage:
-        author = NLPolicyAuthor(api_key="sk-ant-...")
+        author = NLPolicyAuthor(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
         result = author.generate(
             description = "Any IT operations action that deletes or terminates "
@@ -174,7 +174,6 @@ class NLPolicyAuthor:
         description:   str,
         decision_type: str  = "custom",
         policy_id:     Optional[str] = None,
-        strict:        bool = True,
     ) -> PolicyGenerationResult:
         """
         Generate a GlassBox YAML rule from a natural-language description.
@@ -183,7 +182,6 @@ class NLPolicyAuthor:
             description:   Plain-English policy description from compliance team
             decision_type: Which decision type this applies to
             policy_id:     Desired policy ID (auto-generated if not provided)
-            strict:        If True, return validation error rather than partial rule
 
         Returns:
             PolicyGenerationResult with yaml_rule, explanation, validation status
@@ -374,6 +372,10 @@ class NLPolicyAuthor:
         validation_error = None
         policies         = []
         try:
+            # NOTE: This creates a soft dependency on the rules_engine module.
+            # This is generally acceptable as it's for validation within the authoring
+            # flow, but for larger systems, injecting a validator function/object
+            # into NLPolicyAuthor would be a cleaner separation of concerns.
             from glassbox.rules.rules_engine import RulesLoader
             loader   = RulesLoader()
             policies = loader.load_from_string(yaml_text)

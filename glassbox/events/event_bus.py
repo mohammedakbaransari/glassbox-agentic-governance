@@ -36,7 +36,7 @@ import inspect
 import json
 import threading
 import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -171,14 +171,17 @@ class EventBus:
         bus.publish(DecisionBlocked(...))
     """
 
-    def __init__(self, max_workers: int = 4):
+    def __init__(self, max_workers: int = 4, max_pending_dispatches: int = 5000):
         self._handlers: Dict[str, List[Callable]] = defaultdict(list)
         self._lock    = threading.Lock()
         self._pool    = ThreadPoolExecutor(max_workers=max_workers,
                                            thread_name_prefix="glassbox-events")
-        self._history: List[GlassBoxEvent] = []
-        self._history_max = 1000
+        self._max_pending_dispatches = max(1, int(max_pending_dispatches))
+        self._pending = threading.Semaphore(self._max_pending_dispatches)
+        self._history: deque = deque(maxlen=1000)
         self._history_lock = threading.Lock()
+        self._stats_lock = threading.Lock()
+        self._stats = {"published": 0, "dispatched": 0, "dropped": 0, "handler_errors": 0}
 
     def subscribe(self, event_type: str, handler: Callable) -> None:
         """
@@ -202,11 +205,9 @@ class EventBus:
         Publish an event. All matching handlers are called asynchronously
         in the thread pool — never blocks the calling thread.
         """
-        # Record in history
+        # Record in history (deque(maxlen=1000) evicts oldest automatically)
         with self._history_lock:
             self._history.append(event)
-            if len(self._history) > self._history_max:
-                self._history.pop(0)
 
         with self._lock:
             specific  = list(self._handlers.get(event.event_type, []))
@@ -214,6 +215,17 @@ class EventBus:
         all_handlers = specific + wildcard
 
         for handler in all_handlers:
+            acquired = self._pending.acquire(blocking=False)
+            if not acquired:
+                with self._stats_lock:
+                    self._stats["dropped"] += 1
+                log.warning(
+                    "EventBus backpressure: dropped handler dispatch for %s",
+                    event.event_type,
+                )
+                continue
+            with self._stats_lock:
+                self._stats["published"] += 1
             self._pool.submit(self._invoke, handler, event)
 
     def publish_sync(self, event: GlassBoxEvent) -> None:
@@ -229,20 +241,25 @@ class EventBus:
     def _invoke(self, handler: Callable, event: GlassBoxEvent) -> None:
         try:
             if inspect.iscoroutinefunction(handler):
-                # Run async handler in a new event loop
-                loop = asyncio.new_event_loop()
-                try:
-                    loop.run_until_complete(handler(event))
-                finally:
-                    loop.close()
+                # Run coroutine in worker thread with an isolated event loop lifecycle.
+                asyncio.run(handler(event))
             else:
                 handler(event)
         except Exception as exc:
             # Handlers must never crash the bus
+            with self._stats_lock:
+                self._stats["handler_errors"] += 1
             log.error(
                 "EventBus handler %s failed for %s: %s",
-                getattr(handler, "__name__", str(handler)), event.event_type, exc
+                getattr(handler, "__name__", str(handler)),
+                event.event_type,
+                exc,
+                exc_info=True,
             )
+        finally:
+            with self._stats_lock:
+                self._stats["dispatched"] += 1
+            self._pending.release()
 
     def recent(self, event_type: Optional[str] = None, n: int = 50) -> List[GlassBoxEvent]:
         """Return recent events from in-memory history."""
@@ -255,6 +272,11 @@ class EventBus:
     def shutdown(self) -> None:
         """Graceful shutdown — wait for handlers to complete."""
         self._pool.shutdown(wait=True)
+
+    def stats(self) -> Dict[str, int]:
+        """Return event bus dispatch counters."""
+        with self._stats_lock:
+            return dict(self._stats)
 
 
 # ── Built-in handlers ─────────────────────────────────────────────────────────

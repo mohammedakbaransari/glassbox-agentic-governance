@@ -2,6 +2,8 @@
 
 Advanced optimization strategies for production deployments targeting specific latency, throughput, and resource utilization goals.
 
+> **Note:** Some configuration patterns in this guide (e.g., `policy_tags`, `engine.compile()`, `audit_filter`) describe planned or aspirational APIs. The core tuning levers (`async_audit_writes`, `trace_enabled`, `anomaly_detector=None`) are fully implemented. Verify parameter availability in `glassbox/governance/pipeline.py` before using in production.
+
 **Quick Navigation:**
 - [Baseline Performance](#baseline-performance) | [Latency Optimization](#latency-optimization) | [Throughput Optimization](#throughput-optimization) | [Resource Management](#resource-management) | [Profiling & Monitoring](#profiling--monitoring) | [Tuning Recipes](#tuning-recipes)
 
@@ -109,7 +111,7 @@ policy1 = Policy(
 )
 
 # Evaluate only matching tags
-result = pipeline.execute(
+result = pipeline.process(
     payload,
     policy_tags=[PolicyTag.PROCUREMENT]  # Only 50 policies checked
 )
@@ -152,7 +154,7 @@ schema_fast = {
 }
 
 validator = SchemaValidator(schema=schema_fast)
-result = pipeline.execute(payload, schema_validator=validator)
+result = pipeline.process(payload, schema_validator=validator)
 
 # Expected: 0.05 ms instead of 0.15 ms
 ```
@@ -190,7 +192,7 @@ from glassbox.governance.pipeline import GovernancePipeline
 
 def execute_with_pipeline(payload):
     pipeline = GovernancePipeline()
-    return pipeline.execute(payload)
+    return pipeline.process(payload)
 
 # Process pool avoids GIL and thread locks
 pool = Pool(processes=10)
@@ -225,17 +227,18 @@ results = pool.map(execute_with_pipeline, payloads)
 ### Tactic 1: Batch Audit Writes
 
 ```python
-from glassbox.store.database import GlassBoxDB
+from glassbox.governance.pipeline import GovernancePipeline
+from glassbox.store.database import GlassBoxDatabase
 
-db = GlassBoxDB(
-    "/var/lib/glassbox/glassbox.db",
-    batch_writes=True,
-    batch_size=1000,  # Write 1000 records per flush
-    flush_interval_seconds=5  # Or flush every 5 seconds
+db = GlassBoxDatabase("/var/lib/glassbox/glassbox.db")
+
+pipeline = GovernancePipeline(
+    audit_repo=db.audit_repo(),
+    async_audit_writes=True,
 )
 
-# 1 decision → 1000 decisions before I/O
-# Expected: 600 d/s → 6,000 d/s (10x throughput gain)
+# This shifts repository persistence off the request thread.
+# Expected gain depends on storage latency and contention profile.
 ```
 
 ### Tactic 2: Use PostgreSQL Instead of SQLite
@@ -243,15 +246,19 @@ db = GlassBoxDB(
 SQLite is single-writer; PostgreSQL allows true parallel writes.
 
 ```python
-from glassbox.store.database import GlassBoxDB
+from glassbox.store.database import GlassBoxDatabase
+from glassbox.store.database_abstraction import DatabaseFactory
 
 # SQLite (contention)
-db_sqlite = GlassBoxDB("/var/lib/glassbox/glassbox.db")
+db_sqlite = GlassBoxDatabase("/var/lib/glassbox/glassbox.db")
 
 # PostgreSQL (parallel)
-db_postgres = GlassBoxDB(
-    "postgresql://user:pass@postgres-cluster/glassbox",
-    backend="postgres"
+db_postgres = DatabaseFactory.create(
+    "postgresql",
+    host="postgres-cluster",
+    database="glassbox",
+    user="user",
+    password="pass",
 )
 
 # Expected: 600 d/s → 5,000+ d/s (8x throughput gain with 10 connections)
@@ -306,9 +313,9 @@ pipeline_financial = GovernancePipeline(
 def route_and_execute(payload):
     decision_type = payload.get("decision_type")
     if decision_type == "procurement":
-        return pipeline_procurement.execute(payload)
+        return pipeline_procurement.process(payload)
     else:
-        return pipeline_financial.execute(payload)
+        return pipeline_financial.process(payload)
 
 # Multi-threaded execution
 executor = ThreadPoolExecutor(max_workers=20)
@@ -327,7 +334,7 @@ pipeline = GovernancePipeline(
 )
 
 # Execute without audit I/O
-result = pipeline.execute({
+result = pipeline.process({
     "amount": 100,
     "audit_required": False  # Skip audit for low-risk
 })
@@ -339,12 +346,19 @@ result = pipeline.execute({
 
 ```python
 # Primary (writes)
-db_primary = GlassBoxDB("postgresql://primary:5432/glassbox")
+from glassbox.store.database_abstraction import DatabaseFactory
+
+db_primary = DatabaseFactory.create(
+    "postgresql",
+    host="primary",
+    port=5432,
+    database="glassbox",
+)
 
 # Read replicas (queries, reduced latency)
 db_replicas = [
-    GlassBoxDB("postgresql://replica1:5432/glassbox"),
-    GlassBoxDB("postgresql://replica2:5432/glassbox"),
+    DatabaseFactory.create("postgresql", host="replica1", port=5432, database="glassbox"),
+    DatabaseFactory.create("postgresql", host="replica2", port=5432, database="glassbox"),
 ]
 
 # Load-balance reads across replicas
@@ -491,7 +505,7 @@ from glassbox.governance.execution_trace import ExecutionTrace
 
 trace = ExecutionTrace()
 start = time.perf_counter()
-result = pipeline.execute(payload, trace=trace)
+result = pipeline.process(payload, trace=trace)
 elapsed_ms = (time.perf_counter() - start) * 1000
 
 # Breakdown by stage
@@ -532,7 +546,7 @@ class ThroughputMonitor:
 monitor = ThroughputMonitor()
 
 for decision in decisions:
-    result = pipeline.execute(decision)
+    result = pipeline.process(decision)
     monitor.record()
     
     if monitor.record % 1000 == 0:
@@ -606,24 +620,26 @@ pipeline = GovernancePipeline(
 **Use case:** Batch processing, high-volume decisions
 
 ```python
-from glassbox.store.database import GlassBoxDB
+from glassbox.governance.pipeline import GovernancePipeline
+from glassbox.store.database_abstraction import DatabaseFactory
 
 # Setup
-db = GlassBoxDB(
-    "postgresql://postgres:5432/glassbox",
-    backend="postgres",
-    batch_writes=True,
-    batch_size=1000,
+db = DatabaseFactory.create(
+    "postgresql",
+    host="postgres",
+    port=5432,
+    database="glassbox",
 )
 
 # Configuration
 pipeline = GovernancePipeline(
+    async_audit_writes=True,
     audit_repo=db.audit_repo(),
     policy_tags=["BATCH"],  # Only evaluate batch policies
 )
 
 # Batch execution
-results = [pipeline.execute(p) for p in large_batch]
+results = [pipeline.process(p) for p in large_batch]
 
 # Result: 10,000+ d/s with batching
 ```
@@ -682,7 +698,7 @@ def benchmark_pipeline(pipeline, payloads, iterations=1000):
     for _ in range(iterations):
         start = time.perf_counter()
         for payload in payloads:
-            pipeline.execute(payload)
+            pipeline.process(payload)
         elapsed = time.perf_counter() - start
         latencies.append(elapsed * 1000)
     
@@ -714,4 +730,4 @@ benchmark_pipeline(pipeline, payloads)
 
 ---
 
-*GlassBox v1.0.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher · Navi Mumbai, India*
+*GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher ·  *

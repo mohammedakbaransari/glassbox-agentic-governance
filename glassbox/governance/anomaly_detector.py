@@ -30,9 +30,28 @@ MONITORED_FIELDS: Dict[str, List[str]] = {
     "pricing":     ["new_price", "previous_price"],
     "financial":   ["amount"],
     "inventory":   ["quantity"],
+    "clinical":    ["dose_mg", "dosage_mg"],
+    "trading":     ["quantity", "notional_value"],
+    "content":     ["confidence"],           # generative AI confidence score
+    "legal":       ["contract_value"],       # contract authority amounts
     "logistics":   [],
     "it_ops":      [],
     "hr":          [],
+    "custom":      [],
+}
+
+CATEGORICAL_FIELDS: Dict[str, List[str]] = {
+    "procurement": ["supplier_id", "category", "urgency"],
+    "pricing":     ["product_id", "reason"],
+    "financial":   ["destination_account", "reference", "payment_method"],
+    "inventory":   ["product_id", "warehouse_id", "supplier_id"],
+    "logistics":   ["origin", "destination"],
+    "it_ops":      ["action", "target", "service_id"],
+    "hr":          ["action", "employee_id"],
+    "clinical":    ["drug_name", "drug_class"],
+    "trading":     ["symbol"],
+    "content":     ["topic", "content_category"],
+    "legal":       ["action"],
     "custom":      [],
 }
 
@@ -251,6 +270,7 @@ class AnomalyDetectorOptimized:
         Performance: O(fields_monitored) with Welford's algorithm.
         """
         fields = MONITORED_FIELDS.get(decision_type, [])
+        categorical_fields = CATEGORICAL_FIELDS.get(decision_type, [])
         max_z = 0.0
         anomalous = []
 
@@ -284,6 +304,25 @@ class AnomalyDetectorOptimized:
                 if not is_anomalous:
                     stats.add(float(value))
 
+            if self.track_categorical:
+                for fname in categorical_fields:
+                    value = payload.get(fname)
+                    if value is None:
+                        continue
+                    if not isinstance(value, str):
+                        value = str(value)
+                    value = value.strip()
+                    if not value:
+                        continue
+
+                    key = self._key(agent_id, decision_type, fname)
+                    tracker = self._cat_stats[key]
+                    is_cat_anomalous, reason = tracker.is_anomalous(value)
+                    if is_cat_anomalous:
+                        anomalous.append(f"{fname}='{value}' ({reason})")
+                    else:
+                        tracker.update(value)
+
         return len(anomalous) > 0, round(max_z, 3), anomalous
 
     def update_only(
@@ -294,6 +333,7 @@ class AnomalyDetectorOptimized:
     ):
         """Update rolling stats without anomaly detection (used in replays)."""
         fields = MONITORED_FIELDS.get(decision_type, [])
+        categorical_fields = CATEGORICAL_FIELDS.get(decision_type, [])
         lock = self._get_lock(agent_id, decision_type)
         with lock:
             for fname in fields:
@@ -301,10 +341,23 @@ class AnomalyDetectorOptimized:
                 if value is not None and isinstance(value, (int, float)):
                     key = self._key(agent_id, decision_type, fname)
                     self._stats[key].add(float(value))
+            if self.track_categorical:
+                for fname in categorical_fields:
+                    value = payload.get(fname)
+                    if value is None:
+                        continue
+                    if not isinstance(value, str):
+                        value = str(value)
+                    value = value.strip()
+                    if not value:
+                        continue
+                    key = self._key(agent_id, decision_type, fname)
+                    self._cat_stats[key].update(value)
 
     def get_agent_stats(self, agent_id: str, decision_type: str) -> Dict[str, Any]:
         """Return current rolling stats for a specific agent/decision_type. Thread-safe."""
         fields = MONITORED_FIELDS.get(decision_type, [])
+        categorical_fields = CATEGORICAL_FIELDS.get(decision_type, [])
         result = {}
         lock = self._get_lock(agent_id, decision_type)
         with lock:
@@ -313,6 +366,15 @@ class AnomalyDetectorOptimized:
                 stats = self._stats.get(key)
                 if stats:
                     result[fname] = stats.summary()
+            if self.track_categorical:
+                categorical = {}
+                for fname in categorical_fields:
+                    key = self._key(agent_id, decision_type, fname)
+                    tracker = self._cat_stats.get(key)
+                    if tracker and tracker._total > 0:
+                        categorical[fname] = tracker.summary()
+                if categorical:
+                    result["_categorical"] = categorical
         return result
 
     def inject_baseline(
@@ -344,7 +406,291 @@ class AnomalyDetectorOptimized:
                 ]
                 for k in keys_to_del:
                     del self._stats[k]
+                cat_keys_to_del = [
+                    k for k in self._cat_stats
+                    if k[0] == agent_id and (decision_type is None or k[1] == decision_type)
+                ]
+                for k in cat_keys_to_del:
+                    del self._cat_stats[k]
 
 
-# Backwards compatibility alias (v1.0.0 used AnomalyDetector)
-AnomalyDetector = AnomalyDetectorOptimized
+# ── O4: Redis-backed distributed Welford statistics ───────────────────────────
+#
+# Problem: AnomalyDetectorOptimized keeps Welford state in-process.  Under
+# horizontal scaling, each replica builds its own baseline independently.
+# Replica A may detect an anomaly that Replica B (which received the run-up
+# traffic) never sees.
+#
+# Solution: RedisAnomalyStore persists the three Welford state variables
+# (count, mean, M2) to Redis using a single HSET per (agent, type, field)
+# key.  A Lua script performs the Welford update atomically so no two
+# replicas can race on the same statistics.
+#
+# Drop-in usage:
+#     store = RedisAnomalyStore(redis.Redis(), namespace="glassbox:anomaly")
+#     detector = DistributedAnomalyDetector(z_threshold=3.0, store=store)
+
+class RedisAnomalyStore:
+    """
+    Atomic Welford statistics storage backed by Redis.
+
+    Key layout:
+        {namespace}:{agent_id}:{decision_type}:{field}
+          HASH fields:  count (int), mean (float), M2 (float)
+
+    The Lua script that performs the Welford update is registered once per
+    connection to avoid re-parsing overhead.
+    """
+
+    # Lua script — runs atomically on the Redis server.
+    # Arguments: KEYS[1]=hash_key  ARGV[1]=new_value  ARGV[2]=max_count
+    _LUA_WELFORD_UPDATE = """
+local key    = KEYS[1]
+local x      = tonumber(ARGV[1])
+local maxn   = tonumber(ARGV[2])
+
+local count  = tonumber(redis.call('HGET', key, 'count')  or '0')
+local mean   = tonumber(redis.call('HGET', key, 'mean')   or '0')
+local M2     = tonumber(redis.call('HGET', key, 'M2')     or '0')
+
+-- Evict oldest conceptually: cap count so stats reflect at most maxn samples.
+-- (True sliding-window eviction would require storing all values; this
+-- Bayesian-forgetting approximation keeps the algorithm O(1) in Redis.)
+if count >= maxn then
+    -- Weight old mean down by 1/maxn each step (exponential forgetting)
+    local alpha = 1.0 / maxn
+    mean = mean * (1 - alpha) + x * alpha
+    -- M2 shrinks proportionally to maintain approximate variance
+    M2   = M2   * (1 - alpha)
+    -- count stays at maxn so std-dev denominator remains stable
+else
+    count = count + 1
+    local delta  = x - mean
+    mean = mean + delta / count
+    local delta2 = x - mean
+    M2   = M2 + delta * delta2
+end
+
+redis.call('HMSET', key, 'count', count, 'mean', mean, 'M2', M2)
+redis.call('EXPIRE', key, 86400)  -- TTL: 24 h (refresh on every update)
+
+-- Return count, mean, M2 as an array so the caller can compute z-score.
+return {tostring(count), tostring(mean), tostring(M2)}
+"""
+
+    def __init__(
+        self,
+        redis_client,
+        namespace: str  = "glassbox:anomaly",
+        window_size: int = 50,
+    ):
+        self.redis      = redis_client
+        self.namespace  = namespace
+        self.window_size = window_size
+        self._script    = self.redis.register_script(self._LUA_WELFORD_UPDATE)
+
+    def _key(self, agent_id: str, decision_type: str, field: str) -> str:
+        return f"{self.namespace}:{agent_id}:{decision_type}:{field}"
+
+    def update_and_get(
+        self, agent_id: str, decision_type: str, field: str, value: float
+    ) -> tuple:
+        """
+        Atomically update Welford stats and return (count, mean, M2).
+
+        The Lua script runs server-side so concurrent replicas cannot corrupt
+        each other's state.
+        """
+        key    = self._key(agent_id, decision_type, field)
+        result = self._script(keys=[key], args=[value, self.window_size])
+        count  = int(float(result[0]))
+        mean   = float(result[1])
+        M2     = float(result[2])
+        return count, mean, M2
+
+    def get(
+        self, agent_id: str, decision_type: str, field: str
+    ) -> tuple:
+        """Return current (count, mean, M2) without updating."""
+        key    = self._key(agent_id, decision_type, field)
+        raw    = self.redis.hmget(key, "count", "mean", "M2")
+        count  = int(float(raw[0])) if raw[0] else 0
+        mean   = float(raw[1])      if raw[1] else 0.0
+        M2     = float(raw[2])      if raw[2] else 0.0
+        return count, mean, M2
+
+    def reset(self, agent_id: str, decision_type: str = None) -> None:
+        """Delete all stats keys for an agent (optionally scoped to decision_type)."""
+        pattern = (
+            f"{self.namespace}:{agent_id}:{decision_type}:*"
+            if decision_type
+            else f"{self.namespace}:{agent_id}:*"
+        )
+        keys = list(self.redis.scan_iter(match=pattern))
+        if keys:
+            self.redis.delete(*keys)
+
+
+class DistributedAnomalyDetector(AnomalyDetectorOptimized):
+    """
+    AnomalyDetector backed by a RedisAnomalyStore for cross-replica consensus.
+
+    All replicas share the same Welford baselines stored in Redis.  The
+    z-score check and anomaly decision logic remain local (no extra Redis
+    round-trip for the check itself — only the update is remote).
+
+    Falls back to in-process Welford statistics if the store raises.
+
+    Usage:
+        store    = RedisAnomalyStore(redis.Redis())
+        detector = DistributedAnomalyDetector(z_threshold=3.0, store=store)
+        pipeline = GovernancePipeline(anomaly_detector=detector)
+    """
+
+    def __init__(
+        self,
+        store: "RedisAnomalyStore",
+        z_threshold:       float = 3.0,
+        min_samples:       int   = 10,
+        window_size:       int   = 50,
+        track_categorical: bool  = True,
+        fallback_mode:     bool  = True,
+    ):
+        super().__init__(
+            z_threshold=z_threshold,
+            min_samples=min_samples,
+            window_size=window_size,
+            track_categorical=track_categorical,
+        )
+        self._store        = store
+        self._fallback_mode = fallback_mode
+        self._store_ok     = True
+
+    def _welford_update(
+        self, agent_id: str, decision_type: str, field: str, value: float
+    ) -> tuple:
+        """
+        Update Welford stats via Redis store; fall back to in-memory on error.
+
+        Returns (count, mean, std_or_None).
+        """
+        if self._store_ok:
+            try:
+                count, mean, M2 = self._store.update_and_get(
+                    agent_id, decision_type, field, value
+                )
+                std = math.sqrt(max(0.0, M2 / (count - 1))) if count >= 2 else None
+                return count, mean, std
+            except Exception as exc:
+                import logging as _log
+                _log.getLogger("glassbox.anomaly_detector").warning(
+                    "RedisAnomalyStore update failed, falling back to local: %s", exc
+                )
+                self._store_ok = False
+
+        # Local fallback — delegates to parent's _stats dict
+        key   = self._key(agent_id, decision_type, field)
+        lock  = self._get_lock(agent_id, decision_type)
+        with lock:
+            stats = self._stats[key]
+            stats.add(value)
+            return stats.count, (stats.mean or 0.0), stats.std
+
+    def check(
+        self,
+        agent_id: str,
+        decision_type: str,
+        payload: dict,
+    ) -> tuple:
+        """
+        Check for anomalies using distributed Welford baselines.
+
+        Numeric-field z-scores use Redis-backed statistics so all replicas
+        see the same baseline.  Categorical tracking remains in-process
+        (Redis-backing categorical trackers is left as a future enhancement).
+        """
+        fields            = MONITORED_FIELDS.get(decision_type, [])
+        categorical_fields = CATEGORICAL_FIELDS.get(decision_type, [])
+        max_z     = 0.0
+        anomalous: list   = []
+
+        lock = self._get_lock(agent_id, decision_type)
+        with lock:
+            for fname in fields:
+                value = payload.get(fname)
+                if value is None or not isinstance(value, (int, float)):
+                    continue
+
+                fval = float(value)
+                count, mean, std = self._welford_update(
+                    agent_id, decision_type, fname, fval
+                )
+
+                if count >= self.min_samples and std is not None and std > 0:
+                    z     = (fval - mean) / std
+                    abs_z = abs(z)
+                    if abs_z > max_z:
+                        max_z = abs_z
+                    if abs_z > self.z_threshold:
+                        anomalous.append(
+                            f"{fname}={fval} (z={z:.2f}, mean={mean:.2f}, std={std:.2f})"
+                        )
+
+            if self.track_categorical:
+                for fname in categorical_fields:
+                    value = payload.get(fname)
+                    if value is None:
+                        continue
+                    value = str(value).strip()
+                    if not value:
+                        continue
+                    key     = self._key(agent_id, decision_type, fname)
+                    tracker = self._cat_stats[key]
+                    is_cat_anomalous, reason = tracker.is_anomalous(value)
+                    if is_cat_anomalous:
+                        anomalous.append(f"{fname}='{value}' ({reason})")
+                    else:
+                        tracker.update(value)
+
+        return len(anomalous) > 0, round(max_z, 3), anomalous
+
+
+class AnomalyDetector(AnomalyDetectorOptimized):
+    """
+    Public v1.0-compatible interface, backed by AnomalyDetectorOptimized.
+
+    All v1.0 constructor parameters and method names are preserved exactly.
+    Existing code using AnomalyDetector(z_threshold=..., min_samples=...) continues
+    to work without modification.
+    """
+
+    def __init__(
+        self,
+        z_threshold: float = 3.0,
+        min_samples: int = 10,
+        **kwargs,
+    ) -> None:
+        """v1.0-compatible constructor — maps to AnomalyDetectorOptimized."""
+        super().__init__(
+            z_threshold=z_threshold,
+            min_samples=min_samples,
+            **kwargs,
+        )
+
+    def check(
+        self,
+        agent_id: str,
+        decision_type: str,
+        payload: Dict[str, Any],
+    ) -> Tuple[bool, float, List[str]]:
+        """v1.0 public signature — preserved."""
+        return super().check(agent_id, decision_type, payload)
+
+    def update_only(
+        self,
+        agent_id: str,
+        decision_type: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        """v1.0 public signature — preserved."""
+        return super().update_only(agent_id, decision_type, payload)

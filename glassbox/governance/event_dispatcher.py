@@ -187,6 +187,14 @@ class ResilientEventDispatcher:
                     exc_info=True,
                 )
 
+        # Invoke fallback logger
+        try:
+            self.fallback_log_fn(
+                f"EventBus fallback: [{event_type}] {type(exc).__name__}: {exc}"
+            )
+        except Exception:
+            pass
+
         return False
 
     def _log_circuit_open(self, event: Any, event_type: str) -> None:

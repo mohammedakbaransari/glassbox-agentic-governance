@@ -1,12 +1,85 @@
 # glassbox/integrations — AI Framework Adapters
 
-The `integrations` package provides native adapters for popular AI frameworks.
+The `integrations` package provides native adapters for popular AI frameworks and policy engines.
 
 | Module | Role |
 |---|---|
 | `adapters.py` | `LangChainAdapter`, `LangGraphAdapter`, `AutoGenAdapter`, `GenericToolAdapter` |
+| `extended_adapters.py` | `CrewAIAdapter`, extended AutoGen multi-agent patterns |
+| `mcp_gateway.py` | `MCPGatewayAdapter` — Model Context Protocol gateway integration |
+| `opa_adapter.py` | `OPAAdapter` — Open Policy Agent policy engine bridge |
 
 **Every tool call / graph node / function is automatically governed — transparent to the AI framework.**
+
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+flowchart LR
+    classDef framework fill:#6c5ce7,stroke:#4a3ab5,color:#fff
+    classDef adapter   fill:#74b9ff,stroke:#0984e3,color:#000
+    classDef pipeline  fill:#00b894,stroke:#00695c,color:#fff
+    classDef outcome   fill:#dfe6e9,stroke:#636e72,color:#000
+
+    subgraph FRAMEWORKS["AI Frameworks"]
+        LC["🦜 LangChain\nAgent"]:::framework
+        LG["🔀 LangGraph\nWorkflow"]:::framework
+        AG["🤖 AutoGen\nAgent"]:::framework
+        CA["👥 CrewAI\nCrew"]:::framework
+        MCP["🔌 MCP\nClient"]:::framework
+        OPA["⚖ OPA\nPolicies"]:::framework
+    end
+
+    subgraph ADAPTERS["GlassBox Adapters (transparent wrap)"]
+        LCA["LangChainAdapter\nwrap_tools()"]:::adapter
+        LGA["LangGraphAdapter\nwrap_node()"]:::adapter
+        AGA["AutoGenAdapter\ngovern_function_map()"]:::adapter
+        CAA["CrewAIAdapter\nwrap_task()"]:::adapter
+        MCPG["MCPGatewayAdapter\ngovern_call()"]:::adapter
+        OPAA["OPAAdapter\nquery_with_governance()"]:::adapter
+    end
+
+    GP["⚙ GovernancePipeline\nValidate · Score · Audit"]:::pipeline
+
+    EX(["✅ Governed\nResponse"]):::outcome
+    BL(["🚫 Blocked /\n⏳ Review"]):::outcome
+
+    LC --> LCA
+    LG --> LGA
+    AG --> AGA
+    CA --> CAA
+    MCP --> MCPG
+    OPA --> OPAA
+
+    LCA & LGA & AGA & CAA & MCPG & OPAA --> GP
+    GP -->|"AUTO_EXECUTE"| EX
+    GP -->|"BLOCK / REVIEW"| BL
+```
+
+### How the Adapter Wrap Works
+
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+sequenceDiagram
+    participant FR as AI Framework
+    participant AD as Adapter
+    participant GP as GovernancePipeline
+    participant PE as PolicyEngine
+
+    FR  ->> AD : tool.run(args) / node(state) / fn(args)
+    Note over AD: Extract payload via payload_extractor
+    AD  ->> GP : process(DecisionRequest)
+    GP  ->> PE : evaluate policies
+    PE -->> GP : PolicyResult
+    alt AUTO_EXECUTE
+        GP -->> AD : DecisionResponse (approved)
+        AD -->> FR : original function result
+    else HUMAN_REVIEW
+        GP -->> AD : DecisionResponse (review)
+        AD -->> FR : GovernanceReviewError / queued
+    else BLOCK
+        GP -->> AD : DecisionResponse (blocked)
+        AD -->> FR : GovernanceBlockedError
+    end
+```
 
 ---
 
@@ -369,3 +442,5 @@ audit_records = pipeline.audit_repo.list_all()
 ---
 
 See [../../docs/USECASES.md](../../docs/USECASES.md) Patterns 7 & 8 for LangChain and LangGraph integration examples, and [../../CONTRIBUTING.md](../../CONTRIBUTING.md) for adding support for new frameworks.
+
+

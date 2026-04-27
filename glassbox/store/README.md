@@ -1,11 +1,47 @@
 # glassbox/store — Transactional Relational Storage
 
-The `store` package provides the persistence layer using Python stdlib `sqlite3`.
+The `store` package provides the persistence layer with pluggable database backends.
 
 | Module | Role |
 |---|---|
-| `database.py` | `GlassBoxDB` — unified SQLite database, ACID transactions, WAL mode, schema migrations |
+| `database_abstraction.py` | `DatabaseFactory` — SQLite, PostgreSQL, SQL Server with connection pooling |
 | `repository.py` | Repository interfaces + implementations: `PolicyRepository`, `AuditRepository`, `WorkflowRepository` |
+
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+classDiagram
+    class DatabaseBackend {
+        <<abstract>>
+        +execute(query, params, commit)
+        +query_one(query, params)
+        +query_all(query, params)
+        +transaction()
+        +health_check()
+        +get_stats()
+    }
+    DatabaseBackend <|-- SQLiteBackend
+    DatabaseBackend <|-- PostgreSQLBackend
+    DatabaseBackend <|-- SQLServerBackend
+
+    class DatabaseFactory {
+        +create(backend, **kwargs) DatabaseBackend
+    }
+    DatabaseFactory ..> DatabaseBackend : creates
+
+    class PolicyRepository {
+        <<interface>>
+    }
+    class AuditRepository {
+        <<interface>>
+    }
+    class WorkflowRepository {
+        <<interface>>
+    }
+
+    SQLiteBackend ..> PolicyRepository : persists
+    SQLiteBackend ..> AuditRepository : persists
+    SQLiteBackend ..> WorkflowRepository : persists
+```
 
 **Why SQLite over JSON document stores:**
 - Compliance evidence requires JOINs (which decisions satisfy which controls?)
@@ -160,3 +196,5 @@ pipeline = GovernancePipeline(audit_repo=repo)
 ---
 
 See [../../docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md) for backup and scaling strategies.
+
+

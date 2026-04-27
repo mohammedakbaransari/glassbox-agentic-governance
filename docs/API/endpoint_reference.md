@@ -1,6 +1,6 @@
 # GlassBox — REST API Reference
 
-**v1.1.0 | Start:** `python3 -m glassbox.api.app` → `http://localhost:8000`
+**v1.2.0 | Start:** `python3 -m glassbox.api.app` → `http://localhost:8000`
 
 ---
 
@@ -45,12 +45,18 @@ CORS(
 )
 ```
 
-### Rate Limiting (Recommended)
+### Rate Limiting
 
-No built-in rate limiting; use reverse proxy (nginx, Cloudflare):
+GlassBox API has **built-in rate limiting** (`SimpleSlidingWindowRateLimiter` in `api/app.py`):
+
+- **Per-agent limit:** 100 requests/minute (applied to `agent_id` in the request body)
+- **Per-IP limit:** 500 requests/minute (IP extracted from `X-Forwarded-For` with configurable trusted-proxy depth)
+- Exceeding limits returns HTTP 429 `{"error": "rate_limit_exceeded"}`
+
+For production deployments behind a reverse proxy, also configure the proxy layer:
 
 ```nginx
-# nginx configuration
+# nginx — additional outer rate limiting
 limit_req_zone $binary_remote_addr zone=api:10m rate=100r/s;
 limit_req_status 429;
 
@@ -142,7 +148,9 @@ curl -X POST http://localhost:8000/decisions \
 }
 ```
 
-**Decision types:** `procurement` `pricing` `financial` `inventory` `logistics` `it_ops` `hr` `custom`
+**Decision types:** `procurement` `pricing` `financial` `inventory` `logistics` `it_ops` `hr` `custom` `clinical` `trading`
+
+> `clinical` and `trading` are fully governed by all applicable policies including `SECURITY-001` (no production override) and `AI-001` (confidence ≥ 0.30).
 
 ---
 
@@ -151,6 +159,9 @@ curl -X POST http://localhost:8000/decisions \
 ```
 GET /decisions?agent_id=my_agent&status=blocked&limit=50&offset=0
 ```
+
+Requires a configured audit repository. If persistent audit storage is not configured,
+the endpoint returns `503 Service Unavailable` instead of an empty success response.
 
 ---
 
@@ -338,18 +349,42 @@ Returns `{"ready": false}` if the pipeline is not healthy.
 
 ### GET /health — Health check
 
+Returns overall health status plus **per-stage P50/P99 latency breakdowns** (v1.2.0).
+
 ```json
 {
   "status": "healthy",
   "service": "GlassBox",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "environment": "production",
   "total_decisions": 5432,
-  "policies": 12,
+  "policies": 35,
   "event_bus": true,
-  "audit_repo": true
+  "audit_repo": true,
+  "stage_latency_p50_ms": {
+    "security_check": 0.01,
+    "agent_contract": 0.02,
+    "schema_validation": 0.03,
+    "velocity_breaker": 0.03,
+    "anomaly_detection": 0.04,
+    "policy_enforcement": 0.05,
+    "risk_evaluation": 0.04,
+    "disposition": 0.01
+  },
+  "stage_latency_p99_ms": {
+    "security_check": 0.05,
+    "agent_contract": 0.08,
+    "schema_validation": 0.10,
+    "velocity_breaker": 0.12,
+    "anomaly_detection": 0.18,
+    "policy_enforcement": 0.22,
+    "risk_evaluation": 0.15,
+    "disposition": 0.04
+  }
 }
 ```
+
+Stage latency is computed from a rolling window of up to 1000 samples using linear interpolation percentile estimation. Values are `0.0` until sufficient samples are collected.
 
 ---
 
@@ -430,4 +465,4 @@ For detailed troubleshooting, see [TROUBLESHOOTING.md](../USER/troubleshooting.m
 
 ---
 
-*GlassBox v1.1.0 · Apache 2.0 · Mohammed Akbar Ansari*
+*GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari*

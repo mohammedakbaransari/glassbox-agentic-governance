@@ -32,12 +32,26 @@ import json
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional
 
-from glassbox.governance.models import AuditRecord, DecisionType, FinalStatus
+from glassbox.governance.models import (
+    AuditRecord,
+    CircuitBreakerResult,
+    DecisionContext,
+    DecisionType,
+    Disposition,
+    ExecutionResult,
+    FinalStatus,
+    PolicyEvaluation,
+    PolicyResult,
+    RiskFactor,
+    RiskLevel,
+    RiskResult,
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -213,14 +227,38 @@ class SQLitePolicyRepository(PolicyRepository):
             self._shared_conn.row_factory = sqlite3.Row
         self._init_schema()
 
-    def _conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self):
         if self._shared_conn is not None:
-            return self._shared_conn
+            try:
+                yield self._shared_conn
+                self._shared_conn.commit()
+            except Exception:
+                self._shared_conn.rollback()
+                raise
+            return
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def close(self) -> None:
+        if self._shared_conn is not None:
+            try:
+                self._shared_conn.close()
+            finally:
+                self._shared_conn = None
+
+    def __del__(self):
+        self.close()
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -338,10 +376,14 @@ class AuditRepository(ABC):
     """Abstract interface for persistent, queryable audit storage."""
 
     @abstractmethod
-    def save(self, record: AuditRecord) -> None: ...
+    def save(self, record: AuditRecord, tenant_id: Optional[str] = None) -> None: ...
 
     @abstractmethod
-    def get_by_id(self, decision_id: str) -> Optional[Dict[str, Any]]: ...
+    def get_by_id(
+        self,
+        decision_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[AuditRecord]: ...
 
     @abstractmethod
     def query(
@@ -353,9 +395,10 @@ class AuditRepository(ABC):
         to_ts:          Optional[str]          = None,
         min_risk_score: Optional[float]        = None,
         has_violations: Optional[bool]         = None,
+        tenant_id:      Optional[str]          = None,
         limit:          int                    = 100,
         offset:         int                    = 0,
-    ) -> List[Dict[str, Any]]: ...
+    ) -> List[AuditRecord]: ...
 
     @abstractmethod
     def aggregate_spend(
@@ -366,7 +409,7 @@ class AuditRepository(ABC):
     ) -> float: ...
 
     @abstractmethod
-    def count(self, **filters) -> int: ...
+    def count(self, tenant_id: Optional[str] = None, **filters) -> int: ...
 
 
 class SQLiteAuditRepository(AuditRepository):
@@ -386,14 +429,38 @@ class SQLiteAuditRepository(AuditRepository):
             self._shared_conn.row_factory = sqlite3.Row
         self._init_schema()
 
-    def _conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self):
         if self._shared_conn is not None:
-            return self._shared_conn
+            try:
+                yield self._shared_conn
+                self._shared_conn.commit()
+            except Exception:
+                self._shared_conn.rollback()
+                raise
+            return
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def close(self) -> None:
+        if self._shared_conn is not None:
+            try:
+                self._shared_conn.close()
+            finally:
+                self._shared_conn = None
+
+    def __del__(self):
+        self.close()
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -414,9 +481,16 @@ class SQLiteAuditRepository(AuditRepository):
                         replay_of           TEXT,
                         contract_validated  INTEGER DEFAULT 0,
                         circuit_breaker     INTEGER DEFAULT 0,
+                        tenant_id           TEXT,
                         full_record_json    TEXT NOT NULL
                     )
                 """)
+                cols = {
+                    row[1] if not isinstance(row, sqlite3.Row) else row["name"]
+                    for row in conn.execute("PRAGMA table_info(audit_records)").fetchall()
+                }
+                if "tenant_id" not in cols:
+                    conn.execute("ALTER TABLE audit_records ADD COLUMN tenant_id TEXT")
                 for idx in [
                     "CREATE INDEX IF NOT EXISTS idx_audit_agent   ON audit_records(agent_id)",
                     "CREATE INDEX IF NOT EXISTS idx_audit_type    ON audit_records(decision_type)",
@@ -424,16 +498,20 @@ class SQLiteAuditRepository(AuditRepository):
                     "CREATE INDEX IF NOT EXISTS idx_audit_ts      ON audit_records(timestamp)",
                     "CREATE INDEX IF NOT EXISTS idx_audit_risk    ON audit_records(risk_score)",
                     "CREATE INDEX IF NOT EXISTS idx_audit_replay  ON audit_records(replay_of)",
+                    "CREATE INDEX IF NOT EXISTS idx_audit_tenant  ON audit_records(tenant_id)",
                 ]:
                     conn.execute(idx)
 
-    def save(self, record: AuditRecord) -> None:
+    def save(self, record: AuditRecord, tenant_id: Optional[str] = None) -> None:
         record_dict   = record.to_dict()
         violations    = len(record.policy_result.violations) if record.policy_result else 0
         warnings      = len(record.policy_result.warnings)   if record.policy_result else 0
         risk_score    = record.risk_result.risk_score         if record.risk_result   else None
         risk_level    = record.risk_result.risk_level.value   if record.risk_result   else None
         payload_amount = float(record.payload.get("amount") or 0) if record.payload else 0.0
+        effective_tenant = tenant_id
+        if effective_tenant is None and record.context and isinstance(record.context.metadata, dict):
+            effective_tenant = record.context.metadata.get("tenant_id")
 
         with self._lock:
             with self._conn() as conn:
@@ -442,8 +520,8 @@ class SQLiteAuditRepository(AuditRepository):
                     (decision_id, agent_id, decision_type, final_status,
                      risk_score, risk_level, violations_count, warnings_count,
                      pipeline_latency_ms, payload_amount, timestamp, replay_of,
-                     contract_validated, circuit_breaker, full_record_json)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     contract_validated, circuit_breaker, tenant_id, full_record_json)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     record.decision_id, record.agent_id, record.decision_type.value,
                     record.final_status.value if record.final_status else None,
@@ -452,17 +530,127 @@ class SQLiteAuditRepository(AuditRepository):
                     record.timestamp, record.replay_of,
                     int(record.contract_validated),
                     int(record.circuit_breaker_result.triggered if record.circuit_breaker_result else False),
+                    effective_tenant,
                     json.dumps(record_dict, default=str),
                 ))
 
-    def get_by_id(self, decision_id: str) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def _deserialize_audit_record(raw: Dict[str, Any]) -> AuditRecord:
+        """
+        Convert persisted JSON payload back into a typed AuditRecord.
+
+        The converter is intentionally tolerant: unknown enum values or malformed
+        nested structures are preserved in a best-effort fallback shape rather
+        than raising and breaking read paths.
+        """
+        data = dict(raw or {})
+
+        decision_type = data.get("decision_type", DecisionType.CUSTOM.value)
+        try:
+            decision_type = DecisionType(decision_type)
+        except Exception:
+            decision_type = DecisionType.CUSTOM
+
+        context_data = data.get("context")
+        if isinstance(context_data, DecisionContext):
+            context = context_data
+        elif isinstance(context_data, dict):
+            context = DecisionContext(**context_data)
+        else:
+            context = DecisionContext()
+
+        record = AuditRecord(
+            agent_id=data.get("agent_id", ""),
+            decision_type=decision_type,
+            payload=data.get("payload") or {},
+            context=context,
+            decision_id=data.get("decision_id") or str(uuid.uuid4()),
+            timestamp=data.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+        )
+
+        status_val = data.get("final_status")
+        if status_val:
+            try:
+                record.final_status = FinalStatus(status_val)
+            except Exception:
+                record.final_status = None
+
+        policy_data = data.get("policy_result")
+        if isinstance(policy_data, dict):
+            try:
+                evaluations = []
+                for ev in policy_data.get("evaluated_policies", []) or []:
+                    if isinstance(ev, dict):
+                        evaluations.append(PolicyEvaluation(**ev))
+                record.policy_result = PolicyResult(
+                    passed=bool(policy_data.get("passed", True)),
+                    evaluated_policies=evaluations,
+                    violations=list(policy_data.get("violations", []) or []),
+                    warnings=list(policy_data.get("warnings", []) or []),
+                )
+            except Exception:
+                record.policy_result = None
+
+        risk_data = data.get("risk_result")
+        if isinstance(risk_data, dict):
+            try:
+                factors = []
+                for factor in risk_data.get("factors", []) or []:
+                    if isinstance(factor, dict):
+                        factors.append(RiskFactor(**factor))
+                record.risk_result = RiskResult(
+                    risk_score=float(risk_data.get("risk_score", 0.0)),
+                    risk_level=RiskLevel(risk_data.get("risk_level", RiskLevel.LOW.value)),
+                    disposition=Disposition(
+                        risk_data.get("disposition", Disposition.AUTO_EXECUTE.value)
+                    ),
+                    factors=factors,
+                )
+            except Exception:
+                record.risk_result = None
+
+        cb_data = data.get("circuit_breaker_result")
+        if isinstance(cb_data, dict):
+            try:
+                record.circuit_breaker_result = CircuitBreakerResult(**cb_data)
+            except Exception:
+                record.circuit_breaker_result = None
+
+        exec_data = data.get("execution_result")
+        if isinstance(exec_data, dict):
+            try:
+                record.execution_result = ExecutionResult(**exec_data)
+            except Exception:
+                record.execution_result = None
+
+        record.reviewer = data.get("reviewer")
+        record.review_outcome = data.get("review_outcome")
+        record.review_timestamp = data.get("review_timestamp")
+        record.replay_of = data.get("replay_of")
+        record.pipeline_latency_ms = data.get("pipeline_latency_ms")
+        record.contract_validated = bool(data.get("contract_validated", False))
+        return record
+
+    def get_by_id(
+        self,
+        decision_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[AuditRecord]:
         with self._lock:
             with self._conn() as conn:
-                row = conn.execute(
-                    "SELECT full_record_json FROM audit_records WHERE decision_id=?",
-                    (decision_id,)
-                ).fetchone()
-                return json.loads(row["full_record_json"]) if row else None
+                if tenant_id is not None:
+                    row = conn.execute(
+                        "SELECT full_record_json FROM audit_records WHERE decision_id=? AND tenant_id=?",
+                        (decision_id, tenant_id),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT full_record_json FROM audit_records WHERE decision_id=?",
+                        (decision_id,)
+                    ).fetchone()
+                if not row:
+                    return None
+                return self._deserialize_audit_record(json.loads(row["full_record_json"]))
 
     def query(
         self,
@@ -473,10 +661,13 @@ class SQLiteAuditRepository(AuditRepository):
         to_ts:          Optional[str]   = None,
         min_risk_score: Optional[float] = None,
         has_violations: Optional[bool]  = None,
+        tenant_id:      Optional[str]   = None,
         limit:          int             = 100,
         offset:         int             = 0,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[AuditRecord]:
         where, params = [], []
+        if tenant_id is not None:
+            where.append("tenant_id = ?"); params.append(tenant_id)
         if agent_id:
             where.append("agent_id = ?"); params.append(agent_id)
         if decision_type:
@@ -503,7 +694,7 @@ class SQLiteAuditRepository(AuditRepository):
         with self._lock:
             with self._conn() as conn:
                 rows = conn.execute(sql, params).fetchall()
-                return [json.loads(r["full_record_json"]) for r in rows]
+                return [self._deserialize_audit_record(json.loads(r["full_record_json"])) for r in rows]
 
     def aggregate_spend(
         self,
@@ -524,8 +715,10 @@ class SQLiteAuditRepository(AuditRepository):
                 ).fetchone()
                 return float(row[0])
 
-    def count(self, **filters) -> int:
+    def count(self, tenant_id: Optional[str] = None, **filters) -> int:
         where, params = [], []
+        if tenant_id is not None:
+            where.append("tenant_id = ?"); params.append(tenant_id)
         for k, v in filters.items():
             if v is not None:
                 where.append(f"{k} = ?"); params.append(v)
@@ -662,13 +855,37 @@ class SQLiteWorkflowRepository(WorkflowRepository):
             self._shared_conn.row_factory = sqlite3.Row
         self._init_schema()
 
-    def _conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self):
         if self._shared_conn is not None:
-            return self._shared_conn
+            try:
+                yield self._shared_conn
+                self._shared_conn.commit()
+            except Exception:
+                self._shared_conn.rollback()
+                raise
+            return
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def close(self) -> None:
+        if self._shared_conn is not None:
+            try:
+                self._shared_conn.close()
+            finally:
+                self._shared_conn = None
+
+    def __del__(self):
+        self.close()
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -789,6 +1006,9 @@ class RepositoryFactory:
         # SQLite (production single-node)
         repos = RepositoryFactory.sqlite(db_dir="/var/lib/glassbox")
 
+        # SQLite (isolated namespace; useful for test runs)
+        repos = RepositoryFactory.sqlite(db_dir="/tmp", namespace="test_run_42")
+
     Returns a dict with keys: "policy", "audit", "workflow"
     """
 
@@ -801,14 +1021,36 @@ class RepositoryFactory:
         }
 
     @staticmethod
-    def sqlite(db_dir: str = ".") -> Dict[str, Any]:
+    def sqlite(
+        db_dir: str = ".",
+        namespace: Optional[str] = None,
+        policy_db_path: Optional[str] = None,
+        audit_db_path: Optional[str] = None,
+        workflow_db_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
         import os
         os.makedirs(db_dir, exist_ok=True)
+        if namespace:
+            safe_ns = "".join(ch for ch in str(namespace) if ch.isalnum() or ch in ("-", "_"))
+            safe_ns = safe_ns or "default"
+            policy_name = f"glassbox_policies_{safe_ns}.db"
+            audit_name = f"glassbox_audit_{safe_ns}.db"
+            workflow_name = f"glassbox_workflows_{safe_ns}.db"
+        else:
+            policy_name = "glassbox_policies.db"
+            audit_name = "glassbox_audit.db"
+            workflow_name = "glassbox_workflows.db"
+
+        policy_path = policy_db_path or os.path.join(db_dir, policy_name)
+        audit_path = audit_db_path or os.path.join(db_dir, audit_name)
+        workflow_path = workflow_db_path or os.path.join(db_dir, workflow_name)
         return {
-            "policy":   SQLitePolicyRepository(
-                os.path.join(db_dir, "glassbox_policies.db")),
-            "audit":    SQLiteAuditRepository(
-                os.path.join(db_dir, "glassbox_audit.db")),
-            "workflow": SQLiteWorkflowRepository(
-                os.path.join(db_dir, "glassbox_workflows.db")),
+            "policy": SQLitePolicyRepository(policy_path),
+            "audit": SQLiteAuditRepository(audit_path),
+            "workflow": SQLiteWorkflowRepository(workflow_path),
         }
+
+
+# Backward compatibility alias retained for older imports and tests.
+class SQLiteRepository(SQLiteAuditRepository):
+    pass

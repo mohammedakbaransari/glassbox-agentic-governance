@@ -270,6 +270,24 @@ class OtelExporter:
                 "glassbox.risk.score",
                 description="Governance risk score distribution (0-100)",
             )
+            # v1.1.0 additions
+            self._instruments["stage_latency_hist"] = self._meter.create_histogram(
+                "glassbox.pipeline.stage_latency_ms",
+                description="Per-stage pipeline latency in milliseconds",
+                unit="ms",
+            )
+            self._instruments["anomaly_z_score"]    = self._meter.create_histogram(
+                "glassbox.anomaly.z_score",
+                description="Z-score magnitude of detected anomalies",
+            )
+            self._instruments["trust_score"]        = self._meter.create_up_down_counter(
+                "glassbox.trust.score",
+                description="Current agent trust score (0.0–1.0)",
+            )
+            self._instruments["cb_active"]          = self._meter.create_up_down_counter(
+                "glassbox.circuit_breaker.active",
+                description="Number of agents currently in circuit-breaker cooldown",
+            )
         except Exception:
             self._instruments = {}
 
@@ -300,6 +318,15 @@ class OtelExporter:
                 self._on_circuit_trip(payload)
             elif etype == "security.violation":
                 self._on_security(payload)
+            elif etype == "trust.score.updated":
+                self._on_trust_changed(payload)
+            elif etype == "circuit_breaker.reset":
+                # Track active breakers gauge: -1 when reset
+                agent = payload.get("agent_id", "unknown")
+                self._store.increment("glassbox_circuit_breaker_active",
+                                      {"agent_id": agent}, value=-1.0)
+                if "cb_active" in self._instruments:
+                    self._instruments["cb_active"].add(-1, {"agent_id": agent})
         except Exception:
             pass   # Observability must never break the calling thread
 
@@ -315,6 +342,16 @@ class OtelExporter:
         if risk is not None:
             self._store.record("glassbox_risk_score", float(risk),
                                {"decision_type": dtype})
+        # Per-stage latency (present when trace_enabled=True on the pipeline)
+        for stage in p.get("stage_latencies", []):
+            stage_name  = stage.get("stage_name", "unknown")
+            stage_ms    = stage.get("duration_ms")
+            if stage_ms is not None:
+                self._store.record("glassbox_stage_latency_ms",
+                                   float(stage_ms), {"stage": stage_name})
+                if "stage_latency_hist" in self._instruments:
+                    self._instruments["stage_latency_hist"].record(
+                        float(stage_ms), {"stage": stage_name})
         # OTel SDK path
         if "decisions_total" in self._instruments:
             self._instruments["decisions_total"].add(1, labels)
@@ -359,6 +396,15 @@ class OtelExporter:
         if "anomalies" in self._instruments:
             self._instruments["anomalies"].add(
                 1, {"decision_type": dtype})
+        # Record z_score if present in event payload
+        z_score = p.get("max_z_score") or p.get("z_score")
+        if z_score is not None:
+            self._store.record("glassbox_anomaly_z_score",
+                               abs(float(z_score)),
+                               {"decision_type": dtype, "agent_id": agent})
+            if "anomaly_z_score" in self._instruments:
+                self._instruments["anomaly_z_score"].record(
+                    abs(float(z_score)), {"decision_type": dtype})
 
     def _on_circuit_trip(self, p: Dict):
         kind  = "ecosystem" if p.get("is_ecosystem") else "per_agent"
@@ -367,6 +413,22 @@ class OtelExporter:
                               {"kind": kind, "agent_id": agent})
         if "circuit_trips" in self._instruments:
             self._instruments["circuit_trips"].add(1, {"kind": kind})
+        # Track active breakers gauge: +1 when tripped
+        self._store.increment("glassbox_circuit_breaker_active",
+                              {"agent_id": agent}, value=1.0)
+        if "cb_active" in self._instruments:
+            self._instruments["cb_active"].add(1, {"agent_id": agent})
+
+    def _on_trust_changed(self, p: Dict):
+        """Handle trust.score.updated events."""
+        agent = p.get("agent_id", "unknown")
+        score = p.get("trust_score", p.get("score"))
+        if score is not None:
+            self._store.record("glassbox_trust_score",
+                               float(score), {"agent_id": agent})
+            if "trust_score" in self._instruments:
+                self._instruments["trust_score"].add(
+                    float(score), {"agent_id": agent})
 
     def _on_security(self, p: Dict):
         dtype = p.get("decision_type", "unknown")

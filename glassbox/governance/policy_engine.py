@@ -22,9 +22,14 @@ Author: Mohammed Akbar Ansari
 """
 
 import copy
+import logging as _logging
 import threading
 import warnings
+from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+_policy_log = _logging.getLogger("glassbox.policy_engine")
 
 
 class Policy:
@@ -55,7 +60,9 @@ class Policy:
     
     def __init__(self, id: str = None, name: str = None, decision_types: List = None,
                  rule: Optional[Callable] = None,
-                 *, policy_id: str = None, policy_name: str = None):
+                 enabled: bool = True,
+                 *, policy_id: str = None, policy_name: str = None,
+                 description: str = "", **kwargs):
         """
         Args:
             id: Unique policy identifier (or use policy_id keyword)
@@ -86,15 +93,25 @@ class Policy:
 
         self.id = id
         self.name = name
+        self.description = description
         self.decision_types = decision_types
         self.rule = rule
-        self.enabled = True  # Default enabled
+        self.enabled = enabled
     
     @property
     def policy_id(self):
         """Alias for id (for test compatibility)."""
         return self.id
-    
+
+    @property
+    def policy_name(self):
+        """Alias for name (for test compatibility)."""
+        return self.name
+
+    def __getitem__(self, key: str):
+        """Allow dict-style read access: policy['policy_id'], policy['policy_name']."""
+        return getattr(self, key)
+
     def __repr__(self):
         return f'Policy(id={self.id!r}, name={self.name!r}, decision_types={self.decision_types})'
 
@@ -123,11 +140,29 @@ class ReadOnlySnapshot:
             frozen_fields: Set of field names that are frozen (read-only)
         """
         object.__setattr__(self, '_data', data)
-        object.__setattr__(self, '_frozen_fields', frozen_fields or set(data.keys()))
+        # frozenset ensures _frozen_fields itself cannot be mutated post-construction,
+        # preventing a caller from widening the frozen scope after the fact.
+        object.__setattr__(self, '_frozen_fields', frozenset(frozen_fields or data.keys()))
+        object.__setattr__(self, '_wrapped_cache', {})
+
+    def _freeze_value(self, value: Any) -> Any:
+        """
+        Lazily wrap nested mutable containers in read-only wrappers.
+        This prevents policy rules from mutating nested payload structures.
+        """
+        if isinstance(value, dict):
+            return _ReadOnlyDict(value)
+        if isinstance(value, list):
+            return _ReadOnlyList(value)
+        return value
     
     def __getitem__(self, key: str) -> Any:
         """Read-only dict access."""
-        return self._data[key]
+        if key in self._wrapped_cache:
+            return self._wrapped_cache[key]
+        frozen = self._freeze_value(self._data[key])
+        self._wrapped_cache[key] = frozen
+        return frozen
     
     def __setitem__(self, key: str, value: Any):
         """Prevent writes."""
@@ -141,7 +176,7 @@ class ReadOnlySnapshot:
         if name.startswith('_'):
             return object.__getattribute__(self, name)
         try:
-            return self._data[name]
+            return self[name]
         except KeyError:
             raise AttributeError(f"Field '{name}' not found in snapshot")
     
@@ -156,7 +191,9 @@ class ReadOnlySnapshot:
     
     def get(self, key: str, default: Any = None) -> Any:
         """Dict-style get with default."""
-        return self._data.get(key, default)
+        if key not in self._data:
+            return default
+        return self[key]
     
     def keys(self):
         """Dict keys."""
@@ -164,11 +201,11 @@ class ReadOnlySnapshot:
     
     def values(self):
         """Dict values."""
-        return self._data.values()
+        return [self[k] for k in self._data]
     
     def items(self):
         """Dict items."""
-        return self._data.items()
+        return [(k, self[k]) for k in self._data]
     
     def __contains__(self, key: str) -> bool:
         """Membership check."""
@@ -204,8 +241,61 @@ class SnapshotPattern:
         fields: Optional[Set[str]] = None,
     ) -> ReadOnlySnapshot:
         """Create read-only snapshot of data."""
-        frozen = fields or set(data.keys())
+        frozen = frozenset(fields) if fields is not None else frozenset(data.keys())
         return ReadOnlySnapshot(data, frozen_fields=frozen)
+
+
+class _ReadOnlyDict(Mapping):
+    """Read-only mapping wrapper with lazy nested freezing."""
+
+    def __init__(self, data: Dict[str, Any]):
+        self._data = data
+        self._cache: Dict[str, Any] = {}
+
+    def __getitem__(self, key: str) -> Any:
+        if key in self._cache:
+            return self._cache[key]
+        value = self._data[key]
+        if isinstance(value, dict):
+            frozen = _ReadOnlyDict(value)
+        elif isinstance(value, list):
+            frozen = _ReadOnlyList(value)
+        else:
+            frozen = value
+        self._cache[key] = frozen
+        return frozen
+
+    def __iter__(self) -> Iterator:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+class _ReadOnlyList(Sequence):
+    """Read-only sequence wrapper with lazy nested freezing."""
+
+    def __init__(self, data: List[Any]):
+        self._data = data
+        self._cache: Dict[int, Any] = {}
+
+    def __getitem__(self, idx: int) -> Any:
+        if isinstance(idx, slice):
+            return tuple(self[i] for i in range(*idx.indices(len(self._data))))
+        if idx in self._cache:
+            return self._cache[idx]
+        value = self._data[idx]
+        if isinstance(value, dict):
+            frozen = _ReadOnlyDict(value)
+        elif isinstance(value, list):
+            frozen = _ReadOnlyList(value)
+        else:
+            frozen = value
+        self._cache[idx] = frozen
+        return frozen
+
+    def __len__(self) -> int:
+        return len(self._data)
 
 
 # ── PolicyEngine: Public API for backward compatibility ────────────────────────
@@ -219,16 +309,41 @@ class PolicyEngine:
     representation (individual policy checks).
     """
     
-    def __init__(self, policies: Optional[List[Policy]] = None):
+    def __init__(
+        self,
+        policies: Optional[List[Policy]] = None,
+        policy_eval_timeout_sec: Optional[float] = None,
+    ):
         """
         Initialize PolicyEngine with optional initial policies.
-        
+
         Args:
             policies: List of Policy objects to register. Defaults to DEFAULT_POLICIES.
+            policy_eval_timeout_sec: Per-policy rule evaluation timeout in seconds.
+                When set, each policy rule is executed in a dedicated thread and
+                cancelled (with a violation recorded) if it does not return within
+                this duration. Default None disables the guard (backward-compatible).
+                Recommended production value: 1.0–5.0 seconds.
         """
         self._policies = {}  # policy_id -> Policy object
         self._policies_by_type = {}  # DecisionType -> List[Policy]
-        
+        self._lock = threading.RLock()
+
+        # Timeout guard: shared executor used when policy_eval_timeout_sec is set.
+        # max_workers is sized to handle concurrent pipeline threads without creating
+        # a per-rule thread on every call — threads are reused across evaluations.
+        self._policy_timeout_sec: Optional[float] = (
+            float(policy_eval_timeout_sec) if policy_eval_timeout_sec else None
+        )
+        self._timeout_executor: Optional[ThreadPoolExecutor] = (
+            ThreadPoolExecutor(
+                max_workers=32,
+                thread_name_prefix="glassbox-policy-timeout",
+            )
+            if self._policy_timeout_sec
+            else None
+        )
+
         # Register provided policies or DEFAULT_POLICIES.
         # Make copies of each policy to isolate instances — preserving ALL fields
         # (including 'enabled') so a disabled policy isn't silently re-enabled.
@@ -242,20 +357,71 @@ class PolicyEngine:
             policy_copy.enabled = policy.enabled
             self.register(policy_copy)
     
-    def register(self, policy: Policy) -> None:
+    def register(self, policy: Policy, warn_conflicts: bool = True) -> None:
         """
         Register a policy with the engine.
-        
+
         Args:
             policy: Policy object to register
+            warn_conflicts: Emit a warning when the new policy shares the same
+                decision_types as an existing *different* policy whose name
+                suggests contradictory intent (e.g. both "block" and "allow"
+                in the same type). Defaults to True.
         """
-        self._policies[policy.id] = policy
-        
-        # Index by decision type
-        for dt in policy.decision_types:
-            if dt not in self._policies_by_type:
-                self._policies_by_type[dt] = []
-            self._policies_by_type[dt].append(policy)
+        with self._lock:
+            existing = self._policies.get(policy.id)
+            if existing is not None:
+                for dt in existing.decision_types:
+                    current = tuple(
+                        candidate
+                        for candidate in self._policies_by_type.get(dt, ())
+                        if candidate.id != policy.id
+                    )
+                    if current:
+                        self._policies_by_type[dt] = current
+                    else:
+                        self._policies_by_type.pop(dt, None)
+
+            # Conflict detection: warn when a newly enabled policy covers the
+            # same decision_types as an existing enabled policy whose name
+            # contains opposite intent keywords ("block" vs "allow", "deny" vs "permit").
+            if warn_conflicts and policy.enabled and policy.decision_types:
+                _BLOCK_WORDS = frozenset({"block", "deny", "reject", "prohibit", "restrict"})
+                _ALLOW_WORDS = frozenset({"allow", "permit", "approve", "grant", "whitelist"})
+
+                def _intent(name: str) -> Optional[str]:
+                    n = (name or "").lower()
+                    if any(w in n for w in _BLOCK_WORDS):
+                        return "block"
+                    if any(w in n for w in _ALLOW_WORDS):
+                        return "allow"
+                    return None
+
+                new_intent = _intent(policy.name or "")
+                if new_intent:
+                    opposite = "allow" if new_intent == "block" else "block"
+                    for dt in policy.decision_types:
+                        for peer in self._policies_by_type.get(dt, ()):
+                            if peer.id == policy.id:
+                                continue
+                            if _intent(peer.name or "") == opposite:
+                                import warnings as _warnings
+                                _warnings.warn(
+                                    f"Policy conflict: registering '{policy.id}' ({new_intent}-intent)"
+                                    f" alongside '{peer.id}' ({opposite}-intent)"
+                                    f" for decision_type '{dt}'. Review policy ordering.",
+                                    UserWarning,
+                                    stacklevel=3,
+                                )
+
+            self._policies[policy.id] = policy
+
+            # Index by decision type
+            if policy.enabled:
+                for dt in policy.decision_types:
+                    current = list(self._policies_by_type.get(dt, ()))
+                    current.append(policy)
+                    self._policies_by_type[dt] = tuple(current)
     
     def evaluate(
         self,
@@ -279,7 +445,8 @@ class PolicyEngine:
         # Import here to avoid circular imports
         from glassbox.governance.models import PolicyEvaluation, PolicyResult
         
-        policies = self._policies_by_type.get(decision_type, [])
+        with self._lock:
+            policies = tuple(self._policies_by_type.get(decision_type, ()))
         
         passed = True
         violations = []
@@ -291,9 +458,37 @@ class PolicyEngine:
         
         for policy in policies:
             try:
-                # Call the policy rule (callable) with snapshot for protection
-                eval_result = policy.rule(snapshot, context)
-                
+                # Call the policy rule through a timeout guard when configured.
+                # The guard submits the rule to a shared ThreadPoolExecutor and waits
+                # at most policy_eval_timeout_sec seconds. A timed-out rule thread
+                # continues running in the background until it naturally completes —
+                # Python cannot forcibly terminate threads — but the pipeline is never
+                # blocked by it.
+                if self._policy_timeout_sec and self._timeout_executor:
+                    future = self._timeout_executor.submit(policy.rule, snapshot, context)
+                    try:
+                        eval_result = future.result(timeout=self._policy_timeout_sec)
+                    except _FuturesTimeout:
+                        passed = False
+                        _policy_log.error(
+                            "Policy evaluation timeout [policy_id=%s] after %.1fs — "
+                            "treating as violation to prevent pipeline stall",
+                            policy.id, self._policy_timeout_sec,
+                            extra={"policy_id": policy.id, "policy_name": policy.name},
+                        )
+                        violations.append(
+                            f"{policy.id}: Policy evaluation timed out (see audit log)"
+                        )
+                        evaluations.append(PolicyEvaluation(
+                            policy_id=policy.id,
+                            policy_name=policy.name,
+                            result="error",
+                            message="Policy evaluation timed out (see audit log)",
+                        ))
+                        continue
+                else:
+                    eval_result = policy.rule(snapshot, context)
+
                 if isinstance(eval_result, PolicyEvaluation):
                     evaluations.append(eval_result)
                     result_str = eval_result.result.lower() if eval_result.result else "pass"
@@ -306,7 +501,7 @@ class PolicyEngine:
                         result=result_str,
                         message=f"Policy {policy.name} evaluation"
                     ))
-                
+
                 if result_str == "fail":
                     passed = False
                     msg = eval_result.message if isinstance(eval_result, PolicyEvaluation) else str(eval_result)
@@ -314,15 +509,25 @@ class PolicyEngine:
                 elif result_str == "warn":
                     msg = eval_result.message if isinstance(eval_result, PolicyEvaluation) else str(eval_result)
                     warnings.append(f"{policy.id}: {msg}")
-                    
+
             except Exception as e:
                 passed = False
-                violations.append(f"{policy.id}: Exception - {str(e)}")
+                # O5: Log full traceback internally; never expose implementation
+                # details in violation messages visible to callers.
+                _policy_log.error(
+                    "Policy evaluation exception [policy_id=%s]: %s",
+                    policy.id, e,
+                    exc_info=True,
+                    extra={"policy_id": policy.id, "policy_name": policy.name},
+                )
+                violations.append(
+                    f"{policy.id}: Policy evaluation error (see audit log for details)"
+                )
                 evaluations.append(PolicyEvaluation(
                     policy_id=policy.id,
                     policy_name=policy.name,
                     result="error",
-                    message=f"Exception: {str(e)}"
+                    message="Policy evaluation error (see audit log for details)",
                 ))
         
         return PolicyResult(
@@ -335,36 +540,54 @@ class PolicyEngine:
     @property
     def policies(self):
         """Return list of policies (for test compatibility)."""
-        return list(self._policies.values())
+        with self._lock:
+            return list(self._policies.values())
     
     def list_policies(self) -> List[Policy]:
         """Return all registered policies."""
-        return list(self._policies.values())
+        with self._lock:
+            return list(self._policies.values())
     
     def disable(self, policy_id: str) -> bool:
         """Temporarily disable a policy."""
-        if policy_id not in self._policies:
-            return False
-        policy = self._policies[policy_id]
-        policy.enabled = False
-        # Remove from all decision types
-        for dt_policies in self._policies_by_type.values():
-            dt_policies[:] = [p for p in dt_policies if p.id != policy_id]
-        return True
+        with self._lock:
+            if policy_id not in self._policies:
+                return False
+            policy = self._policies[policy_id]
+            policy.enabled = False
+            # Remove from all decision types
+            for dt in list(self._policies_by_type.keys()):
+                current = tuple(
+                    candidate
+                    for candidate in self._policies_by_type.get(dt, ())
+                    if candidate.id != policy_id
+                )
+                if current:
+                    self._policies_by_type[dt] = current
+                else:
+                    self._policies_by_type.pop(dt, None)
+            return True
     
     def enable(self, policy_id: str) -> bool:
         """Re-enable a previously disabled policy."""
-        if policy_id not in self._policies:
-            return False
-        policy = self._policies[policy_id]
-        policy.enabled = True
-        # Re-add to evaluation for applicable types
-        for dt in policy.decision_types:
-            if dt not in self._policies_by_type:
-                self._policies_by_type[dt] = []
-            if policy not in self._policies_by_type[dt]:
-                self._policies_by_type[dt].append(policy)
-        return True
+        with self._lock:
+            if policy_id not in self._policies:
+                return False
+            policy = self._policies[policy_id]
+            policy.enabled = True
+            # Re-add to evaluation for applicable types
+            for dt in policy.decision_types:
+                current = list(self._policies_by_type.get(dt, ()))
+                if all(existing.id != policy_id for existing in current):
+                    current.append(policy)
+                self._policies_by_type[dt] = tuple(current)
+            return True
+
+    def shutdown(self) -> None:
+        """Shut down the timeout executor if one was created."""
+        if self._timeout_executor is not None:
+            self._timeout_executor.shutdown(wait=False)
+            self._timeout_executor = None
 
 
 # ── Default policies (24 across all decision types) ────────────────────────────
@@ -495,20 +718,19 @@ def _financial_policy_transfer_limit(payload: Dict, ctx: DecisionContext) -> Pol
 
 
 def _policy_production_override_forbidden(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
-    """POL-006: User overrides forbidden in production."""
+    """SECURITY-001: User overrides forbidden in production."""
     user_override = getattr(ctx, 'user_override', False)
     environment = getattr(ctx, 'environment', 'production')
-    
+
     if environment == "production" and user_override:
         return PolicyEvaluation(
-            policy_id="GEN-001",
+            policy_id="SECURITY-001",
             policy_name="Production Override Forbidden",
             result="fail",
             message="User overrides not allowed in production"
         )
-    
     return PolicyEvaluation(
-        policy_id="GEN-001",
+        policy_id="SECURITY-001",
         policy_name="Production Override Forbidden",
         result="pass",
         message="OK"
@@ -516,44 +738,102 @@ def _policy_production_override_forbidden(payload: Dict, ctx: DecisionContext) -
 
 
 def _confidence_threshold(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
-    """POL-007: Decision confidence must be >= 75%."""
+    """AI-001: Decision confidence must be >= 30%."""
     confidence = getattr(ctx, 'confidence', 1.0)
-    
-    if confidence < 0.75:
+
+    if confidence < 0.30:
         return PolicyEvaluation(
-            policy_id="GEN-002",
+            policy_id="AI-001",
             policy_name="Confidence Threshold",
             result="fail",
-            message=f"Confidence {confidence:.1%} below 75% threshold"
+            message=f"Confidence {confidence:.1%} below 30% threshold"
         )
-    
     return PolicyEvaluation(
-        policy_id="GEN-002",
+        policy_id="AI-001",
         policy_name="Confidence Threshold",
         result="pass",
         message="Confidence check passed"
     )
 
 
-# ── Additional Procurement Policies ───────────────────────────────────────────
-def _procurement_policy_contract_requirement(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
-    """PROC-004: Contract reference required for procurement over threshold (default $500k)."""
-    amount = payload.get("amount", 0)
-    contract = payload.get("contract_id")
-    threshold = _param_store.get("PROC-004", "amount_threshold", default=500_000)
+# ── v1.1 General Policies (PII / EU Automated Decision) ──────────────────────
+import re as _re
 
-    if amount > threshold and not contract:
+_SSN_RE    = _re.compile(r'\b\d{3}-\d{2}-\d{4}\b')
+_EMAIL_RE  = _re.compile(r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b')
+_EU_COUNTRIES = frozenset({
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+    "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+    "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+})
+
+
+def _policy_pii_prevention(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """GEN-001: Detect PII (SSN / email) in generated content."""
+    content = str(payload.get("content", ""))
+    if _SSN_RE.search(content):
+        return PolicyEvaluation(
+            policy_id="GEN-001",
+            policy_name="PII Exposure Prevention",
+            result="fail",
+            message="Detected SSN in content — PII exposure risk"
+        )
+    if _EMAIL_RE.search(content):
+        return PolicyEvaluation(
+            policy_id="GEN-001",
+            policy_name="PII Exposure Prevention",
+            result="fail",
+            message="Detected email address in content — PII exposure risk"
+        )
+    return PolicyEvaluation(
+        policy_id="GEN-001",
+        policy_name="PII Exposure Prevention",
+        result="pass",
+        message="No PII detected"
+    )
+
+
+def _policy_eu_automated_decision(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """GEN-002: GDPR Art.22 — EU citizens must have human review available."""
+    jurisdiction = getattr(ctx, 'jurisdiction', 'US')
+    if jurisdiction not in _EU_COUNTRIES:
+        return PolicyEvaluation(
+            policy_id="GEN-002",
+            policy_name="EU Automated Decision Gate",
+            result="pass",
+            message="Non-EU jurisdiction — GDPR Art.22 not applicable"
+        )
+    affects_individual = payload.get("affects_individual", False)
+    if affects_individual and not payload.get("human_review_available", False):
+        return PolicyEvaluation(
+            policy_id="GEN-002",
+            policy_name="EU Automated Decision Gate",
+            result="fail",
+            message="GDPR Art.22: automated decision affecting EU individual requires human review option"
+        )
+    return PolicyEvaluation(
+        policy_id="GEN-002",
+        policy_name="EU Automated Decision Gate",
+        result="pass",
+        message="EU automated decision requirements satisfied"
+    )
+
+
+# ── Additional Procurement Policies ───────────────────────────────────────────
+def _procurement_policy_sole_source(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """PROC-004: Sole-source procurement requires written justification."""
+    if payload.get("sole_source") and not payload.get("sole_source_justification"):
         return PolicyEvaluation(
             policy_id="PROC-004",
-            policy_name="Contract Requirement",
+            policy_name="Sole Source Justification",
             result="fail",
-            message=f"Contract ID required for procurement > ${threshold:,.0f}"
+            message="Sole-source procurement requires a written justification"
         )
     return PolicyEvaluation(
         policy_id="PROC-004",
-        policy_name="Contract Requirement",
+        policy_name="Sole Source Justification",
         result="pass",
-        message="Contract requirement satisfied"
+        message="Sole source requirement satisfied"
     )
 
 
@@ -578,27 +858,57 @@ def _procurement_policy_audit_trail(payload: Dict, ctx: DecisionContext) -> Poli
     )
 
 
-def _procurement_policy_seasonal_limits(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
-    """PROC-006: Enforce seasonal procurement limits."""
-    category = payload.get("category", "").lower()
-    amount = payload.get("amount", 0)
-    
-    # High-demand seasons (Q4) have lower approval limits
-    is_q4 = ctx and hasattr(ctx, 'month') and ctx.month in [10, 11, 12]
-    max_q4_amount = 50_000
-    
-    if is_q4 and category in {"labor", "consulting"} and amount > max_q4_amount:
+# O6: Compile-time defaults used ONLY when the param store has no override.
+# Operators should keep these lists current via PolicyParameterStore at runtime
+# (OFAC/Treasury sanctions lists change on arbitrary notice).
+_DEFAULT_SANCTIONED_COUNTRIES: frozenset = frozenset({"IR", "KP", "SY", "CU", "RU", "BY"})
+_DEFAULT_DEBARRED_SUPPLIERS: frozenset   = frozenset({"DEBARRED-001", "BLACKLISTED-CORP"})
+
+
+def _get_sanctioned_countries() -> frozenset:
+    """Return the live sanctions list from param store, falling back to compile-time defaults."""
+    raw = _param_store.get("PROC-006", "sanctioned_countries", default=None)
+    if raw is not None:
+        return frozenset(str(c).upper() for c in raw) if isinstance(raw, (list, tuple, set)) else _DEFAULT_SANCTIONED_COUNTRIES
+    return _DEFAULT_SANCTIONED_COUNTRIES
+
+
+def _get_debarred_suppliers() -> frozenset:
+    """Return the live debarment list from param store, falling back to compile-time defaults."""
+    raw = _param_store.get("PROC-006", "debarred_suppliers", default=None)
+    if raw is not None:
+        return frozenset(str(s).upper() for s in raw) if isinstance(raw, (list, tuple, set)) else _DEFAULT_DEBARRED_SUPPLIERS
+    return _DEFAULT_DEBARRED_SUPPLIERS
+
+
+def _procurement_policy_sanctions(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """PROC-006: Block sanctioned-country suppliers and debarred vendors."""
+    country     = (payload.get("supplier_country") or "").upper()
+    supplier_id = (payload.get("supplier_id") or "").upper()
+
+    # Read live lists each evaluation so runtime updates take immediate effect.
+    sanctioned_countries = _get_sanctioned_countries()
+    debarred_suppliers   = _get_debarred_suppliers()
+
+    if country in sanctioned_countries:
         return PolicyEvaluation(
             policy_id="PROC-006",
-            policy_name="Seasonal Procurement Limits",
+            policy_name="Sanctions & Debarment Check",
             result="fail",
-            message=f"Q4 limit for {category} is ${max_q4_amount:,}"
+            message=f"Supplier country '{country}' is sanctioned",
+        )
+    if supplier_id in debarred_suppliers:
+        return PolicyEvaluation(
+            policy_id="PROC-006",
+            policy_name="Sanctions & Debarment Check",
+            result="fail",
+            message=f"Supplier '{supplier_id}' is debarred",
         )
     return PolicyEvaluation(
         policy_id="PROC-006",
-        policy_name="Seasonal Procurement Limits",
+        policy_name="Sanctions & Debarment Check",
         result="pass",
-        message="Seasonal limits satisfied"
+        message="Supplier cleared",
     )
 
 
@@ -671,17 +981,25 @@ def _pricing_policy_competitor_check(payload: Dict, ctx: DecisionContext) -> Pol
 
 # ── Additional Financial Policies ─────────────────────────────────────────────
 def _financial_policy_wire_velocity(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
-    """FIN-002: Wire transfer velocity check (max 3 large transfers per hour)."""
-    # This would typically query audit history; simulating here
-    transfer_amount = payload.get("amount", 0)
-    transfer_count = payload.get("recent_transfer_count", 0)  # In last hour
-    
+    """FIN-002: Daily wire transfer limit ($5M) / velocity (3 per hour > $100K)."""
+    transfer_amount = float(payload.get("amount", 0) or 0)
+    transfer_count  = int(payload.get("recent_transfer_count", 0) or 0)
+
+    # Single transfer exceeds daily wire limit
+    if transfer_amount > 5_000_000:
+        return PolicyEvaluation(
+            policy_id="FIN-002",
+            policy_name="Wire Transfer Velocity",
+            result="fail",
+            message=f"Transfer amount ${transfer_amount:,.0f} exceeds $5,000,000 daily wire limit"
+        )
+    # Velocity check: max 3 large transfers per hour
     if transfer_amount > 100_000 and transfer_count >= 3:
         return PolicyEvaluation(
             policy_id="FIN-002",
             policy_name="Wire Transfer Velocity",
             result="fail",
-            message="Wire transfer rate limit exceeded (3 per hour for > $100k)"
+            message="Wire transfer rate limit exceeded (max 3 transfers > $100,000 per hour)"
         )
     return PolicyEvaluation(
         policy_id="FIN-002",
@@ -691,43 +1009,162 @@ def _financial_policy_wire_velocity(payload: Dict, ctx: DecisionContext) -> Poli
     )
 
 
-def _financial_policy_currency_restrictions(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
-    """FIN-003: Restrict transfers to approved currencies."""
-    currency = payload.get("currency", "USD").upper()
-    approved_currencies = {"USD", "EUR", "GBP", "CAD", "AUD"}
-    
-    if currency not in approved_currencies:
+_CTR_THRESHOLD = 10_000  # Bank Secrecy Act Cash Transaction Report threshold
+
+
+def _financial_policy_counterparty_check(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """FIN-003: Financial transfer must name a destination account."""
+    if not payload.get("destination_account"):
         return PolicyEvaluation(
             policy_id="FIN-003",
-            policy_name="Currency Restrictions",
+            policy_name="Missing Counterparty",
             result="fail",
-            message=f"Currency {currency} not approved. Allowed: {', '.join(approved_currencies)}"
+            message="destination_account is required for financial transfers"
         )
     return PolicyEvaluation(
         policy_id="FIN-003",
-        policy_name="Currency Restrictions",
+        policy_name="Missing Counterparty",
         result="pass",
-        message="Currency approved"
+        message="Counterparty present"
     )
 
 
-def _financial_policy_fund_availability(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
-    """FIN-004: Verify available funds before transfer."""
-    amount = payload.get("amount", 0)
-    available_balance = payload.get("available_balance", 0)
-    
-    if amount > available_balance:
+def _financial_policy_ctr_threshold(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """FIN-004: Cash transactions >= $10K require a CTR filing flag (advisory warn)."""
+    amount    = float(payload.get("amount", 0) or 0)
+    method    = str(payload.get("payment_method", "") or "").lower()
+    ctr_filed = payload.get("ctr_filed", False)
+
+    if method == "cash" and amount >= _CTR_THRESHOLD and not ctr_filed:
         return PolicyEvaluation(
             policy_id="FIN-004",
-            policy_name="Fund Availability",
-            result="fail",
-            message=f"Insufficient funds: need ${amount:,}, available ${available_balance:,}"
+            policy_name="CTR Cash Threshold",
+            result="warn",
+            message=f"Cash transaction of ${amount:,.0f} >= ${_CTR_THRESHOLD:,}: CTR filing may be required (BSA)"
         )
     return PolicyEvaluation(
         policy_id="FIN-004",
-        policy_name="Fund Availability",
+        policy_name="CTR Cash Threshold",
         result="pass",
-        message="Sufficient funds available"
+        message="Cash threshold not triggered"
+    )
+
+
+def _financial_policy_structuring(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """FIN-005: Detect potential structuring (amounts just below $10K CTR threshold)."""
+    amount = float(payload.get("amount", 0) or 0)
+    # Flag round numbers in the $9,000–$9,999 window (common structuring pattern)
+    if 9_000 <= amount < _CTR_THRESHOLD and amount == round(amount, -2):
+        return PolicyEvaluation(
+            policy_id="FIN-005",
+            policy_name="Structuring Detection",
+            result="warn",
+            message=f"Amount ${amount:,.0f} is a round number just below the ${_CTR_THRESHOLD:,} CTR reporting threshold — potential structuring"
+        )
+    return PolicyEvaluation(
+        policy_id="FIN-005",
+        policy_name="Structuring Detection",
+        result="pass",
+        message="No structuring pattern detected"
+    )
+
+
+# ── Clinical Policies ─────────────────────────────────────────────────────────
+_CONTROLLED_DRUG_CLASSES = frozenset({
+    "schedule_i", "schedule_ii", "schedule_iii", "schedule_iv", "schedule_v",
+})
+
+
+def _clinical_policy_controlled_substance(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """CLIN-001: Controlled substance prescriptions require a DEA number."""
+    drug_class = str(payload.get("drug_class", "") or "").lower()
+    if drug_class in _CONTROLLED_DRUG_CLASSES and not payload.get("prescriber_dea_number"):
+        return PolicyEvaluation(
+            policy_id="CLIN-001",
+            policy_name="Controlled Substance Check",
+            result="fail",
+            message=f"DEA registration number required to prescribe {drug_class} substance '{payload.get('drug_name', 'unknown')}'"
+        )
+    return PolicyEvaluation(
+        policy_id="CLIN-001",
+        policy_name="Controlled Substance Check",
+        result="pass",
+        message="Controlled substance requirements satisfied"
+    )
+
+
+def _clinical_policy_dosage_check(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """CLIN-002: Prescribed dose must not exceed the maximum safe dose."""
+    dose_mg         = float(payload.get("dose_mg", payload.get("dosage_mg", 0)) or 0)
+    max_dose_mg     = float(payload.get("max_dose_mg", 0) or 0)
+    patient_weight  = float(payload.get("patient_weight_kg", 0) or 0)
+    max_mg_per_kg   = float(payload.get("max_mg_per_kg", 0) or 0)
+
+    # Weight-based check
+    if patient_weight > 0 and max_mg_per_kg > 0:
+        weight_limit = patient_weight * max_mg_per_kg
+        if dose_mg > weight_limit:
+            return PolicyEvaluation(
+                policy_id="CLIN-002",
+                policy_name="Dosage Safety Check",
+                result="fail",
+                message=f"Dose {dose_mg}mg exceeds weight-based limit of {weight_limit:.0f}mg for {patient_weight}kg patient"
+            )
+
+    # Absolute max dose check
+    if max_dose_mg > 0 and dose_mg > max_dose_mg:
+        return PolicyEvaluation(
+            policy_id="CLIN-002",
+            policy_name="Dosage Safety Check",
+            result="fail",
+            message=f"Dose {dose_mg}mg exceeds maximum safe dose of {max_dose_mg}mg"
+        )
+    return PolicyEvaluation(
+        policy_id="CLIN-002",
+        policy_name="Dosage Safety Check",
+        result="pass",
+        message="Dose within safe limits"
+    )
+
+
+# ── Trading Policies ──────────────────────────────────────────────────────────
+def _trading_policy_position_limit(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """TRADE-001: Order notional must not exceed the declared position limit."""
+    notional       = float(payload.get("notional", 0) or 0)
+    position_limit = float(payload.get("position_limit", 0) or 0)
+
+    if position_limit > 0 and notional > position_limit:
+        return PolicyEvaluation(
+            policy_id="TRADE-001",
+            policy_name="Position Limit",
+            result="fail",
+            message=f"Order notional ${notional:,.0f} exceeds position limit ${position_limit:,.0f}"
+        )
+    return PolicyEvaluation(
+        policy_id="TRADE-001",
+        policy_name="Position Limit",
+        result="pass",
+        message="Within position limit"
+    )
+
+
+def _trading_policy_fat_finger(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """TRADE-002: Detect fat-finger orders (quantity > 10× average daily quantity)."""
+    quantity      = float(payload.get("quantity", 0) or 0)
+    avg_daily_qty = float(payload.get("avg_daily_qty", 0) or 0)
+
+    if avg_daily_qty > 0 and quantity > 10 * avg_daily_qty:
+        return PolicyEvaluation(
+            policy_id="TRADE-002",
+            policy_name="Fat Finger Check",
+            result="fail",
+            message=f"Order qty {quantity:,.0f} is {quantity/avg_daily_qty:.1f}× average daily qty — likely fat-finger"
+        )
+    return PolicyEvaluation(
+        policy_id="TRADE-002",
+        policy_name="Fat Finger Check",
+        result="pass",
+        message="Order size within normal range"
     )
 
 
@@ -775,17 +1212,31 @@ def _it_ops_policy_service_criticality(payload: Dict, ctx: DecisionContext) -> P
     )
 
 
+_MAJOR_ACTIONS = frozenset({
+    # Infrastructure mutations that always require a change record
+    "restart_service", "stop_service", "start_service", "kill_process",
+    "delete_database", "drop_table", "truncate_table",
+    "scale_down", "scale_up", "resize_cluster",
+    "deploy", "rollback", "upgrade", "downgrade",
+    "patch_os", "reboot", "shutdown",
+    "create_firewall_rule", "delete_firewall_rule",
+    "modify_security_group", "revoke_access",
+    "backup", "restore", "failover",
+    "flush_cache", "rotate_secrets", "rotate_keys",
+})
+
+
 def _it_ops_policy_change_log(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
-    """IT-OPS-004: Document change in system change log."""
+    """IT-OPS-004: Major infrastructure actions require a change-log reference."""
     change_id = payload.get("change_id")
-    action = payload.get("action", "")
-    
-    if len(action) > 20 and not change_id:
+    action = str(payload.get("action", "") or "").lower().strip().replace(" ", "_").replace("-", "_")
+
+    if action in _MAJOR_ACTIONS and not change_id:
         return PolicyEvaluation(
             policy_id="IT-OPS-004",
             policy_name="Change Log Requirement",
             result="fail",
-            message="Major changes require change ID in change log"
+            message=f"Action '{action}' requires a change_id reference in the change log"
         )
     return PolicyEvaluation(
         policy_id="IT-OPS-004",
@@ -944,66 +1395,149 @@ def _risk_policy_aggregation(payload: Dict, ctx: DecisionContext) -> PolicyEvalu
     )
 
 
-# Build default portfolio of 24 policies
+# ── Legal Policies ────────────────────────────────────────────────────────────
+def _legal_policy_contract_authority(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """LEGAL-001: AI contract actions above configured threshold require human authority."""
+    contract_value = float(payload.get("contract_value", payload.get("amount", 0)) or 0)
+    authority_ref  = payload.get("authority_ref") or payload.get("approval_ref")
+    threshold      = _param_store.get("LEGAL-001", "authority_threshold", default=250_000)
+
+    if contract_value >= threshold and not authority_ref:
+        return PolicyEvaluation(
+            policy_id="LEGAL-001",
+            policy_name="Contract Authority Limit",
+            result="fail",
+            message=f"Contract value ${contract_value:,.0f} >= ${threshold:,.0f} requires authority_ref",
+        )
+    return PolicyEvaluation(
+        policy_id="LEGAL-001",
+        policy_name="Contract Authority Limit",
+        result="pass",
+        message="Contract authority check passed",
+    )
+
+
+def _legal_policy_hold_compliance(payload: Dict, ctx: DecisionContext) -> PolicyEvaluation:
+    """LEGAL-002: Documents under legal hold must not be deleted or modified."""
+    action      = str(payload.get("action", "") or "").lower()
+    legal_hold  = payload.get("legal_hold", False)
+    hold_waiver = payload.get("hold_waiver_ref")
+
+    destructive = {"delete", "modify", "overwrite", "purge", "archive", "shred"}
+    if legal_hold and action in destructive and not hold_waiver:
+        return PolicyEvaluation(
+            policy_id="LEGAL-002",
+            policy_name="Legal Hold Compliance",
+            result="fail",
+            message=f"Action '{action}' blocked — document is under legal hold (provide hold_waiver_ref to override)",
+        )
+    return PolicyEvaluation(
+        policy_id="LEGAL-002",
+        policy_name="Legal Hold Compliance",
+        result="pass",
+        message="Legal hold check passed",
+    )
+
+
+# Build v1.2 policy portfolio (35 policies)
 DEFAULT_POLICIES: List[Policy] = [
-    Policy("PROC-001", "Procurement Amount Limit", 
-           [DecisionType.PROCUREMENT], _procurement_policy_amount_limit),
-    Policy("PROC-002", "Supplier Known Check",
-           [DecisionType.PROCUREMENT], _procurement_policy_supplier_known),
-    Policy("PROC-003", "Category Risk Check",
-           [DecisionType.PROCUREMENT], _procurement_policy_category_risk),
-    Policy("PROC-004", "Contract Requirement",
-           [DecisionType.PROCUREMENT], _procurement_policy_contract_requirement),
-    Policy("PROC-005", "Audit Trail Requirement",
-           [DecisionType.PROCUREMENT], _procurement_policy_audit_trail),
-    Policy("PROC-006", "Seasonal Procurement Limits",
-           [DecisionType.PROCUREMENT], _procurement_policy_seasonal_limits),
-    Policy("PRICE-001", "Price Change Limit",
-           [DecisionType.PRICING], _pricing_policy_change_limit),
-    Policy("PRICE-002", "Floor Price Limit",
-           [DecisionType.PRICING], _pricing_policy_floor_limit),
-    Policy("PRICE-003", "Ceiling Price Limit",
-           [DecisionType.PRICING], _pricing_policy_ceiling_limit),
-    Policy("PRICE-004", "Competitor Price Benchmark",
-           [DecisionType.PRICING], _pricing_policy_competitor_check),
-    Policy("FIN-001", "Transfer Limit",
-           [DecisionType.FINANCIAL], _financial_policy_transfer_limit),
-    Policy("FIN-002", "Wire Transfer Velocity",
-           [DecisionType.FINANCIAL], _financial_policy_wire_velocity),
-    Policy("FIN-003", "Currency Restrictions",
-           [DecisionType.FINANCIAL], _financial_policy_currency_restrictions),
-    Policy("FIN-004", "Fund Availability",
-           [DecisionType.FINANCIAL], _financial_policy_fund_availability),
-    Policy("IT-OPS-002", "Maintenance Window Enforcement",
-           [DecisionType.IT_OPS], _it_ops_policy_maintenance_window),
-    Policy("IT-OPS-003", "Service Criticality Gate",
-           [DecisionType.IT_OPS], _it_ops_policy_service_criticality),
-    Policy("IT-OPS-004", "Change Log Requirement",
-           [DecisionType.IT_OPS], _it_ops_policy_change_log),
-    Policy("HR-001", "Salary Change Limit",
-           [DecisionType.HR], _hr_policy_salary_limits),
-    Policy("HR-002", "Promotion Approval Gate",
-           [DecisionType.HR], _hr_policy_promotion_restrictions),
-    Policy("HR-003", "Access Provisioning Security",
-           [DecisionType.HR], _hr_policy_access_provisioning),
-    Policy("COMPLIANCE-001", "PII Exposure Prevention",
-           [DecisionType.CUSTOM], _compliance_policy_pii_exposure),
-    Policy("COMPLIANCE-002", "Data Residency Compliance",
-           [DecisionType.CUSTOM], _compliance_policy_data_residency),
-    Policy("COMPLIANCE-003", "Breach Notification Requirement",
-           [DecisionType.CUSTOM], _compliance_policy_breach_notification),
-    Policy("GEN-001", "Production Override Forbidden",
-           [DecisionType.PROCUREMENT, DecisionType.PRICING, DecisionType.FINANCIAL,
+    # ── Procurement ──────────────────────────────────────────────────────────
+    Policy(policy_id="PROC-001", policy_name="Procurement Amount Limit",
+        decision_types=[DecisionType.PROCUREMENT], rule=_procurement_policy_amount_limit),
+    Policy(policy_id="PROC-002", policy_name="Supplier Known Check",
+        decision_types=[DecisionType.PROCUREMENT], rule=_procurement_policy_supplier_known),
+    Policy(policy_id="PROC-003", policy_name="Category Risk Check",
+        decision_types=[DecisionType.PROCUREMENT], rule=_procurement_policy_category_risk),
+    Policy(policy_id="PROC-004", policy_name="Sole Source Justification",
+        decision_types=[DecisionType.PROCUREMENT], rule=_procurement_policy_sole_source),
+    Policy(policy_id="PROC-005", policy_name="Audit Trail Requirement",
+        decision_types=[DecisionType.PROCUREMENT], rule=_procurement_policy_audit_trail),
+    Policy(policy_id="PROC-006", policy_name="Sanctions & Debarment Check",
+        decision_types=[DecisionType.PROCUREMENT], rule=_procurement_policy_sanctions),
+    # ── Pricing ──────────────────────────────────────────────────────────────
+    Policy(policy_id="PRICE-001", policy_name="Price Change Limit",
+        decision_types=[DecisionType.PRICING], rule=_pricing_policy_change_limit),
+    Policy(policy_id="PRICE-002", policy_name="Floor Price Limit",
+        decision_types=[DecisionType.PRICING], rule=_pricing_policy_floor_limit),
+    Policy(policy_id="PRICE-003", policy_name="Ceiling Price Limit",
+        decision_types=[DecisionType.PRICING], rule=_pricing_policy_ceiling_limit),
+    Policy(policy_id="PRICE-004", policy_name="Competitor Price Benchmark",
+        decision_types=[DecisionType.PRICING], rule=_pricing_policy_competitor_check),
+    # ── Financial ────────────────────────────────────────────────────────────
+    Policy(policy_id="FIN-001", policy_name="Transfer Limit",
+        decision_types=[DecisionType.FINANCIAL], rule=_financial_policy_transfer_limit),
+    Policy(policy_id="FIN-002", policy_name="Wire Transfer Velocity",
+        decision_types=[DecisionType.FINANCIAL], rule=_financial_policy_wire_velocity),
+    Policy(policy_id="FIN-003", policy_name="Missing Counterparty",
+        decision_types=[DecisionType.FINANCIAL], rule=_financial_policy_counterparty_check),
+    Policy(policy_id="FIN-004", policy_name="CTR Cash Threshold",
+        decision_types=[DecisionType.FINANCIAL], rule=_financial_policy_ctr_threshold),
+    Policy(policy_id="FIN-005", policy_name="Structuring Detection",
+        decision_types=[DecisionType.FINANCIAL], rule=_financial_policy_structuring),
+    # ── Clinical ─────────────────────────────────────────────────────────────
+    Policy(policy_id="CLIN-001", policy_name="Controlled Substance Check",
+        decision_types=[DecisionType.CLINICAL], rule=_clinical_policy_controlled_substance),
+    Policy(policy_id="CLIN-002", policy_name="Dosage Safety Check",
+        decision_types=[DecisionType.CLINICAL], rule=_clinical_policy_dosage_check),
+    # ── Trading ──────────────────────────────────────────────────────────────
+    Policy(policy_id="TRADE-001", policy_name="Position Limit",
+        decision_types=[DecisionType.TRADING], rule=_trading_policy_position_limit),
+    Policy(policy_id="TRADE-002", policy_name="Fat Finger Check",
+        decision_types=[DecisionType.TRADING], rule=_trading_policy_fat_finger),
+    # ── IT Operations ────────────────────────────────────────────────────────
+    Policy(policy_id="IT-OPS-002", policy_name="Maintenance Window Enforcement",
+        decision_types=[DecisionType.IT_OPS], rule=_it_ops_policy_maintenance_window),
+    Policy(policy_id="IT-OPS-003", policy_name="Service Criticality Gate",
+        decision_types=[DecisionType.IT_OPS], rule=_it_ops_policy_service_criticality),
+    Policy(policy_id="IT-OPS-004", policy_name="Change Log Requirement",
+        decision_types=[DecisionType.IT_OPS], rule=_it_ops_policy_change_log),
+    # ── Human Resources ──────────────────────────────────────────────────────
+    Policy(policy_id="HR-001", policy_name="Salary Change Limit",
+        decision_types=[DecisionType.HR], rule=_hr_policy_salary_limits),
+    Policy(policy_id="HR-002", policy_name="Promotion Approval Gate",
+        decision_types=[DecisionType.HR], rule=_hr_policy_promotion_restrictions),
+    Policy(policy_id="HR-003", policy_name="Access Provisioning Security",
+        decision_types=[DecisionType.HR], rule=_hr_policy_access_provisioning),
+    # ── Compliance ───────────────────────────────────────────────────────────
+    Policy(policy_id="COMPLIANCE-001", policy_name="PII Exposure Prevention",
+        decision_types=[DecisionType.CUSTOM], rule=_compliance_policy_pii_exposure),
+    Policy(policy_id="COMPLIANCE-002", policy_name="Data Residency Compliance",
+        decision_types=[DecisionType.CUSTOM], rule=_compliance_policy_data_residency),
+    Policy(policy_id="COMPLIANCE-003", policy_name="Breach Notification Requirement",
+        decision_types=[DecisionType.CUSTOM], rule=_compliance_policy_breach_notification),
+    # ── General / Content ────────────────────────────────────────────────────
+    Policy(policy_id="GEN-001", policy_name="PII Exposure Prevention",
+        decision_types=[DecisionType.CONTENT], rule=_policy_pii_prevention),
+    Policy(policy_id="GEN-002", policy_name="EU Automated Decision Gate",
+        decision_types=[DecisionType.CONTENT], rule=_policy_eu_automated_decision),
+    # ── Legal ─────────────────────────────────────────────────────────────────
+    Policy(policy_id="LEGAL-001", policy_name="Contract Authority Limit",
+        decision_types=[DecisionType.LEGAL], rule=_legal_policy_contract_authority),
+    Policy(policy_id="LEGAL-002", policy_name="Legal Hold Compliance",
+        decision_types=[DecisionType.LEGAL], rule=_legal_policy_hold_compliance),
+    # ── Security / Governance ─────────────────────────────────────────────────
+    # Covers all decision types including CONTENT (generative AI output) and LEGAL.
+    Policy(policy_id="SECURITY-001", policy_name="Production Override Forbidden",
+        decision_types=[
+            DecisionType.PROCUREMENT, DecisionType.PRICING, DecisionType.FINANCIAL,
             DecisionType.INVENTORY, DecisionType.IT_OPS, DecisionType.LOGISTICS,
-            DecisionType.HR, DecisionType.CUSTOM], _policy_production_override_forbidden),
-    Policy("GEN-002", "Confidence Threshold",
-           [DecisionType.PROCUREMENT, DecisionType.PRICING, DecisionType.FINANCIAL,
+            DecisionType.HR, DecisionType.CUSTOM,
+            DecisionType.CLINICAL, DecisionType.TRADING,
+            DecisionType.CONTENT, DecisionType.LEGAL,
+        ], rule=_policy_production_override_forbidden),
+    Policy(policy_id="AI-001", policy_name="Confidence Threshold",
+        decision_types=[
+            DecisionType.PROCUREMENT, DecisionType.PRICING, DecisionType.FINANCIAL,
             DecisionType.INVENTORY, DecisionType.IT_OPS, DecisionType.LOGISTICS,
-            DecisionType.HR, DecisionType.CUSTOM], _confidence_threshold),
-    Policy("RISK-001", "Risk Aggregation Gate",
-           [DecisionType.PROCUREMENT, DecisionType.PRICING, DecisionType.FINANCIAL,
-            DecisionType.INVENTORY, DecisionType.IT_OPS, DecisionType.LOGISTICS,
-            DecisionType.HR, DecisionType.CUSTOM], _risk_policy_aggregation),
+            DecisionType.HR, DecisionType.CUSTOM,
+            DecisionType.CLINICAL, DecisionType.TRADING,
+            DecisionType.CONTENT, DecisionType.LEGAL,
+        ], rule=_confidence_threshold),
+    Policy(policy_id="RISK-001", policy_name="Risk Aggregation Gate",
+        decision_types=[DecisionType.PROCUREMENT, DecisionType.PRICING, DecisionType.FINANCIAL,
+         DecisionType.INVENTORY, DecisionType.IT_OPS, DecisionType.LOGISTICS,
+         DecisionType.HR, DecisionType.CUSTOM,
+         DecisionType.CONTENT, DecisionType.LEGAL], rule=_risk_policy_aggregation),
 ]
 
 # --- Backward-compatible policy class expected by tests/examples ---
@@ -1031,15 +1565,54 @@ def _fleet_budget_rule(payload: Dict, ctx: 'DecisionContext') -> 'PolicyEvaluati
 
 class FleetBudgetPolicy(Policy):
     """Backward-compatible policy for fleet/logistics budget enforcement."""
-    
-    def __init__(self, budget: float = 100000.0):
+
+    def __init__(self, budget: float = 100000.0, warn_threshold: float = 0.8):
+        self.budget = float(budget)
+        self.warn_threshold = float(warn_threshold)
+        self.spent = 0.0
+        self._spent_lock = threading.Lock()  # guards self.spent against concurrent mutation
         super().__init__(
-            id="LOG-001",
-            name="Fleet Budget Policy",
-            decision_types=[DecisionType.LOGISTICS],
-            rule=_fleet_budget_rule,
+            policy_id="LOG-001",
+            policy_name="Fleet Budget Policy",
+            decision_types=[DecisionType.LOGISTICS, DecisionType.FINANCIAL],
+            rule=self._rule,
         )
-        self.budget = budget
+
+    def _rule(self, payload: Dict, ctx: 'DecisionContext') -> 'PolicyEvaluation':
+        amount = float(payload.get("amount", payload.get("fleet_spend", payload.get("total_cost", 0))) or 0)
+        with self._spent_lock:
+            current_spent = self.spent
+        projected = current_spent + amount
+        if projected > self.budget:
+            return PolicyEvaluation(
+                policy_id="LOG-001",
+                policy_name="Fleet Budget Policy",
+                result="fail",
+                message=f"Fleet spend {projected:.2f} exceeds budget {self.budget:.2f}",
+            )
+        if projected >= self.budget * self.warn_threshold:
+            return PolicyEvaluation(
+                policy_id="LOG-001",
+                policy_name="Fleet Budget Policy",
+                result="warn",
+                message=(
+                    f"Fleet spend {projected:.2f} reached {projected / self.budget:.0%} "
+                    f"of budget {self.budget:.2f}"
+                ),
+            )
+        return PolicyEvaluation(
+            policy_id="LOG-001",
+            policy_name="Fleet Budget Policy",
+            result="pass",
+            message="Fleet within budget",
+        )
+
+    def record_execution(self, amount: float) -> None:
+        with self._spent_lock:
+            self.spent += float(amount or 0.0)
+
+    def as_policy(self) -> 'Policy':
+        return self
 
 
 __all__ = ["Policy", "PolicyEngine", "ReadOnlySnapshot", "SnapshotPattern",

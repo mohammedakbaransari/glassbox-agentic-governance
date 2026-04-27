@@ -1,0 +1,146 @@
+{
+  "batches": [
+    {
+      "name": "core-fast",
+      "targets": ["tests/test_core.py"],
+      "profile": "isolated",
+      "timeout_seconds": 600,
+      "description": "Core governance and hot-path validation",
+      "tags": ["full", "core"]
+    },
+    {
+      "name": "core-pipeline",
+      "targets": [
+        "tests/test_core.py::TestSchemaValidator",
+        "tests/test_core.py::TestPolicyEngine",
+        "tests/test_core.py::TestRiskEvaluator",
+        "tests/test_core.py::TestVelocityBreaker",
+        "tests/test_core.py::TestAnomalyDetector",
+        "tests/test_core.py::TestGovernancePipeline"
+      ],
+      "profile": "standard",
+      "timeout_seconds": 300,
+      "description": "Core pipeline and evaluator shard",
+      "tags": ["shard", "core", "pipeline"]
+    },
+    {
+      "name": "core-api-security",
+      "targets": [
+        "tests/test_core.py::TestFlaskAPI",
+        "tests/test_core.py::TestSlidingWindowRateLimiter",
+        "tests/test_core.py::TestSecuritySQLInjection",
+        "tests/test_core.py::TestSecurityScriptInjection",
+        "tests/test_core.py::TestSecurityPipelineIntegration",
+        "tests/test_core.py::TestAgentIdValidation"
+      ],
+      "profile": "heavy-io",
+      "timeout_seconds": 300,
+      "description": "API and security-oriented core shard",
+      "tags": ["shard", "core", "api", "security"]
+    },
+    {
+      "name": "enterprise",
+      "targets": ["tests/test_enterprise.py"],
+      "profile": "standard",
+      "timeout_seconds": 600,
+      "description": "Enterprise controls and API enterprise paths",
+      "tags": ["full", "enterprise"]
+    },
+    {
+      "name": "framework",
+      "targets": ["tests/test_framework.py"],
+      "profile": "isolated",
+      "timeout_seconds": 600,
+      "description": "Framework repositories, workflow, and event bus tests",
+      "tags": ["full", "framework"]
+    },
+    {
+      "name": "governance",
+      "targets": ["tests/test_governance.py"],
+      "profile": "isolated",
+      "timeout_seconds": 600,
+      "description": "Governance components and adapter boundary tests",
+      "tags": ["full", "governance"]
+    },
+    {
+      "name": "governance-core",
+      "targets": [
+        "tests/test_governance.py::TestCurrencyNormalizer",
+        "tests/test_governance.py::TestNewDecisionTypes",
+        "tests/test_governance.py::TestNewPolicies",
+        "tests/test_governance.py::TestDecisionExplainer",
+        "tests/test_governance.py::TestPolicySimulator",
+        "tests/test_governance.py::TestAgentTrustScorer",
+        "tests/test_governance.py::TestReadOnlySnapshot"
+      ],
+      "profile": "standard",
+      "timeout_seconds": 300,
+      "description": "Governance core component shard",
+      "tags": ["shard", "governance", "core"]
+    },
+    {
+      "name": "governance-adapters-api",
+      "targets": [
+        "tests/test_governance.py::TestMCPToolScanner",
+        "tests/test_governance.py::TestMCPGovernanceGateway",
+        "tests/test_governance.py::TestOpenAIAgentsAdapter",
+        "tests/test_governance.py::TestPydanticAIAdapter",
+        "tests/test_governance.py::TestOPARegoAdapter",
+        "tests/test_governance.py::TestQuorumApproval",
+        "tests/test_governance.py::TestBulkBatchAPI",
+        "tests/test_governance.py::TestComplianceCatalogueNewFrameworks",
+        "tests/test_governance.py::TestDecisionContextNewFields"
+      ],
+      "profile": "standard",
+      "timeout_seconds": 300,
+      "description": "Governance adapter and API shard",
+      "tags": ["shard", "governance", "adapters", "api"]
+    },
+    {
+      "name": "tamper-audit",
+      "targets": ["tests/test_hash_chain_tamper.py"],
+      "profile": "standard",
+      "timeout_seconds": 300,
+      "description": "Tamper-evident audit chain validation",
+      "tags": ["full", "audit"]
+    },
+    {
+      "name": "integrations",
+      "targets": ["tests/test_integrations.py"],
+      "profile": "isolated",
+      "timeout_seconds": 600,
+      "description": "Adapters, orchestration, RAG, compliance, and full-stack integration",
+      "tags": ["full", "integrations"]
+    },
+    {
+      "name": "security-regression",
+      "targets": ["tests/test_security.py", "tests/test_regression.py"],
+      "profile": "heavy-io",
+      "timeout_seconds": 600,
+      "description": "Security hardening and regression validation",
+      "tags": ["full", "security", "regression"]
+    },
+    {
+      "name": "invariants-phase",
+      "targets": [
+        "tests/test_velocity_breaker_invariants.py",
+        "tests/test_p1a.py",
+        "tests/test_p1d.py",
+        "tests/test_p2b.py",
+        "tests/test_p2d.py"
+      ],
+      "profile": "standard",
+      "timeout_seconds": 300,
+      "description": "Invariants and phase validation suites",
+      "tags": ["full", "invariants", "phase"]
+    },
+    {
+      "name": "performance",
+      "targets": ["tests/test_performance.py"],
+      "profile": "perf",
+      "timeout_seconds": 900,
+      "description": "Performance and benchmark validation",
+      "tags": ["full", "performance"]
+    }
+  ]
+}

@@ -149,6 +149,7 @@ class WriteAheadLog:
 
         if db_path:
             self._init_db()
+            self._next_entry_id = self._load_next_entry_id()
 
         log.info(
             "WriteAheadLog initialized: db_path=%s, checkpoint_interval=%d, "
@@ -203,6 +204,19 @@ class WriteAheadLog:
         except Exception as exc:
             log.error("WriteAheadLog._init_db failed: %s", exc, exc_info=True)
 
+    def _load_next_entry_id(self) -> int:
+        """Load the next durable entry identifier from SQLite."""
+        if not self.db_path:
+            return 0
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("SELECT COALESCE(MAX(entry_id), -1) + 1 FROM wal_entries")
+                return int(cursor.fetchone()[0])
+        except Exception as exc:
+            log.error("WriteAheadLog._load_next_entry_id failed: %s", exc)
+            return 0
+
     def begin_transaction(
         self,
         decision_id: str,
@@ -240,6 +254,18 @@ class WriteAheadLog:
 
         return entry
 
+    def _get_cached_or_loaded_entry(self, entry_id: int) -> Optional[WALEntry]:
+        """Return an entry from cache, hydrating it from durable storage if needed."""
+        entry = self._entry_cache.get(entry_id)
+        if entry is not None:
+            return entry
+        if not self.db_path:
+            return None
+        entry = self._load_entry_from_db(entry_id)
+        if entry is not None:
+            self._entry_cache[entry_id] = entry
+        return entry
+
     def mark_side_effect(
         self,
         entry_id: int,
@@ -257,11 +283,10 @@ class WriteAheadLog:
           4. events_emitted (publish events)
         """
         with self._cache_lock:
-            if entry_id not in self._entry_cache:
+            entry = self._get_cached_or_loaded_entry(entry_id)
+            if entry is None:
                 log.error("WriteAheadLog: entry_id=%d not found", entry_id)
                 return
-
-            entry = self._entry_cache[entry_id]
             entry.side_effects[side_effect_name] = {
                 "success": success,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -289,11 +314,10 @@ class WriteAheadLog:
         After commit, entry can be garbage-collected.
         """
         with self._cache_lock:
-            if entry_id not in self._entry_cache:
+            entry = self._get_cached_or_loaded_entry(entry_id)
+            if entry is None:
                 log.error("WriteAheadLog: entry_id=%d not found for commit", entry_id)
                 return
-
-            entry = self._entry_cache[entry_id]
             entry.state = WALEntryState.COMMITTED
             entry.updated_at = datetime.now(timezone.utc)
 
@@ -316,11 +340,10 @@ class WriteAheadLog:
         Entry is logged for audit but not replayed on recovery.
         """
         with self._cache_lock:
-            if entry_id not in self._entry_cache:
+            entry = self._get_cached_or_loaded_entry(entry_id)
+            if entry is None:
                 log.error("WriteAheadLog: entry_id=%d not found for rollback", entry_id)
                 return
-
-            entry = self._entry_cache[entry_id]
             entry.state = WALEntryState.ROLLED_BACK
             entry.error_message = reason
             entry.updated_at = datetime.now(timezone.utc)
@@ -333,13 +356,7 @@ class WriteAheadLog:
     def get_entry(self, entry_id: int) -> Optional[WALEntry]:
         """Retrieve WAL entry from cache or DB."""
         with self._cache_lock:
-            if entry_id in self._entry_cache:
-                return self._entry_cache[entry_id]
-
-        if self.db_path:
-            return self._load_entry_from_db(entry_id)
-
-        return None
+            return self._get_cached_or_loaded_entry(entry_id)
 
     def get_pending_entries(self) -> List[WALEntry]:
         """
@@ -370,6 +387,8 @@ class WriteAheadLog:
                 entries = []
                 for row in cursor:
                     entry = self._row_to_entry(row)
+                    with self._cache_lock:
+                        self._entry_cache[entry.entry_id] = entry
                     entries.append(entry)
 
                 return entries
@@ -428,14 +447,26 @@ class WriteAheadLog:
         try:
             side_effects_json = json.dumps(entry.side_effects)
             with sqlite3.connect(self.db_path) as conn:
+                if self.enable_sync_writes:
+                    conn.execute("PRAGMA synchronous = FULL")
+
                 conn.execute(
                     """
-                    INSERT OR REPLACE INTO wal_entries
-                        (decision_id, state, audit_record_json, side_effects_json,
+                    INSERT INTO wal_entries
+                        (entry_id, decision_id, state, audit_record_json, side_effects_json,
                          error_message, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(entry_id) DO UPDATE SET
+                        decision_id = excluded.decision_id,
+                        state = excluded.state,
+                        audit_record_json = excluded.audit_record_json,
+                        side_effects_json = excluded.side_effects_json,
+                        error_message = excluded.error_message,
+                        created_at = excluded.created_at,
+                        updated_at = excluded.updated_at
                     """,
                     (
+                        entry.entry_id,
                         entry.decision_id,
                         entry.state.value,
                         entry.audit_record_json,
@@ -445,9 +476,6 @@ class WriteAheadLog:
                         entry.updated_at.isoformat(),
                     ),
                 )
-
-                if self.enable_sync_writes:
-                    conn.execute("PRAGMA synchronous = FULL")
 
                 conn.commit()
         except Exception as exc:
@@ -519,20 +547,20 @@ class WriteAheadLog:
     def _serialize_audit_record(record: AuditRecord) -> str:
         """Serialize AuditRecord to JSON."""
         try:
-            return json.dumps(
-                {
-                    "decision_id": record.decision_id,
-                    "agent_id": record.agent_id,
-                    "decision_type": record.decision_type.value,
-                    "payload": record.payload,
-                    "final_status": record.final_status.value if record.final_status else None,
-                    "risk_score": record.risk_result.risk_score if record.risk_result else None,
-                },
-                default=str,
-            )
+            return json.dumps(record.to_dict(), default=str)
         except Exception as exc:
             log.error("WriteAheadLog._serialize_audit_record failed: %s", exc)
             return "{}"
+
+    @staticmethod
+    def deserialize_audit_record_json(audit_record_json: str) -> Dict[str, Any]:
+        """Deserialize persisted audit record JSON for recovery workflows."""
+        try:
+            data = json.loads(audit_record_json)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            log.error("WriteAheadLog.deserialize_audit_record_json failed: %s", exc)
+            return {}
 
     def shutdown(self) -> None:
         """Graceful shutdown."""

@@ -29,6 +29,7 @@ Author: Mohammed Akbar Ansari
 
 from __future__ import annotations
 
+import atexit
 import json
 import sqlite3
 import threading
@@ -183,6 +184,22 @@ class PolicyParameterStore:
             for r in rows
         ]
 
+    def close(self) -> None:
+        """Close the persistent in-memory SQLite connection when present."""
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                finally:
+                    self._conn = None
+
+    def shutdown(self) -> None:
+        """Alias for generic lifecycle cleanup."""
+        self.close()
+
+    def __del__(self):
+        self.close()
+
 
 # ── Module-level singleton ─────────────────────────────────────────────────────
 # Policies in policy_engine.py import this object and call _param_store.get().
@@ -193,3 +210,4 @@ class PolicyParameterStore:
 #   _pp._param_store = PolicyParameterStore(db_path="/var/lib/glassbox/params.db")
 
 _param_store = PolicyParameterStore()
+atexit.register(_param_store.close)

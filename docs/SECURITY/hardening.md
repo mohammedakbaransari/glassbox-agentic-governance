@@ -66,7 +66,7 @@ key = APIKeyAuth.generate_key("procurement_service")
 @APIKeyAuth.require_api_key
 def post_decision():
     payload = request.json
-    result = pipeline.execute(payload)
+    result = pipeline.process(payload)
     return result
 ```
 
@@ -322,7 +322,7 @@ limiter = Limiter(
 @app.route("/decisions", methods=["POST"])
 @limiter.limit("100 per minute")  # Tight limit on decisions
 def post_decision():
-    return pipeline.execute(request.json)
+    return pipeline.process(request.json)
 
 # Use distributed rate limiter for multi-instance
 # Redis: rate_limiter = RedisLimiter(redis.Redis())
@@ -774,4 +774,4 @@ def post_incident_review(incident_id):
 
 ---
 
-*GlassBox v1.0.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher · Navi Mumbai, India*
+*GlassBox v1.0.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher ·  *

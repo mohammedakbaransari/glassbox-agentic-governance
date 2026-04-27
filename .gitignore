@@ -20,3 +20,15 @@ Thumbs.db
 .vscode/
 .offline-markdown-preview/
 *.swp
+test-results-harness-shards/
+test-results-harness-smoke/
+test-results-plan-artifacts/
+test_results*.txt
+test-results/
+docs/reviews/
+.pytest-tmp/
+.tmp/
+.tmp-sqlite-tests/
+.tmp-sqlite-tests-ps/
+glassbox/benchmarks/__pycache__/
+glassbox/scenarios/__pycache__/

@@ -1,6 +1,16 @@
 # GlassBox Troubleshooting Guide
 
-Common issues, solutions, and debugging strategies across all GlassBox modules.
+Common issues, solutions, and debugging strategies across all GlassBox modules. Updated for v1.2.0.
+
+## v1.2.0 Known Issues
+
+| Issue | Workaround |
+|---|---|
+| Async audit queue full raises `RuntimeError` under burst load | Set `async_audit_writes=False` for high-assurance workloads, or increase queue size via `BoundedQueue(maxsize=...)` |
+| Custom policy rule with no timeout can block the pipeline indefinitely | Wrap custom policy logic in a `concurrent.futures.ThreadPoolExecutor` with `timeout` in user code |
+| Multi-container SQLite causes `database is locked` | Migrate to PostgreSQL for any multi-process deployment (see [Deployment section](#deployment)) |
+
+---
 
 **Quick Navigation:**
 - [Pipeline & Core](#pipeline--core) | [Governance](#governance) | [Compliance](#compliance) | [Storage & Workflow](#storage--workflow) | [Event Bus](#event-bus) | [Rules Engine](#rules-engine) | [Orchestration](#orchestration) | [RAG & Adapters](#rag--adapters) | [Security](#security) | [Performance](#performance) | [Deployment](#deployment)
@@ -70,7 +80,7 @@ Application becoming unresponsive
 from glassbox.governance.execution_trace import ExecutionTrace
 
 trace = ExecutionTrace()
-result = pipeline.execute(payload, trace=trace)
+result = pipeline.process(payload, trace=trace)
 trace.print_summary()  # Identifies slow stage
 
 # 2. Disable expensive features for high-throughput
@@ -83,7 +93,7 @@ pipeline = GovernancePipeline(
 
 # 3. Batch similar decisions for policy amortization
 batch = [payload1, payload2, ..., payload100]
-results = [pipeline.execute(p) for p in batch]
+results = [pipeline.process(p) for p in batch]
 # Amortizes policy compilation across batch
 
 # 4. Reduce schema validation scope
@@ -102,7 +112,7 @@ schema = {
 **Symptoms:**
 ```python
 pipeline = GovernancePipeline()
-result = pipeline.execute({"amount": 1000})
+result = pipeline.process({"amount": 1000})
 # AttributeError: 'NoneType' object has no attribute 'policy_engine'
 ```
 
@@ -116,21 +126,21 @@ result = pipeline.execute({"amount": 1000})
 ```python
 # 1. Explicit initialization with error handling
 try:
-    pipeline = GovernancePipeline(environment="production")
-    pipeline.initialize()  # Explicit init
-except RuntimeError as e:
+    pipeline = GovernancePipeline()
+    # Send a test decision to verify all components are ready
+    test_req = DecisionRequest(agent_id="healthcheck", decision_type=DecisionType.PROCUREMENT,
+                               payload={"amount": 1})
+    pipeline.process(test_req)
+except Exception as e:
     print(f"Pipeline init failed: {e}")
-    # Fallback to safe defaults
-    pipeline = GovernancePipeline(
-        audit_repo=InMemoryRepository(),
-        policy_engine=PolicyEngine()
-    )
+    # Fallback to minimal pipeline
+    pipeline = GovernancePipeline(policy_engine=PolicyEngine())
 
 # 2. Verify core components
 if pipeline.policy_engine is None:
-    raise RuntimeError("Policy engine failed to initialize")
-if pipeline.audit_repo is None:
-    raise RuntimeError("Audit repository failed to initialize")
+    raise RuntimeError("Policy engine not configured")
+if pipeline.audit_logger is None:
+    raise RuntimeError("Audit logger not configured")
 
 # 3. Check configuration
 import logging
@@ -192,7 +202,7 @@ detector.enable_temporal_baseline()
 
 **Symptoms:**
 ```python
-result = pipeline.execute(payload)
+result = pipeline.process(payload)
 print(f"Risk score: {result.risk_score}")  # Always 0.0
 Expected: Varied scores (0.0 – 1.0) based on decision riskiness
 ```
@@ -266,7 +276,7 @@ breaker = VelocityBreaker(
 # 3. Disable for known batch jobs
 @breaker.disable_for_batch()
 def run_batch_governance(decisions):
-    return [pipeline.execute(d) for d in decisions]
+    return [pipeline.process(d) for d in decisions]
 
 # 4. Monitor and tune
 stats = breaker.get_statistics()
@@ -316,7 +326,7 @@ print(f"Active controls: {[c.control_id for c in controls]}")
 
 # 4. Verify controls registered in pipeline
 pipeline = GovernancePipeline(compliance_catalogue=catalogue)
-result = pipeline.execute(payload)
+result = pipeline.process(payload)
 print(f"Controls verified: {len(result.compliance_checks)}")
 ```
 
@@ -385,17 +395,21 @@ Decisions cannot complete
 
 ```python
 # 1. Enable WAL mode
-from glassbox.store.database import GlassBoxDB
+from glassbox.store.database_abstraction import DatabaseFactory
 
-db = GlassBoxDB(
-    "/var/lib/glassbox/glassbox.db",
+db = DatabaseFactory.create(
+    "sqlite",
+    db_path="/var/lib/glassbox/glassbox.db",
     enable_wal=True  # Enable Write-Ahead Logging
 )
 
 # 2. Use PostgreSQL for higher concurrency
-db = GlassBoxDB(
-    "postgresql://user:pass@localhost/glassbox",
-    backend="postgres"
+db = DatabaseFactory.create(
+    "postgresql",
+    host="localhost",
+    database="glassbox",
+    user="user",
+    password="pass",
 )
 
 # 3. Keep transactions short
@@ -795,7 +809,7 @@ def execute_with_governance(payload):
     if not report.is_safe:
         raise SecurityException(f"Payload rejected: {report.violations}")
     
-    return pipeline.execute(payload)
+    return pipeline.process(payload)
 
 # 2. Enable all detection
 sanitizer = PayloadSanitizer(
@@ -860,7 +874,7 @@ pipeline = GovernancePipeline(
 # 4. Sample for monitoring
 import time
 start = time.time()
-result = pipeline.execute(payload)
+result = pipeline.process(payload)
 latency_ms = (time.time() - start) * 1000
 
 print(f"Latency: {latency_ms:.1f} ms")
@@ -890,9 +904,15 @@ Possible data corruption
 
 ```python
 # 1. Migrate to PostgreSQL for multi-container deployments
-db = GlassBoxDB(
-    "postgresql://user:pass@postgres-svc:5432/glassbox",
-    backend="postgres"
+from glassbox.store.database_abstraction import DatabaseFactory
+
+db = DatabaseFactory.create(
+    "postgresql",
+    host="postgres-svc",
+    port=5432,
+    database="glassbox",
+    user="user",
+    password="pass",
 )
 
 # 2. Use single writer, multiple readers pattern
@@ -900,7 +920,7 @@ db = GlassBoxDB(
 # - Others read from read replicas
 
 # 3. For development/testing, use in-memory
-db = GlassBoxDB(":memory:")
+db = DatabaseFactory.create("sqlite", db_path=":memory:")
 
 # 4. For Kubernetes, use StatefulSet with PersistentVolume
 # POD: glassbox-0 (single replica, persistent storage)
@@ -968,7 +988,7 @@ for secret in required_secrets:
 import logging
 logging.basicConfig(level=logging.DEBUG)
 
-result = pipeline.execute(payload, collect_trace=True)
+result = pipeline.process(payload, collect_trace=True)
 trace = result.execution_trace
 
 for stage in trace.stages:

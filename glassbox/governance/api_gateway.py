@@ -2,6 +2,18 @@
 GlassBox Framework — API Gateway & Middleware (v1.1.0)
 ======================================================
 
+**Alternative HTTP layer for non-Flask deployments** (ASGI, AWS Lambda,
+Azure Functions, custom TCP servers).  For the primary REST API built on
+Flask, see :mod:`glassbox.api.app` and :mod:`glassbox.api.middleware`.
+
+If you are using Flask, import from glassbox.api.middleware instead:
+
+    # Flask deployments — preferred
+    from glassbox.api.middleware import RateLimitMiddleware, require_auth
+
+    # Non-Flask / ASGI / Lambda deployments — this module
+    from glassbox.governance.api_gateway import APIGateway, AuthenticationMiddleware
+
 Enterprise API gateway with:
   - Request/response middleware pipeline
   - Authentication & authorization checks
@@ -43,6 +55,7 @@ Author: Mohammed Akbar Ansari
 import json
 import time
 import threading
+import hmac
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -121,21 +134,30 @@ class AuthenticationMiddleware(Middleware):
         token = auth_header[7:]  # Remove "Bearer "
 
         # Validate token (simplified; use JWT in production)
-        if token != self.secret_key:
+        # Use constant-time comparison to prevent timing oracle attacks
+        if not self._validate_token(token):
             return Response(
                 status_code=401,
                 error="Invalid token"
             )
 
-        # Extract user info from token (mock)
+        # Extract user info from token (mock). Preserve existing context user_id
+        # when upstream middleware/context manager already set it.
         ctx = RequestContext.get_current()
-        ctx.user_id = "user_from_token"
+        if not ctx.user_id:
+            ctx.user_id = "user_from_token"
 
         return None  # Continue
 
     def process_response(self, request: Request, response: Response) -> Response:
         """No post-processing."""
         return response
+
+    def _validate_token(self, token: str) -> bool:
+        """Validate token using constant-time comparison."""
+        if token is None:
+            return False
+        return hmac.compare_digest(token.encode(), self.secret_key.encode())
 
 
 class RateLimitMiddleware(Middleware):

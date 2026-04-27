@@ -358,4 +358,4 @@ query  = adapter.govern_stream(
 
 ---
 
-*GlassBox v1.0.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher · Navi Mumbai, India*
+*GlassBox v1.0.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher ·  *

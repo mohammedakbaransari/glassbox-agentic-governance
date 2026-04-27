@@ -15,15 +15,17 @@ Run: pytest tests/test_regression_v1_0_1.py -v --tb=short
 """
 
 import copy
+import os
 import threading
+import tempfile
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch, call
 
 from glassbox.governance.models import (
-    DecisionRequest, DecisionResponse, Disposition,
-    FinalStatus, AgentContract,
+    DecisionRequest, DecisionResponse, DecisionType, Disposition,
+    FinalStatus, AgentContract, PolicyEvaluation, ExecutionResult,
 )
 from glassbox.governance.pipeline import GovernancePipeline
 from glassbox.governance.event_dispatcher import ResilientEventDispatcher
@@ -113,10 +115,12 @@ class TestThreadPoolExecutorLifecycle(unittest.TestCase):
         with patch('glassbox.governance.pipeline.get_logger'):
             with GovernancePipeline() as pipeline:
                 self.assertIsNotNone(pipeline._thread_pool)
-                self.assertFalse(pipeline._thread_pool._shutdown)
+                thread_pool = pipeline._thread_pool
+                self.assertFalse(thread_pool._shutdown)
             
             # After exit, thread pool should be shutdown
-            self.assertTrue(pipeline._thread_pool._shutdown)
+            self.assertTrue(thread_pool._shutdown)
+            self.assertIsNone(pipeline._thread_pool)
 
     def test_explicit_shutdown(self):
         """Test explicit shutdown works."""
@@ -138,11 +142,64 @@ class TestThreadPoolExecutorLifecycle(unittest.TestCase):
             self.assertIsNone(pipeline._thread_pool)
 
     def test_atexit_handler_registered(self):
-        """Test atexit handler is registered."""
+        """Test pipeline instances do not re-register the module atexit handler."""
         with patch('glassbox.governance.pipeline.get_logger'):
             with patch('atexit.register') as mock_register:
-                pipeline = GovernancePipeline()
-                mock_register.assert_called_once()
+                GovernancePipeline()
+                mock_register.assert_not_called()
+
+    def test_audit_repo_failure_raises_in_default_production_mode(self):
+        class FailingAuditRepo:
+            def save(self, record):
+                raise RuntimeError("audit down")
+
+        pipeline = GovernancePipeline(audit_repo=FailingAuditRepo())
+        request = DecisionRequest(
+            agent_id="audit-agent",
+            decision_type=DecisionType.CUSTOM,
+            payload={"description": "critical persistence"},
+        )
+        with self.assertRaises(RuntimeError):
+            pipeline.process(request)
+
+    def test_best_effort_mode_allows_audit_repo_failure(self):
+        class FailingAuditRepo:
+            def save(self, record):
+                raise RuntimeError("audit down")
+
+        pipeline = GovernancePipeline(
+            audit_repo=FailingAuditRepo(),
+            side_effect_mode="best_effort",
+            environment="development",
+        )
+        request = DecisionRequest(
+            agent_id="audit-agent",
+            decision_type=DecisionType.CUSTOM,
+            payload={"description": "best effort persistence"},
+        )
+        response = pipeline.process(request)
+        self.assertIsNotNone(response.decision_id)
+
+    def test_workflow_failure_raises_in_default_production_mode(self):
+        class FailingWorkflowEngine:
+            def create_from_decision(self, **kwargs):
+                raise RuntimeError("workflow down")
+
+        from glassbox.governance.risk_evaluator import RiskEvaluator
+
+        pipeline = GovernancePipeline(
+            workflow_engine=FailingWorkflowEngine(),
+            risk_evaluator=RiskEvaluator(
+                thresholds={"auto_execute_max": 10, "human_review_max": 100},
+            ),
+        )
+        request = DecisionRequest(
+            agent_id="review-agent",
+            decision_type=DecisionType.PROCUREMENT,
+            payload={"amount": 200000, "supplier_id": "SUP-001", "category": "hardware"},
+        )
+        with self.assertRaises(RuntimeError):
+            pipeline.process(request)
 
 
 class TestPayloadDeepCopy(unittest.TestCase):
@@ -201,6 +258,9 @@ class TestMultiTenancyQuotaEnforcement(unittest.TestCase):
             "a",  # too short
             "UPPERCASE",  # uppercase not allowed
             "tenant..id",  # invalid chars
+            "..",
+            "tenant/escape",
+            r"tenant\\escape",
             "a" * 100,  # too long
         ]
         
@@ -265,6 +325,24 @@ class TestMultiTenancyQuotaEnforcement(unittest.TestCase):
         second_access = registry._tenant_last_access["tenant-1"]
         
         self.assertGreater(second_access, first_access)
+
+    def test_tenant_log_dir_cannot_escape_base_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry = TenantRegistry(
+                max_tenants=5,
+                log_dir=tmpdir,
+                tenant_id_pattern=r'^[a-z0-9._-]{1,64}$',
+            )
+
+            components = registry.get("tenant.safe")
+            tenant_log_dir = os.path.abspath(components.audit_logger._log_dir)
+            base_dir = os.path.abspath(tmpdir)
+
+            self.assertEqual(os.path.commonpath([base_dir, tenant_log_dir]), base_dir)
+
+            for invalid_id in ("..", "tenant..escape"):
+                with self.assertRaises(ValueError):
+                    registry.get(invalid_id)
 
 
 class TestPipelineIntegration(unittest.TestCase):

@@ -1,5 +1,5 @@
 """
-GlassBox — Compliance Control Catalogue  (v1.0.0)
+GlassBox — Compliance Control Catalogue  (v1.2.0)
 ==================================================
 Database-driven compliance framework implementation.
 
@@ -10,11 +10,12 @@ structured data in SQLite — NOT hardcoded. This allows:
   - Compliance posture to be queried and reported
   - Gap analysis between implemented controls and required controls
 
-Standards implemented:
+Standards implemented (24 frameworks, 97 controls):
   NIST CSF 2.0          Core Functions: Govern, Identify, Protect, Detect, Respond, Recover
   NIST AI RMF           AI-specific: Govern, Map, Measure, Manage
-  EU AI Act             Articles 9, 12, 13, 14, 16, 17
-  ISO/IEC 42001         AI Management System
+  EU AI Act             Articles 9, 11, 12, 13, 14, 15, 16, 17
+  ISO/IEC 42001:2023    AI Management System
+  ISO 27001:2022        Information Security Management
   OWASP Agentic Top 10  A01–A10 2026
   NIST 800-207 (ZTA)    Zero Trust Architecture
   ASD Essential Eight   Maturity Model controls
@@ -22,11 +23,18 @@ Standards implemented:
   Cyber Security Act    Incident notification + reporting
   NERC CIP              Power sector cybersecurity
   IEC 62443 / ISA 99    Industrial Automation and Control Systems
-  NIST 800-82           OT/ICS security
   Purdue Model 2.0      Network architecture segmentation
-  AEMO AESCSF           Energy sector security (AU)
-  CIRMP                 Critical Infrastructure Risk Management
-  ASD E8 ML 1-3         Essential Eight maturity levels
+  SOC 2 Type II         Trust Services Criteria
+  HIPAA                 Health Insurance Portability and Accountability
+  Colorado AI Act       SB 24-205 High-Risk AI Systems
+  PCI DSS v4.0          Payment Card Industry Data Security Standard
+  GDPR                  EU General Data Protection Regulation
+  DORA                  EU Digital Operational Resilience Act
+  APRA CPS 234          Australian Prudential Standard for Information Security
+  FFIEC CAT             Financial Institution Cybersecurity Assessment Tool
+  FDA 21 CFR Part 11    Electronic Records for Clinical/Pharma AI
+  MAS TRM               Monetary Authority of Singapore Tech Risk Guidelines
+  NIST SP 800-53 Rev.5  Security and Privacy Controls for Federal Systems
 
 Each control has:
   - control_id:     Unique ID within the standard (e.g. "CSF2.GV.PO-01")
@@ -259,12 +267,12 @@ CONTROL_CATALOGUE: List[Dict[str, Any]] = [
     {"control_id":"NERC.CIP007","framework":"NERC CIP","category":"Systems Security Management",
      "title":"CIP-007 — Systems Security Management",
      "description":"Manage cybersecurity risks to BES (Bulk Electric System) cyber systems.",
-     "glassbox_mapping":"IT_OPS decision type, GRID-001 critical operation authorisation policy",
+     "glassbox_mapping":"IT_OPS decision type, IT-OPS-003 service criticality gate (see also examples/industry_examples.py for GRID-001 domain policy template)",
      "implementation_status":"partial"},
     {"control_id":"NERC.CIP010","framework":"NERC CIP","category":"Configuration Management",
      "title":"CIP-010 — Configuration Change Management",
      "description":"Prevent and detect unauthorised changes to BES cyber systems.",
-     "glassbox_mapping":"ITOPS-001 change window policy, DecisionReplay regression testing",
+     "glassbox_mapping":"IT-OPS-002 maintenance window policy, IT-OPS-004 change log requirement, DecisionReplay regression testing",
      "implementation_status":"partial"},
 
     # ── IEC 62443 / ISA 99 ────────────────────────────────────────────────────
@@ -307,12 +315,12 @@ CONTROL_CATALOGUE: List[Dict[str, Any]] = [
     {"control_id":"PURDUE.L3-L4","framework":"Purdue Model 2.0","category":"Zone Separation",
      "title":"Level 3–4 boundary control",
      "description":"Manufacturing operations zone separated from enterprise zone.",
-     "glassbox_mapping":"AgentContract zone-specific permitted_types, IT_OPS with change_window_approved",
+     "glassbox_mapping":"AgentContract zone-specific permitted_types, IT-OPS-002 maintenance window, IT_OPS with change_window_approved",
      "implementation_status":"partial"},
     {"control_id":"PURDUE.L0-L2","framework":"Purdue Model 2.0","category":"OT Zone",
      "title":"Level 0–2 OT protection",
      "description":"Physical process, field devices, and control systems are protected.",
-     "glassbox_mapping":"ITOPS-001 destructive action controls, GRID-001 dual authorisation",
+     "glassbox_mapping":"IT-OPS-004 destructive action change log, IT-OPS-003 service criticality gate, dual-authorisation via WorkflowEngine quorum_approve",
      "implementation_status":"partial"},
 
     # ── ISO 27001:2022 ─────────────────────────────────────────────────────────
@@ -356,7 +364,7 @@ CONTROL_CATALOGUE: List[Dict[str, Any]] = [
     {"control_id":"SOC2.CC8.1","framework":"SOC 2 Type II","category":"Change Management",
      "title":"Change management controls",
      "description":"Changes to infrastructure, data, software and procedures are authorised, documented, tested, approved, and deployed.",
-     "glassbox_mapping":"PolicyHotReloader, PolicySimulator (pre-deployment impact), ITOPS-001",
+     "glassbox_mapping":"PolicyHotReloader, PolicySimulator (pre-deployment impact), IT-OPS-004 change log requirement",
      "implementation_status":"implemented"},
     {"control_id":"SOC2.CC9.1","framework":"SOC 2 Type II","category":"Risk Mitigation",
      "title":"Risk mitigation activities",
@@ -383,7 +391,7 @@ CONTROL_CATALOGUE: List[Dict[str, Any]] = [
     {"control_id":"HIPAA.164.308a3","framework":"HIPAA","category":"Administrative Safeguards",
      "title":"Workforce security",
      "description":"Implement policies to ensure workforce members access ePHI only as needed.",
-     "glassbox_mapping":"AgentContract (permitted_types), ENV-001 (production control)",
+     "glassbox_mapping":"AgentContract (permitted_types), SECURITY-001 (production override forbidden)",
      "implementation_status":"implemented"},
 
     # ── ISO/IEC 42001:2023 AI Management System ────────────────────────────────
@@ -435,6 +443,157 @@ CONTROL_CATALOGUE: List[Dict[str, Any]] = [
      "title":"Security event detection and response",
      "description":"Security events are detected, analysed, and responded to.",
      "glassbox_mapping":"PayloadSanitizer, EventBus SecurityViolation events, VelocityBreaker",
+     "implementation_status":"implemented"},
+
+    # ── EU AI Act — additional articles ───────────────────────────────────────
+    {"control_id":"EUAI.A11","framework":"EU AI Act","category":"Technical Documentation",
+     "title":"Article 11 — Technical documentation",
+     "description":"Providers of high-risk AI systems shall draw up technical documentation demonstrating compliance before placing the system on the market.",
+     "glassbox_mapping":"ComplianceCatalogue.posture_summary(), ComplianceReporter (framework coverage report)",
+     "implementation_status":"partial"},
+    {"control_id":"EUAI.A15","framework":"EU AI Act","category":"Accuracy and Robustness",
+     "title":"Article 15 — Accuracy, robustness and cybersecurity",
+     "description":"High-risk AI systems shall be designed with appropriate levels of accuracy, robustness, and cybersecurity throughout their lifecycle.",
+     "glassbox_mapping":"AI-001 confidence threshold, AnomalyDetector (drift detection), PayloadSanitizer (adversarial input)",
+     "implementation_status":"partial"},
+
+    # ── GDPR ──────────────────────────────────────────────────────────────────
+    {"control_id":"GDPR.A5","framework":"GDPR","category":"Principles",
+     "title":"Article 5 — Data minimisation and purpose limitation",
+     "description":"Personal data shall be adequate, relevant and limited to what is necessary in relation to the purposes for which it are processed.",
+     "glassbox_mapping":"AuditLogger.include_payload=False (PII exclusion), GEN-001 PII detection, COMPLIANCE-001",
+     "implementation_status":"partial"},
+    {"control_id":"GDPR.A22","framework":"GDPR","category":"Automated Decision-Making",
+     "title":"Article 22 — Automated individual decision-making",
+     "description":"Data subjects have the right not to be subject to a decision based solely on automated processing which significantly affects them.",
+     "glassbox_mapping":"GEN-002 EU Automated Decision Gate (forces human_review_available=True for EU subjects)",
+     "implementation_status":"implemented"},
+    {"control_id":"GDPR.A33","framework":"GDPR","category":"Breach Notification",
+     "title":"Article 33 — Notification of a personal data breach",
+     "description":"Supervisory authority must be notified within 72 hours of becoming aware of a personal data breach.",
+     "glassbox_mapping":"COMPLIANCE-003 breach notification policy, EventBus SecurityViolation events",
+     "implementation_status":"implemented"},
+
+    # ── DORA (EU) ─────────────────────────────────────────────────────────────
+    {"control_id":"DORA.Art6","framework":"DORA","category":"ICT Risk Management",
+     "title":"Article 6 — ICT risk management framework",
+     "description":"Financial entities shall have in place a sound, comprehensive and well-documented ICT risk management framework.",
+     "glassbox_mapping":"RiskEvaluator (0-100 composite score), PolicyEngine, ComplianceCatalogue risk posture",
+     "implementation_status":"implemented"},
+    {"control_id":"DORA.Art17","framework":"DORA","category":"ICT Incident Management",
+     "title":"Article 17 — ICT-related incident management process",
+     "description":"Financial entities shall define, establish and implement an ICT-related incident management process.",
+     "glassbox_mapping":"EventBus SecurityViolation + CircuitBreakerTripped events, VelocityBreaker cooldown",
+     "implementation_status":"partial"},
+    {"control_id":"DORA.Art24","framework":"DORA","category":"Digital Operational Resilience Testing",
+     "title":"Article 24 — General requirements for digital operational resilience testing",
+     "description":"Financial entities shall maintain and review a sound and comprehensive digital operational resilience testing programme.",
+     "glassbox_mapping":"DecisionReplay (scenario regression), PolicySimulator (pre-deployment impact testing)",
+     "implementation_status":"implemented"},
+    {"control_id":"DORA.Art28","framework":"DORA","category":"Third-Party Risk",
+     "title":"Article 28 — General principles of sound management of ICT third-party risk",
+     "description":"Financial entities shall manage ICT third-party risk as an integral component of ICT risk.",
+     "glassbox_mapping":"PROC-002 supplier known check, PROC-006 sanctions and debarment, PROC-003 category risk",
+     "implementation_status":"implemented"},
+
+    # ── APRA CPS 234 ─────────────────────────────────────────────────────────
+    {"control_id":"CPS234.15","framework":"APRA CPS 234","category":"Information Security Controls",
+     "title":"Para 15 — Implement information security controls",
+     "description":"An APRA-regulated entity must implement information security controls to protect its information assets commensurate with the criticality and sensitivity of those information assets.",
+     "glassbox_mapping":"AgentContract permitted_types (asset classification), PolicyEngine (control enforcement)",
+     "implementation_status":"implemented"},
+    {"control_id":"CPS234.36","framework":"APRA CPS 234","category":"Incident Management",
+     "title":"Para 36 — Notify APRA of material information security incidents",
+     "description":"An APRA-regulated entity must notify APRA as soon as possible and no later than 72 hours after becoming aware of a material information security incident.",
+     "glassbox_mapping":"EventBus SecurityViolation events, COMPLIANCE-003 breach notification, WebhookEventHandler",
+     "implementation_status":"partial"},
+    {"control_id":"CPS234.51","framework":"APRA CPS 234","category":"Audit and Review",
+     "title":"Para 51 — Information security control testing",
+     "description":"An APRA-regulated entity must test information security controls through a systematic testing programme.",
+     "glassbox_mapping":"DecisionReplay (control regression testing), PolicySimulator (impact analysis)",
+     "implementation_status":"implemented"},
+
+    # ── FFIEC CAT ─────────────────────────────────────────────────────────────
+    {"control_id":"FFIEC.D1.CC","framework":"FFIEC CAT","category":"Cyber Risk Management",
+     "title":"Domain 1 — Cyber risk identification and classification",
+     "description":"Financial institutions should identify and classify cybersecurity risks including AI-driven decision risks.",
+     "glassbox_mapping":"RiskEvaluator (composite scoring), DecisionType taxonomy, ComplianceCatalogue risk posture",
+     "implementation_status":"implemented"},
+    {"control_id":"FFIEC.D2.TI","framework":"FFIEC CAT","category":"Threat Intelligence",
+     "title":"Domain 2 — Threat intelligence and collaboration",
+     "description":"Cyber threat intelligence is gathered from multiple sources and used to inform the institution's defences.",
+     "glassbox_mapping":"AnomalyDetector (Z-score baseline drift), VelocityBreaker (volumetric anomaly)",
+     "implementation_status":"implemented"},
+    {"control_id":"FFIEC.D3.CY","framework":"FFIEC CAT","category":"Cybersecurity Controls",
+     "title":"Domain 3 — Cybersecurity controls",
+     "description":"Preventive, detective, and corrective controls are in place to protect information assets.",
+     "glassbox_mapping":"PolicyEngine (35 built-in controls), PayloadSanitizer, AgentContract access controls",
+     "implementation_status":"implemented"},
+    {"control_id":"FFIEC.D4.EX","framework":"FFIEC CAT","category":"External Dependency Management",
+     "title":"Domain 4 — External dependency management",
+     "description":"Connections, relationships, and dependencies with external entities are managed and monitored.",
+     "glassbox_mapping":"PROC-002/006 supplier registry and sanctions, MCP Gateway integration controls",
+     "implementation_status":"partial"},
+
+    # ── FDA 21 CFR Part 11 ────────────────────────────────────────────────────
+    {"control_id":"FDA11.11.10e","framework":"FDA 21 CFR Part 11","category":"Electronic Records",
+     "title":"§11.10(e) — Audit trails",
+     "description":"Use of secure, computer-generated, time-stamped audit trails to independently record the date and time of operator entries and actions.",
+     "glassbox_mapping":"AuditLogger (immutable SHA-256 hash chain), TamperEvidentAuditLogger, SQLiteAuditRepository",
+     "implementation_status":"implemented"},
+    {"control_id":"FDA11.11.10d","framework":"FDA 21 CFR Part 11","category":"Access Controls",
+     "title":"§11.10(d) — System access limited to authorised individuals",
+     "description":"Limiting system access to authorised individuals.",
+     "glassbox_mapping":"AgentContract (agent identity and permitted_types), validate_agent_id()",
+     "implementation_status":"implemented"},
+    {"control_id":"FDA11.11.50","framework":"FDA 21 CFR Part 11","category":"Electronic Signatures",
+     "title":"§11.50 — Signature manifestations",
+     "description":"Signed electronic records shall contain information associated with the signing: printed name, date/time, meaning of signature.",
+     "glassbox_mapping":"WorkflowEngine quorum_approve (reviewer identity recorded), AuditLogger (decision lineage with agent_id)",
+     "implementation_status":"partial"},
+
+    # ── MAS TRM ───────────────────────────────────────────────────────────────
+    {"control_id":"MASTRM.5","framework":"MAS TRM","category":"Access Control",
+     "title":"Section 5 — Access control",
+     "description":"FIs should implement robust user access controls, privileged access management, and periodic access reviews.",
+     "glassbox_mapping":"AgentContract permitted_types (least privilege), SECURITY-001 production override guard",
+     "implementation_status":"implemented"},
+    {"control_id":"MASTRM.12","framework":"MAS TRM","category":"Incident Management",
+     "title":"Section 12 — IT incident management",
+     "description":"FIs should establish an IT incident management process to detect, report, and respond to IT incidents.",
+     "glassbox_mapping":"EventBus SecurityViolation + CircuitBreakerTripped, VelocityBreaker cooldown response",
+     "implementation_status":"partial"},
+    {"control_id":"MASTRM.13","framework":"MAS TRM","category":"Outsourcing Risk",
+     "title":"Section 13 — Outsourcing risk management",
+     "description":"FIs should manage risks associated with outsourcing arrangements, including third-party AI providers.",
+     "glassbox_mapping":"PROC-002 supplier known check, PROC-006 sanctions and debarment check, MCP Gateway controls",
+     "implementation_status":"implemented"},
+
+    # ── NIST SP 800-53 Rev.5 ─────────────────────────────────────────────────
+    {"control_id":"800-53.AU-2","framework":"NIST SP 800-53 Rev.5","category":"Audit and Accountability",
+     "title":"AU-2 — Event logging",
+     "description":"Identify the types of events that the system is capable of logging in support of the audit function.",
+     "glassbox_mapping":"AuditLogger (per-decision event logging), EventBus (SecurityViolation, CircuitBreakerTripped)",
+     "implementation_status":"implemented"},
+    {"control_id":"800-53.AU-9","framework":"NIST SP 800-53 Rev.5","category":"Audit and Accountability",
+     "title":"AU-9 — Protection of audit information",
+     "description":"Protect audit information and audit tools from unauthorised access, modification, and deletion.",
+     "glassbox_mapping":"TamperEvidentAuditLogger (SHA-256 hash chain), AuditLogger (append-only immutable)",
+     "implementation_status":"implemented"},
+    {"control_id":"800-53.SI-3","framework":"NIST SP 800-53 Rev.5","category":"System and Information Integrity",
+     "title":"SI-3 — Malicious code protection",
+     "description":"Implement malicious code protection mechanisms at system entry and exit points.",
+     "glassbox_mapping":"PayloadSanitizer (injection detection on every request), SchemaValidator",
+     "implementation_status":"implemented"},
+    {"control_id":"800-53.CM-3","framework":"NIST SP 800-53 Rev.5","category":"Configuration Management",
+     "title":"CM-3 — Configuration change control",
+     "description":"Determine the types of changes to the system that are configuration-controlled.",
+     "glassbox_mapping":"IT-OPS-004 change log requirement, PolicyHotReloader (policy change tracking)",
+     "implementation_status":"implemented"},
+    {"control_id":"800-53.RA-3","framework":"NIST SP 800-53 Rev.5","category":"Risk Assessment",
+     "title":"RA-3 — Risk assessment",
+     "description":"Conduct a risk assessment, including the likelihood and magnitude of harm from unauthorised access, use, disclosure, disruption, modification, or destruction.",
+     "glassbox_mapping":"RiskEvaluator (0-100 composite), AnomalyDetector, ComplianceCatalogue gap_analysis",
      "implementation_status":"implemented"},
 ]
 

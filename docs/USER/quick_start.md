@@ -540,7 +540,7 @@ curl http://localhost:8000/ecosystem
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/decisions` | Submit a single decision |
-| `GET` | `/decisions` | List audit records (paginated) |
+| `GET` | `/decisions` | List audit records (paginated, requires audit repository) |
 | `GET` | `/decisions/{id}` | Retrieve a specific audit record |
 | `POST` | `/decisions/{id}/replay` | Replay a historical decision |
 | `POST` | `/decisions/batch` | Submit up to 499 decisions at once |
@@ -557,6 +557,9 @@ curl http://localhost:8000/ecosystem
 | `GET` | `/ready` | Kubernetes readiness probe |
 
 Full request/response schemas: [../API/endpoint_reference.md](../API/endpoint_reference.md)
+
+If persistent audit storage is not configured, `GET /decisions` returns `503 Service Unavailable`
+instead of an empty success response.
 
 ---
 

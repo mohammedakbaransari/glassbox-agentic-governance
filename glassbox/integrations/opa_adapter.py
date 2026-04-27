@@ -57,6 +57,7 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 from __future__ import annotations
 
 import json
+import os
 import urllib.request
 import urllib.error
 import subprocess
@@ -143,7 +144,6 @@ class OPARegoAdapter:
             policy_name=policy_name,
             decision_types=decision_types,
             rule=self.evaluate,
-            description=f"OPA Rego policy: {self._policy_path}/{self._rule}",
         )
 
     # ── Private evaluation methods ────────────────────────────────────────────
@@ -201,6 +201,7 @@ class OPARegoAdapter:
 
     def _evaluate_cli(self, input_doc: Dict) -> PolicyEvaluation:
         """Evaluate using the local OPA CLI binary."""
+        input_file = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
                 json.dump({"input": input_doc}, f)
@@ -220,17 +221,28 @@ class OPARegoAdapter:
             data = json.loads(result.stdout)
             deny = bool(data.get("result", [{}])[0].get("expressions", [{}])[0].get("value", False))
 
+            with self._lock:
+                self._failure_count = 0
+
             if deny:
                 return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "fail",
                     f"[OPA] Policy '{self._rule}' denied this decision (CLI evaluation)")
             return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "pass", "OPA: allowed")
 
         except Exception as exc:
+            with self._lock:
+                self._failure_count += 1
             if self._fallback == "fail":
                 return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "fail",
                     f"[OPA] CLI evaluation failed (fail-closed): {exc}")
             return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "warn",
                 f"[OPA] CLI evaluation failed (fail-open): {exc}")
+        finally:
+            if input_file:
+                try:
+                    os.unlink(input_file)
+                except OSError:
+                    pass
 
     @property
     def failure_count(self) -> int:

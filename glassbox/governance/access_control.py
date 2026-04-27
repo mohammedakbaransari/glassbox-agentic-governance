@@ -226,13 +226,18 @@ class AccessDecision:
 
 
 class AccessControl:
+    MAX_IMPERSONATION_SECONDS = 3600
+
     """Main access control engine."""
 
     def __init__(self, enable_caching: bool = True, cache_ttl_sec: float = 300.0):
+        import os as _os
         self.roles: Dict[str, Role] = {}
         self.users: Dict[str, User] = {}
         self.enable_caching = enable_caching
-        self.cache_ttl_sec = cache_ttl_sec
+        # Allow deployment-time override without code change:
+        # export GLASSBOX_RBAC_CACHE_TTL=30
+        self.cache_ttl_sec = float(_os.environ.get("GLASSBOX_RBAC_CACHE_TTL", cache_ttl_sec))
         self._cache: Dict[str, Tuple[bool, float]] = {}  # decision -> (allowed, timestamp)
         self._lock = threading.RLock()
         self._decision_log: List[AccessDecision] = []
@@ -435,6 +440,13 @@ class AccessControl:
         A daemon watchdog thread forcibly restores the original role after
         ``max_seconds`` to prevent privilege escalation on thread crash.
         """
+        if max_seconds <= 0:
+            raise ValueError("max_seconds must be greater than zero")
+        if max_seconds > self.MAX_IMPERSONATION_SECONDS:
+            raise ValueError(
+                f"max_seconds exceeds the maximum allowed impersonation duration ({self.MAX_IMPERSONATION_SECONDS}s)"
+            )
+
         class ImpersonationContext:
             def __init__(ctx_self, ac, role_name, requesting_user_id, max_seconds):
                 ctx_self.ac = ac
@@ -442,16 +454,25 @@ class AccessControl:
                 ctx_self.requesting_user_id = requesting_user_id
                 ctx_self.original_role = None
                 ctx_self.max_seconds = max_seconds
-                ctx_self._restored = False
+                ctx_self._restored = threading.Event()
+                ctx_self._watchdog = None
 
             def _restore(ctx_self):
                 """Re-apply original role (idempotent)."""
+                if ctx_self._restored.is_set():
+                    return
                 with ctx_self.ac._lock:
                     user = ctx_self.ac.get_user(ctx_self.requesting_user_id)
                     if user:
                         user.delegated_role = ctx_self.original_role
                         user.delegated_by = None
-                ctx_self._restored = True
+                    # Invalidate cached decisions for this user so the restored
+                    # role takes effect immediately on the next permission check.
+                    ctx_self.ac._cache = {
+                        k: v for k, v in ctx_self.ac._cache.items()
+                        if not k.startswith(ctx_self.requesting_user_id + ":")
+                    }
+                ctx_self._restored.set()
 
             def __enter__(ctx_self):
                 import threading as _threading
@@ -461,6 +482,12 @@ class AccessControl:
                         ctx_self.original_role = user.delegated_role
                         user.delegated_role = ctx_self.role_name
                         user.delegated_by = ctx_self.requesting_user_id
+                    # Invalidate cached decisions for this user so the new
+                    # delegated role takes effect immediately.
+                    ctx_self.ac._cache = {
+                        k: v for k, v in ctx_self.ac._cache.items()
+                        if not k.startswith(ctx_self.requesting_user_id + ":")
+                    }
 
                 log.info(
                     "Impersonation started: %s as %s (max %ds)",
@@ -468,17 +495,20 @@ class AccessControl:
                 )
 
                 def _watchdog():
-                    import time as _time
-                    _time.sleep(ctx_self.max_seconds)
-                    if not ctx_self._restored:
+                    if not ctx_self._restored.wait(timeout=ctx_self.max_seconds):
                         ctx_self._restore()
                         log.warning(
                             "Impersonation watchdog: restored role for %s after %ds timeout",
                             ctx_self.requesting_user_id, ctx_self.max_seconds
                         )
 
-                watcher = _threading.Thread(target=_watchdog, daemon=True)
-                watcher.start()
+                ctx_self._watchdog = _threading.Thread(
+                    target=_watchdog,
+                    daemon=True,
+                    name=f"impersonation-watchdog-{ctx_self.requesting_user_id}",
+                )
+                ctx_self._watchdog.start()
+                return ctx_self
 
             def __exit__(ctx_self, exc_type, exc_val, exc_tb):
                 ctx_self._restore()

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import json
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
@@ -42,6 +43,13 @@ from glassbox.integrations.adapters import (
 
 if TYPE_CHECKING:
     from glassbox.governance.pipeline import GovernancePipeline
+
+
+async def _await_or_run_sync(fn: Callable, *args, **kwargs) -> Any:
+    """Await coroutine callables and push sync fallbacks into a worker thread."""
+    if inspect.iscoroutinefunction(fn):
+        return await fn(*args, **kwargs)
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -100,6 +108,7 @@ class LlamaIndexAdapter:
         adapter = self
 
         original_query = engine.query
+        original_aquery = getattr(engine, "aquery", None)
 
         @functools.wraps(original_query)
         def governed_query(query_str, **kwargs):
@@ -108,10 +117,8 @@ class LlamaIndexAdapter:
 
         @functools.wraps(original_query)
         async def governed_aquery(query_str, **kwargs):
-            adapter._govern_query(query_str)
-            if asyncio.iscoroutinefunction(original_query):
-                return await original_query(query_str, **kwargs)
-            return original_query(query_str, **kwargs)
+            await adapter._govern_query_async(query_str)
+            return await _await_or_run_sync(original_aquery or original_query, query_str, **kwargs)
 
         engine.query = governed_query
         if hasattr(engine, "aquery"):
@@ -170,6 +177,21 @@ class LlamaIndexAdapter:
             payload=payload, context=ctx,
         )
         response = self.pipeline.process(request)
+        if response.final_status == FinalStatus.BLOCKED:
+            raise GovernanceBlockedError(
+                "query_engine", response.policy_violations, response.decision_id)
+
+    async def _govern_query_async(self, query_str: str):
+        """Async governance check for a query string before retrieval."""
+        payload  = {"query": str(query_str)[:4096],
+                    "engine_type": "llamaindex_query_engine"}
+        ctx      = DecisionContext(confidence=self.confidence,
+                                   source_system="llamaindex_query_async")
+        request  = DecisionRequest(
+            agent_id=self.agent_id, decision_type=self.query_decision_type,
+            payload=payload, context=ctx,
+        )
+        response = await self.pipeline.process_async(request)
         if response.final_status == FinalStatus.BLOCKED:
             raise GovernanceBlockedError(
                 "query_engine", response.policy_violations, response.decision_id)
@@ -238,6 +260,7 @@ class CrewAIAdapter:
         adapter = self
 
         original_execute = getattr(task, "execute", None)
+        original_aexecute = getattr(task, "aexecute", None)
         if original_execute is None:
             return task
 
@@ -265,7 +288,33 @@ class CrewAIAdapter:
                     "crewai_task", response.policy_violations, response.decision_id)
             return original_execute(*args, **kwargs)
 
+        @functools.wraps(original_aexecute or original_execute)
+        async def governed_aexecute(*args, **kwargs):
+            description = getattr(task, "description", "")
+            agent_role  = ""
+            if hasattr(task, "agent") and task.agent:
+                agent_role = getattr(task.agent, "role", "")
+            payload = {
+                "task_description": str(description)[:2000],
+                "agent_role":       str(agent_role),
+                "task_type":        "crewai_task",
+            }
+            dtype   = _infer_decision_type(description)
+            ctx     = DecisionContext(confidence=adapter.confidence,
+                                      source_system="crewai_task_async")
+            request = DecisionRequest(
+                agent_id=adapter.agent_id, decision_type=dtype,
+                payload=payload, context=ctx,
+            )
+            response = await adapter.pipeline.process_async(request)
+            if response.final_status == FinalStatus.BLOCKED:
+                raise GovernanceBlockedError(
+                    "crewai_task", response.policy_violations, response.decision_id)
+            return await _await_or_run_sync(original_aexecute or original_execute, *args, **kwargs)
+
         task.execute = governed_execute
+        if original_aexecute is not None:
+            task.aexecute = governed_aexecute
         return task
 
     def _wrap_crewai_tool(self, tool) -> Any:
@@ -274,6 +323,7 @@ class CrewAIAdapter:
 
         # CrewAI tools expose _run(tool_input: str)
         original_run = getattr(tool, "_run", None)
+        original_arun = getattr(tool, "_arun", None)
         if original_run is None:
             return tool
 
@@ -325,9 +375,7 @@ class CrewAIAdapter:
             if response.final_status == FinalStatus.BLOCKED:
                 raise GovernanceBlockedError(
                     tool_name, response.policy_violations, response.decision_id)
-            if asyncio.iscoroutinefunction(original_run):
-                return await original_run(tool_input, **kwargs)
-            return original_run(tool_input, **kwargs)
+            return await _await_or_run_sync(original_arun or original_run, tool_input, **kwargs)
 
         tool._run  = governed_run
         if hasattr(tool, "_arun"):
@@ -404,13 +452,9 @@ class OpenAIAgentsAdapter:
                 if response.final_status == FinalStatus.BLOCKED:
                     raise GovernanceBlockedError(
                         fn.__name__, response.policy_violations, response.decision_id)
-                import asyncio
-                if asyncio.iscoroutinefunction(fn):
-                    return await fn(*args, **kwargs)
-                return fn(*args, **kwargs)
+                return await _await_or_run_sync(fn, *args, **kwargs)
 
-            import asyncio
-            return async_wrapper if asyncio.iscoroutinefunction(fn) else wrapper
+            return async_wrapper if inspect.iscoroutinefunction(fn) else wrapper
         return decorator
 
     def wrap_functions(self, functions: list) -> list:
@@ -480,10 +524,7 @@ class PydanticAIAdapter:
                     raise GovernanceBlockedError(
                         fn.__name__, response.policy_violations, response.decision_id)
 
-                import asyncio
-                if asyncio.iscoroutinefunction(fn):
-                    return await fn(*args, **kwargs)
-                return fn(*args, **kwargs)
+                return await _await_or_run_sync(fn, *args, **kwargs)
 
             @functools.wraps(fn)
             def sync_wrapper(*args, **kwargs):
@@ -507,8 +548,7 @@ class PydanticAIAdapter:
                         fn.__name__, response.policy_violations, response.decision_id)
                 return fn(*args, **kwargs)
 
-            import asyncio
-            return async_wrapper if asyncio.iscoroutinefunction(fn) else sync_wrapper
+            return async_wrapper if inspect.iscoroutinefunction(fn) else sync_wrapper
         return decorator
 
     def wrap_tools(self, tools: list) -> list:

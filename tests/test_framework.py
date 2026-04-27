@@ -20,7 +20,9 @@ Author: Mohammed Akbar Ansari
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -57,6 +59,7 @@ from glassbox.rules.rules_engine     import (
     RuleCondition, DeclarativeRule, RulesLoader, REFERENCE_RULES_JSON,
 )
 from glassbox.workflow.workflow_engine import WorkflowEngine
+import glassbox.governance.logging_manager as logging_manager
 
 
 def _pipe(**kw) -> GovernancePipeline:
@@ -191,14 +194,14 @@ class TestSQLiteAuditRepository(unittest.TestCase):
         resp = self.p.process(_proc())
         got  = self.repo.get_by_id(resp.decision_id)
         self.assertIsNotNone(got)
-        self.assertEqual(got["decision_id"], resp.decision_id)
+        self.assertEqual(got.decision_id, resp.decision_id)
 
     def test_query_by_agent(self):
         self.p.process(_proc(agent="query_agent"))
         self.p.process(_proc(agent="other_agent"))
         results = self.repo.query(agent_id="query_agent")
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["agent_id"], "query_agent")
+        self.assertEqual(results[0].agent_id, "query_agent")
 
     def test_query_by_status(self):
         self.p.process(_proc())
@@ -232,6 +235,56 @@ class TestSQLiteAuditRepository(unittest.TestCase):
         from_ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         results = self.repo.query(from_ts=from_ts)
         self.assertGreater(len(results), 0)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOGGING MANAGER
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestLoggingManager(unittest.TestCase):
+
+    def setUp(self):
+        self._reset_logging_manager()
+
+    def tearDown(self):
+        self._reset_logging_manager()
+
+    def _reset_logging_manager(self):
+        root = logging.getLogger("glassbox")
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+        logging_manager.GlassBoxLogger._instance = None
+        logging_manager._default_manager = None
+
+    def test_logger_recovers_from_closed_stderr_stream(self):
+        logging_manager.setup_logging(level="INFO")
+        root = logging.getLogger("glassbox")
+        stream_handlers = [
+            handler for handler in root.handlers
+            if isinstance(handler, logging.StreamHandler)
+            and not isinstance(handler, logging.FileHandler)
+        ]
+        self.assertEqual(len(stream_handlers), 1)
+
+        handler = stream_handlers[0]
+        stale_stream = io.StringIO()
+        handler.stream = stale_stream
+        stale_stream.close()
+
+        fresh_stream = io.StringIO()
+        original_stderr = sys.stderr
+        sys.stderr = fresh_stream
+        try:
+            logging_manager.get_logger("test").info("stderr rebound")
+        finally:
+            sys.stderr = original_stderr
+
+        self.assertIn("stderr rebound", fresh_stream.getvalue())
+        self.assertIs(handler.stream, fresh_stream)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -572,6 +625,19 @@ class TestWorkflowEngine(unittest.TestCase):
         self.engine.create_from_decision("d-ev","a1","financial",55.0,[])
         time.sleep(0.05)
         self.assertGreater(len(received), 0)
+
+    def test_monitor_start_is_idempotent_and_stop_clears_thread(self):
+        engine = WorkflowEngine(
+            repository=SQLiteWorkflowRepository(":memory:"),
+            event_bus=self.bus,
+            monitor_sla=True,
+            monitor_interval_s=1,
+        )
+        first_thread = engine._monitor_thread
+        engine._start_sla_monitor()
+        self.assertIs(engine._monitor_thread, first_thread)
+        engine.stop_monitor()
+        self.assertIsNone(engine._monitor_thread)
 
     def test_pipeline_creates_workflow_for_pending_review(self):
         bus = EventBus(max_workers=2)

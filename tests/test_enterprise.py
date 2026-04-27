@@ -19,6 +19,7 @@ import pytest
 import threading
 import time
 import json
+import tempfile
 from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 
@@ -33,6 +34,12 @@ from glassbox.governance.encryption import CryptoManager, EncryptedField
 from glassbox.governance.advanced_audit import TamperEvidentAuditLogger, AuditRecord
 from glassbox.governance.request_context import (
     RequestContext, Config, ContextManager
+)
+from glassbox.governance.enterprise_pipeline import EnterpriseGovernancePipeline
+from glassbox.governance.pipeline import GovernancePipeline
+from glassbox.governance.models import (
+    DecisionRequest, DecisionType, FinalStatus, PolicyResult,
+    RiskResult, RiskLevel, Disposition,
 )
 from glassbox.governance.api_gateway import (
     APIGateway, Request, Response, 
@@ -110,6 +117,20 @@ class TestDatabaseAbstraction:
         rows = db.query_all("SELECT * FROM test")
         assert len(rows) == 1
 
+        db.close()
+
+    def test_sqlite_transaction_rolls_back_helper_execute_calls(self):
+        """db.execute() inside a transaction should not auto-commit on rollback."""
+        db = DatabaseFactory.create("sqlite", db_path=":memory:")
+        db.execute("CREATE TABLE test (id INTEGER, value TEXT)")
+
+        with pytest.raises(RuntimeError):
+            with db.transaction():
+                db.execute("INSERT INTO test VALUES (?, ?)", (1, "value1"))
+                raise RuntimeError("force rollback")
+
+        rows = db.query_all("SELECT * FROM test")
+        assert rows == []
         db.close()
 
     def test_sqlite_stats(self):
@@ -256,6 +277,35 @@ class TestAccessControl:
         # Cache miss again
         assert ac.has_permission("user1", "data", "read")
 
+    def test_impersonation_timeout_restores_role(self):
+        """Watchdog must restore impersonation after timeout if __exit__ never runs."""
+        ac = AccessControl()
+
+        admin = Role("admin")
+        admin.grant_permission("secret", "read", PermissionScope.ANY)
+        user_role = Role("user")
+
+        ac.register_role(admin)
+        ac.register_role(user_role)
+
+        user = User("user1", roles={"user"})
+        ac.register_user(user)
+
+        impersonation = ac.impersonate("admin", "user1", max_seconds=1)
+        impersonation.__enter__()
+        assert ac.has_permission("user1", "secret", "read")
+
+        time.sleep(1.2)
+
+        assert not ac.has_permission("user1", "secret", "read")
+        impersonation.__exit__(None, None, None)
+
+    def test_impersonation_enforces_max_duration_cap(self):
+        """Impersonation duration should be capped server-side."""
+        ac = AccessControl()
+        with pytest.raises(ValueError):
+            ac.impersonate("admin", "user1", max_seconds=AccessControl.MAX_IMPERSONATION_SECONDS + 1)
+
 
 # ============================================================================
 # PART 3: ENCRYPTION TESTS
@@ -263,6 +313,15 @@ class TestAccessControl:
 
 class TestEncryption:
     """Test encryption utilities."""
+
+    def test_missing_crypto_dependency_raises_import_error(self, monkeypatch):
+        """CryptoManager must fail closed with a clear install hint."""
+        import glassbox.governance.encryption as encryption
+
+        monkeypatch.setattr(encryption, "HAS_CRYPTO", False)
+
+        with pytest.raises(ImportError, match="cryptography"):
+            encryption.CryptoManager()
 
     def test_encrypt_decrypt_aes_256_gcm(self):
         """Test AES-256-GCM encryption/decryption."""
@@ -465,6 +524,21 @@ class TestRequestContext:
         assert config.get("database.port") == 5432
         assert config.get("database.nonexistent", "default") == "default"
 
+    def test_config_load_rejects_paths_outside_approved_roots(self):
+        with pytest.raises(ValueError):
+            Config.load("C:/Windows/System32/forbidden.json")
+
+    def test_config_load_accepts_tempfile_within_approved_root(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            handle.write('{"database": {"host": "temp-localhost"}}')
+            config_path = handle.name
+        try:
+            config = Config.load(config_path)
+            assert config.get("database.host") == "temp-localhost"
+        finally:
+            import os
+            os.unlink(config_path)
+
     def test_config_env_override(self):
         """Test configuration environment variable override."""
         import os
@@ -480,6 +554,29 @@ class TestRequestContext:
 
         # Cleanup
         del os.environ["TEST_API_KEY"]
+
+    def test_cross_thread_tenant_isolation(self):
+        """RequestContext tenant_id must be isolated between threads (no bleed)."""
+        results = {}
+
+        def set_and_read(tenant):
+            RequestContext.set_current(RequestContext(tenant_id=tenant))
+            # Let other thread run
+            time.sleep(0.05)
+            rc = RequestContext.get_current()
+            results[tenant] = rc.tenant_id if rc else None
+
+        t_a = threading.Thread(target=set_and_read, args=("tenant_A",))
+        t_b = threading.Thread(target=set_and_read, args=("tenant_B",))
+        t_a.start()
+        t_b.start()
+        t_a.join()
+        t_b.join()
+
+        assert results.get("tenant_A") == "tenant_A", \
+            f"Thread A saw tenant: {results.get('tenant_A')}"
+        assert results.get("tenant_B") == "tenant_B", \
+            f"Thread B saw tenant: {results.get('tenant_B')}"
 
 
 # ============================================================================
@@ -616,6 +713,99 @@ class TestAPIGateway:
 class TestEndToEndIntegration:
     """End-to-end integration test combining all modules."""
 
+    class _AllowAllSchemaValidator:
+        def validate(self, decision_type, payload):
+            return True, None
+
+    class _AllowAllPolicyEngine:
+        def __init__(self):
+            self.policies = []
+
+        def evaluate(self, decision_type, payload, context):
+            return PolicyResult(passed=True)
+
+    class _LowRiskEvaluator:
+        def evaluate(self, decision_type, payload, context, policy_result):
+            return RiskResult(
+                risk_score=0.0,
+                risk_level=RiskLevel.LOW,
+                disposition=Disposition.AUTO_EXECUTE,
+                factors=[],
+            )
+
+    @staticmethod
+    def _enterprise_ready_pipeline(pipeline_cls, access_control, hash_audit):
+        return pipeline_cls(
+            access_control=access_control,
+            hash_audit=hash_audit,
+            schema_validator=TestEndToEndIntegration._AllowAllSchemaValidator(),
+            policy_engine=TestEndToEndIntegration._AllowAllPolicyEngine(),
+            risk_evaluator=TestEndToEndIntegration._LowRiskEvaluator(),
+            echo=False,
+        )
+
+    def test_base_pipeline_handles_enterprise_context_and_hash_audit(self):
+        ac = AccessControl()
+        submitter = Role("submitter")
+        submitter.grant_permission("decisions", "submit")
+        ac.register_role(submitter)
+        ac.register_user(User("user1", roles={"submitter"}))
+
+        logger = TamperEvidentAuditLogger(db_path=":memory:", enable_hash_chain=True)
+        pipeline = self._enterprise_ready_pipeline(GovernancePipeline, ac, logger)
+
+        with ContextManager(user_id="user1", tenant_id="tenant_acme", correlation_id="corr-123"):
+            response = pipeline.process(
+                DecisionRequest(
+                    agent_id="agent_1",
+                    decision_type=DecisionType.CUSTOM,
+                    payload={"anything": "goes"},
+                )
+            )
+
+        assert response.final_status == FinalStatus.EXECUTED
+        assert response.audit_record.context.metadata["tenant_id"] == "tenant_acme"
+        assert response.audit_record.context.metadata["user_id"] == "user1"
+
+        records = logger.search(
+            user_id="user1",
+            action="decision_processed",
+            resource_id=response.decision_id,
+            result="executed",
+        )
+        assert len(records) == 1
+        assert records[0].context["tenant_id"] == "tenant_acme"
+
+    def test_enterprise_pipeline_denials_use_unified_audit_path(self):
+        ac = AccessControl()
+        viewer = Role("viewer")
+        ac.register_role(viewer)
+        ac.register_user(User("user2", roles={"viewer"}))
+
+        logger = TamperEvidentAuditLogger(db_path=":memory:", enable_hash_chain=True)
+        pipeline = self._enterprise_ready_pipeline(EnterpriseGovernancePipeline, ac, logger)
+
+        with ContextManager(user_id="user2", tenant_id="tenant_denied", correlation_id="corr-denied"):
+            response = pipeline.process(
+                DecisionRequest(
+                    agent_id="agent_2",
+                    decision_type=DecisionType.CUSTOM,
+                    payload={"anything": "goes"},
+                )
+            )
+
+        assert response.final_status == FinalStatus.BLOCKED
+        assert "ENTERPRISE-RBAC" in response.policy_violations[0]
+
+        records = logger.search(
+            user_id="user2",
+            action="decision_processed",
+            resource_id=response.decision_id,
+            result="blocked",
+        )
+        assert len(records) == 1
+        assert records[0].context["tenant_id"] == "tenant_denied"
+
     def test_complete_governance_flow(self):
         """
         Test complete governance flow:
@@ -701,6 +891,32 @@ class TestEndToEndIntegration:
 
         # Verify hash chain
         assert logger.verify_hash_chain()
+
+    def test_hash_chain_survives_restart_on_file_backed_db(self):
+        """File-backed audit chains should remain appendable and verifiable after restart."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+            db_path = handle.name
+        try:
+            logger = TamperEvidentAuditLogger(db_path=db_path, enable_hash_chain=True)
+            logger.log_action("user1", "create", "policy", "p1", "success")
+            logger.close()
+
+            logger2 = TamperEvidentAuditLogger(db_path=db_path, enable_hash_chain=True)
+            logger2.log_action("user2", "update", "policy", "p1", "success")
+            assert logger2.verify_hash_chain()
+            logger2.close()
+        finally:
+            import os
+            os.unlink(db_path)
+
+    def test_hash_chain_partial_verification_from_middle_record(self):
+        """Partial verification should seed from the predecessor hash, not genesis."""
+        logger = TamperEvidentAuditLogger(db_path=":memory:", enable_hash_chain=True)
+        logger.log_action("user1", "create", "policy", "p1", "success")
+        logger.log_action("user2", "update", "policy", "p1", "success")
+        logger.log_action("user3", "review", "policy", "p1", "success")
+        assert logger.verify_hash_chain(start_id=2)
 
 
 if __name__ == "__main__":

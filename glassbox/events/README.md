@@ -4,7 +4,46 @@ The `events` package provides the integration point for external systems.
 
 | Module | Role |
 |---|---|
-| `event_bus.py` | `EventBus`, 8 domain event factories, async handlers, webhook handler |
+| `event_bus.py` | `EventBus`, 8 domain event factories, async handlers, webhook handler, SSE |
+
+> The `governance/event_dispatcher.py` module handles fan-out from `GovernancePipeline` to `EventBus` handlers — it is the internal bridge between the pipeline finalize path and the external event bus.
+
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+flowchart LR
+    classDef core fill:#74b9ff,stroke:#0984e3,color:#000
+    classDef bus fill:#6c5ce7,stroke:#4a3ab5,color:#fff
+    classDef sink fill:#dfe6e9,stroke:#636e72,color:#000
+
+    GP[GovernancePipeline\nfinalize stage]:::core --> ED[EventDispatcher\ngovernance/event_dispatcher.py]:::core
+    ED --> EB[EventBus\nevents/event_bus.py]:::bus
+
+    subgraph TYPES["Published Event Types"]
+        E1[decision.*]
+        E2[policy.*]
+        E3[anomaly.*]
+        E4[security.*]
+        E5[workflow.*]
+    end
+
+    EB --> E1
+    EB --> E2
+    EB --> E3
+    EB --> E4
+    EB --> E5
+
+    subgraph CONSUMERS["Subscribers"]
+        L[LoggingHandler]:::sink
+        W[WebhookHandler\nHTTP POST]:::sink
+        S[SSE Stream\n/events/stream]:::sink
+        C[Custom Handler]:::sink
+    end
+
+    EB -->|subscribe| L
+    EB -->|subscribe| W
+    EB -->|subscribe| S
+    EB -->|subscribe| C
+```
 
 **Domain events published:**
 - `decision.executed` — decision approved and sent to downstream
@@ -273,3 +312,5 @@ for event in events_to_replay:
 ---
 
 See [../governance/pipeline.py](../governance/pipeline.py) for event publishing in pipeline stages and [../../docs/USECASES.md](../../docs/USECASES.md) for integration examples.
+
+

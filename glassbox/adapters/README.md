@@ -19,7 +19,7 @@ adapter = auto_detect_adapter()
 pipeline = adapter.create_pipeline()
 
 # Execute in platform-native way
-result = pipeline.execute({"amount": 5000, "user_id": 123})
+result = pipeline.process({"amount": 5000, "user_id": 123})
 print(f"Disposition: {result.disposition}")
 ```
 
@@ -77,7 +77,7 @@ adapter.configure(
 )
 
 # Execute in Kubernetes pod
-result = pipeline.execute({"order_id": "ORD-123", "amount": 50000})
+result = pipeline.process({"order_id": "ORD-123", "amount": 50000})
 
 # Auto-restart on failure; logs to stdout captured by K8s
 import logging
@@ -125,7 +125,7 @@ adapter = BaseAdapter()
 pipeline = adapter.create_pipeline()
 
 # Standard execution
-result = pipeline.execute({"decision": "approve_credit", "score": 750})
+result = pipeline.process({"decision": "approve_credit", "score": 750})
 print(f"Result: {result.disposition}")
 ```
 
@@ -151,7 +151,7 @@ pipeline = GovernancePipeline()
 def govern_decision(amount, vendor_id, user_id):
     """Governance UDF runs on driver for each row (slow for large data)"""
     payload = {"amount": amount, "vendor_id": vendor_id}
-    result = pipeline.execute(payload)
+    result = pipeline.process(payload)
     return result.disposition
 
 # Use in Spark SQL
@@ -186,7 +186,7 @@ def govern_partition(partition_iterator):
             "vendor_id": row.vendor_id,
             "user_id": row.user_id
         }
-        result = pipeline.execute(payload)
+        result = pipeline.process(payload)
         
         # Emit governed row
         yield (row.amount, row.vendor_id, row.user_id, result.disposition)
@@ -330,7 +330,7 @@ def safe_govern_partition(partition_iterator):
     
     for row in partition_iterator:
         try:
-            result = pipeline.execute({"amount": row.amount})
+            result = pipeline.process({"amount": row.amount})
             yield (row, result.disposition)
         except Exception as e:
             logging.error(f"Governance failed for {row}: {e}")

@@ -13,6 +13,30 @@ The `workflow` package manages the lifecycle of decisions requiring human review
 - Auto-escalation on SLA breach
 - Per-step audit trail
 - Queue statistics and dashboard support
+- **Idempotent `create_from_decision()`** — safe for WAL crash-recovery replay (v1.2.0)
+
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+stateDiagram-v2
+    [*] --> pending: pipeline creates workflow\n(HUMAN_REVIEW disposition)
+    pending --> in_review: start_review(actor)
+    in_review --> approved: approve(actor, notes)
+    in_review --> rejected: reject(actor, notes)
+    in_review --> escalated: escalate(to_level, reason)
+    escalated --> in_review: reassigned Level 2
+    approved --> [*]
+    rejected --> [*]
+    pending --> timed_out: SLA expires
+    timed_out --> escalated: auto-escalate
+    note right of pending
+      Queue status:
+      awaiting analyst assignment
+    end note
+    note right of escalated
+      Escalation path:
+      Level 1 -> Level 2 -> Level 3
+    end note
+```
 
 ---
 
@@ -50,20 +74,21 @@ if workflow.sla_breached():
 
 ---
 
-## State Machine Diagram
+## Idempotent Workflow Creation (v1.2.0)
 
-```
-          ┌─→ [in_review] ───┬─→ [approved] ──→ [completed]
-          │                  │
-[pending] ─┤                  ├─→ [rejected] ──→ [completed]
-          │                  │
-          └─→ [escalated] ──→ [in_review] (Level 2)
+`WorkflowEngine.create_from_decision(decision_id, ...)` is now idempotent. If a workflow already exists for the given `decision_id`, the existing `WorkflowInstance` is returned instead of creating a duplicate:
 
-SLA Timer:
-  - Starts: pending → in_review (0 min)
-  - Fires: if (current_time - in_review_time) > sla_minutes
-  - Action: auto-escalate to Level 2, send notification
+```python
+# First call — creates new workflow
+wf1 = wfe.create_from_decision("DEC-001", decision_type=..., payload=...)
+
+# Second call (e.g., WAL replay after crash) — returns existing workflow
+wf2 = wfe.create_from_decision("DEC-001", decision_type=..., payload=...)
+
+assert wf1.workflow_id == wf2.workflow_id  # same instance
 ```
+
+This makes the WorkflowEngine safe for use inside WAL crash-recovery replay sequences.
 
 ---
 
@@ -203,3 +228,5 @@ wfe_l3 = WorkflowEngine(default_sla_minutes=480, level=3, monitor_sla=False)
 ---
 
 See [../governance/pipeline.py](../governance/pipeline.py) for pipeline integration and [../../docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md) for SLA monitoring in production.
+
+

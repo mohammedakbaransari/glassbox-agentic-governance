@@ -53,6 +53,7 @@ import hashlib
 import json
 import threading
 import sqlite3
+from fnmatch import fnmatch
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
@@ -141,14 +142,14 @@ class TamperEvidentAuditLogger:
         else:
             try:
                 self.crypto_manager = CryptoManager()
-            except RuntimeError as e:
+            except ImportError as e:
                 log.warning(
                     f"Cryptography not available, tamper-evident audit logging will operate without encryption: {e}"
                 )
                 self.crypto_manager = None  # Degrade gracefully
         self.retention_days = retention_days
 
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._record_count = 0
         self._last_hash = GENESIS_SENTINEL
         # For :memory: databases hold a single persistent connection so schema
@@ -159,53 +160,80 @@ class TamperEvidentAuditLogger:
             else None
         )
         self._init_database()
+        self._hydrate_chain_state()
 
         log.info(
             "AuditLogger initialized: db=%s, hash_chain=%s, retention=%d days",
             db_path, enable_hash_chain, retention_days
         )
 
+    def close(self) -> None:
+        """Close any persistent database connections."""
+        if self._persistent_conn is not None:
+            try:
+                self._persistent_conn.close()
+            finally:
+                self._persistent_conn = None
+
+    def __del__(self):
+        self.close()
+
     def _init_database(self) -> None:
         """Initialize audit database schema."""
-        with self._get_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS audit_records (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    resource_type TEXT NOT NULL,
-                    resource_id TEXT NOT NULL,
-                    result TEXT NOT NULL,
-                    context TEXT,
-                    error_message TEXT,
-                    previous_hash TEXT,
-                    record_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-            """)
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS audit_records (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        user_id TEXT NOT NULL,
+                        action TEXT NOT NULL,
+                        resource_type TEXT NOT NULL,
+                        resource_id TEXT NOT NULL,
+                        result TEXT NOT NULL,
+                        context TEXT,
+                        error_message TEXT,
+                        previous_hash TEXT,
+                        record_hash TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                """)
 
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_audit_timestamp
-                ON audit_records(timestamp DESC)
-            """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_audit_timestamp
+                    ON audit_records(timestamp DESC)
+                """)
 
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_audit_user_id
-                ON audit_records(user_id)
-            """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_audit_user_id
+                    ON audit_records(user_id)
+                """)
 
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_audit_action
-                ON audit_records(action)
-            """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_audit_action
+                    ON audit_records(action)
+                """)
 
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_audit_resource
-                ON audit_records(resource_type, resource_id)
-            """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_audit_resource
+                    ON audit_records(resource_type, resource_id)
+                """)
 
-            conn.commit()
+                conn.commit()
+
+    def _hydrate_chain_state(self) -> None:
+        """Resume the in-memory chain state from the persisted audit log."""
+        with self._lock:
+            with self._get_connection() as conn:
+                row = conn.execute(
+                    "SELECT id, record_hash FROM audit_records ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                if row is None:
+                    self._record_count = 0
+                    self._last_hash = GENESIS_SENTINEL
+                else:
+                    self._record_count = int(row["id"])
+                    self._last_hash = row["record_hash"]
 
     @contextmanager
     def _get_connection(self):
@@ -216,6 +244,7 @@ class TamperEvidentAuditLogger:
         else:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=DELETE")
             try:
                 yield conn
             finally:
@@ -240,28 +269,51 @@ class TamperEvidentAuditLogger:
         with self._lock:
             timestamp = datetime.now(timezone.utc)
 
-            # Create record
-            record = AuditRecord(
-                id=self._record_count + 1,
-                timestamp=timestamp,
-                user_id=user_id,
-                action=action,
-                resource_type=resource_type,
-                resource_id=resource_id,
-                result=result,
-                context=context or {},
-                error_message=error_message,
-                previous_hash=self._last_hash,
-            )
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO audit_records (
+                        timestamp, user_id, action, resource_type, resource_id,
+                        result, context, error_message, previous_hash, record_hash,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        timestamp.isoformat(),
+                        user_id,
+                        action,
+                        resource_type,
+                        resource_id,
+                        result,
+                        json.dumps(context or {}),
+                        error_message,
+                        self._last_hash if self.enable_hash_chain else None,
+                        "",
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+                record = AuditRecord(
+                    id=int(cursor.lastrowid),
+                    timestamp=timestamp,
+                    user_id=user_id,
+                    action=action,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                    result=result,
+                    context=context or {},
+                    error_message=error_message,
+                    previous_hash=self._last_hash if self.enable_hash_chain else None,
+                )
+                record.record_hash = record.compute_hash()
+                conn.execute(
+                    "UPDATE audit_records SET record_hash = ? WHERE id = ?",
+                    (record.record_hash, record.id),
+                )
+                conn.commit()
 
-            # Compute hash (creating hash chain)
-            record.record_hash = record.compute_hash()
+            self._record_count = record.id
             if self.enable_hash_chain:
                 self._last_hash = record.record_hash
-
-            # Store in database
-            self._store_record(record)
-            self._record_count += 1
 
             log.info(
                 "Audit logged: %s:%s by %s -> %s",
@@ -272,27 +324,28 @@ class TamperEvidentAuditLogger:
 
     def _store_record(self, record: AuditRecord) -> None:
         """Store record in database."""
-        with self._get_connection() as conn:
-            conn.execute("""
-                INSERT INTO audit_records (
-                    timestamp, user_id, action, resource_type, resource_id,
-                    result, context, error_message, previous_hash, record_hash,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                record.timestamp.isoformat(),
-                record.user_id,
-                record.action,
-                record.resource_type,
-                record.resource_id,
-                record.result,
-                json.dumps(record.context),
-                record.error_message,
-                record.previous_hash,
-                record.record_hash,
-                datetime.now(timezone.utc).isoformat(),
-            ))
-            conn.commit()
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute("""
+                    INSERT INTO audit_records (
+                        timestamp, user_id, action, resource_type, resource_id,
+                        result, context, error_message, previous_hash, record_hash,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    record.timestamp.isoformat(),
+                    record.user_id,
+                    record.action,
+                    record.resource_type,
+                    record.resource_id,
+                    record.result,
+                    json.dumps(record.context),
+                    record.error_message,
+                    record.previous_hash,
+                    record.record_hash,
+                    datetime.now(timezone.utc).isoformat(),
+                ))
+                conn.commit()
 
     def search(
         self,
@@ -310,55 +363,36 @@ class TamperEvidentAuditLogger:
 
         Supports wildcards in action (e.g., "policy_*").
         """
-        query = "SELECT * FROM audit_records WHERE 1=1"
-        params = []
-
-        if user_id:
-            query += " AND user_id = ?"
-            params.append(user_id)
-
-        if action:
-            # Support wildcard
-            if "*" in action:
-                action = action.replace("*", "%")
-                query += " AND action LIKE ?"
-            else:
-                query += " AND action = ?"
-            params.append(action)
-
-        if resource_type:
-            query += " AND resource_type = ?"
-            params.append(resource_type)
-
-        if resource_id:
-            query += " AND resource_id = ?"
-            params.append(resource_id)
-
-        if result:
-            query += " AND result = ?"
-            params.append(result)
-
-        if start_time:
-            query += " AND timestamp >= ?"
-            params.append(start_time.isoformat())
-
-        if end_time:
-            query += " AND timestamp <= ?"
-            params.append(end_time.isoformat())
-
-        query += " ORDER BY timestamp DESC LIMIT ?"
-        params.append(limit)
-
-        with self._get_connection() as conn:
-            cursor = conn.execute(query, params)
-            rows = cursor.fetchall()
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT * FROM audit_records ORDER BY timestamp DESC LIMIT ?",
+                    (limit,),
+                )
+                rows = cursor.fetchall()
 
             records = []
             for row in rows:
+                if user_id and row["user_id"] != user_id:
+                    continue
+                if action and not fnmatch(row["action"], action):
+                    continue
+                if resource_type and row["resource_type"] != resource_type:
+                    continue
+                if resource_id and row["resource_id"] != resource_id:
+                    continue
+                if result and row["result"] != result:
+                    continue
+                row_ts = datetime.fromisoformat(row["timestamp"])
+                if start_time and row_ts < start_time:
+                    continue
+                if end_time and row_ts > end_time:
+                    continue
+
                 context = json.loads(row["context"]) if row["context"] else {}
-                record = AuditRecord(
+                records.append(AuditRecord(
                     id=row["id"],
-                    timestamp=datetime.fromisoformat(row["timestamp"]),
+                    timestamp=row_ts,
                     user_id=row["user_id"],
                     action=row["action"],
                     resource_type=row["resource_type"],
@@ -368,10 +402,9 @@ class TamperEvidentAuditLogger:
                     error_message=row["error_message"],
                     previous_hash=row["previous_hash"],
                     record_hash=row["record_hash"],
-                )
-                records.append(record)
+                ))
 
-            return records
+            return records[:limit]
 
     def verify_hash_chain(self, start_id: int = 1) -> bool:
         """
@@ -383,58 +416,86 @@ class TamperEvidentAuditLogger:
             log.warning("Hash chain verification requested but disabled")
             return True
 
-        with self._get_connection() as conn:
-            cursor = conn.execute(
-                "SELECT * FROM audit_records WHERE id >= ? ORDER BY id ASC",
-                (start_id,)
-            )
-            rows = cursor.fetchall()
-
-            previous_hash = GENESIS_SENTINEL
-            for i, row in enumerate(rows):
-                context = json.loads(row["context"]) if row["context"] else {}
-                record = AuditRecord(
-                    id=row["id"],
-                    timestamp=datetime.fromisoformat(row["timestamp"]),
-                    user_id=row["user_id"],
-                    action=row["action"],
-                    resource_type=row["resource_type"],
-                    resource_id=row["resource_id"],
-                    result=row["result"],
-                    context=context,
-                    error_message=row["error_message"],
-                    previous_hash=row["previous_hash"],
-                    record_hash=row["record_hash"],
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT * FROM audit_records WHERE id >= ? ORDER BY id ASC",
+                    (start_id,)
                 )
+                rows = cursor.fetchall()
+                if not rows:
+                    return True
 
-                # First record must reference the genesis sentinel explicitly.
-                # If it does not, a record was inserted before the real first
-                # record to bypass verification.
-                if i == 0 and record.previous_hash != GENESIS_SENTINEL:
-                    log.error(
-                        "Genesis sentinel mismatch at record %d: possible insertion attack",
-                        row["id"]
+                previous_hash = GENESIS_SENTINEL
+                previous_timestamp: Optional[datetime] = None
+                if start_id > 1:
+                    prev_row = conn.execute(
+                        "SELECT record_hash, timestamp FROM audit_records WHERE id < ? ORDER BY id DESC LIMIT 1",
+                        (start_id,),
+                    ).fetchone()
+                    if prev_row is None:
+                        log.error("Hash chain verification failed: start_id=%d has no predecessor", start_id)
+                        return False
+                    previous_hash = prev_row["record_hash"]
+                    previous_timestamp = datetime.fromisoformat(prev_row["timestamp"])
+
+                for i, row in enumerate(rows):
+                    context = json.loads(row["context"]) if row["context"] else {}
+                    record_ts = datetime.fromisoformat(row["timestamp"])
+                    record = AuditRecord(
+                        id=row["id"],
+                        timestamp=record_ts,
+                        user_id=row["user_id"],
+                        action=row["action"],
+                        resource_type=row["resource_type"],
+                        resource_id=row["resource_id"],
+                        result=row["result"],
+                        context=context,
+                        error_message=row["error_message"],
+                        previous_hash=row["previous_hash"],
+                        record_hash=row["record_hash"],
                     )
-                    return False
 
-                # Verify this record's hash
-                expected_hash = record.compute_hash()
-                if expected_hash != row["record_hash"]:
-                    log.error(
-                        "Hash mismatch at record %d: expected %s, got %s",
-                        row["id"], expected_hash, row["record_hash"]
-                    )
-                    return False
+                    # First record must reference the genesis sentinel explicitly.
+                    # If it does not, a record was inserted before the real first
+                    # record to bypass verification.
+                    if start_id == 1 and i == 0 and record.previous_hash != GENESIS_SENTINEL:
+                        log.error(
+                            "Genesis sentinel mismatch at record %d: possible insertion attack",
+                            row["id"]
+                        )
+                        return False
 
-                # Verify chain linkage
-                if record.previous_hash != previous_hash:
-                    log.error(
-                        "Hash chain broken at record %d: expected %s, got %s",
-                        row["id"], previous_hash, record.previous_hash
-                    )
-                    return False
+                    # Verify this record's hash
+                    expected_hash = record.compute_hash()
+                    if expected_hash != row["record_hash"]:
+                        log.error(
+                            "Hash mismatch at record %d: expected %s, got %s",
+                            row["id"], expected_hash, row["record_hash"]
+                        )
+                        return False
 
-                previous_hash = record.record_hash
+                    # Verify chain linkage
+                    if record.previous_hash != previous_hash:
+                        log.error(
+                            "Hash chain broken at record %d: expected %s, got %s",
+                            row["id"], previous_hash, record.previous_hash
+                        )
+                        return False
+
+                    # Verify timestamp monotonicity — prevents out-of-order injection.
+                    # Allow equal timestamps (same-millisecond concurrent writes) but
+                    # never allow a record whose timestamp precedes its predecessor.
+                    if previous_timestamp is not None and record_ts < previous_timestamp:
+                        log.error(
+                            "Timestamp non-monotonic at record %d: %s < previous %s"
+                            " (possible backdated injection)",
+                            row["id"], record_ts.isoformat(), previous_timestamp.isoformat(),
+                        )
+                        return False
+
+                    previous_hash = record.record_hash
+                    previous_timestamp = record_ts
 
         log.info("Hash chain verification successful")
         return True
@@ -448,13 +509,15 @@ class TamperEvidentAuditLogger:
         days = days or self.retention_days
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
 
-        with self._get_connection() as conn:
-            cursor = conn.execute(
-                "DELETE FROM audit_records WHERE timestamp < ?",
-                (cutoff_date.isoformat(),)
-            )
-            conn.commit()
-            return cursor.rowcount
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    "DELETE FROM audit_records WHERE timestamp < ?",
+                    (cutoff_date.isoformat(),)
+                )
+                conn.commit()
+                self._hydrate_chain_state()
+                return cursor.rowcount
 
     def get_stats(self) -> Dict[str, Any]:
         """Get audit logger statistics."""

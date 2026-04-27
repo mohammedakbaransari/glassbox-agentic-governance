@@ -361,8 +361,8 @@ class TestStress(unittest.TestCase):
             try:
                 def rule(p, ctx):
                     return PolicyEvaluation(f"CUSTOM-{i}", f"Custom {i}", "pass", "ok")
-                pe.register(Policy(f"CUSTOM-{i}", f"Custom {i}",
-                                   [DecisionType.CUSTOM], rule))
+                pe.register(Policy(policy_id=f"CUSTOM-{i}", policy_name=f"Custom {i}",
+                                   decision_types=[DecisionType.CUSTOM], rule=rule))
             except Exception as exc:
                 with lock:
                     errors.append(str(exc))

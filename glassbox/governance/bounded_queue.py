@@ -119,8 +119,8 @@ class BoundedQueue:
         self.backpressure_threshold_pct = backpressure_threshold_pct
         self.rejection_strategy = rejection_strategy
 
-        # Global FIFO queue
-        self._global_queue: deque = deque()
+        # Global depth counter — O(1) alternative to len(deque) across per-agent paths
+        self._global_depth: int = 0
 
         # Per-agent queues (for fairness round-robin)
         self._agent_queues: Dict[str, deque] = {}
@@ -159,7 +159,7 @@ class BoundedQueue:
             - If rejected: (False, None)
         """
         with self._lock:
-            current_depth = len(self._global_queue)
+            current_depth = self._global_depth
 
             # Check backpressure threshold
             threshold = int(self.max_size * self.backpressure_threshold_pct)
@@ -190,28 +190,30 @@ class BoundedQueue:
                 request=request,
             )
 
-            self._global_queue.append(queued_req)
+            self._global_depth += 1
             self._total_enqueued += 1
 
-            # Update metrics
-            new_depth = len(self._global_queue)
-            if new_depth > self._peak_depth:
-                self._peak_depth = new_depth
+            # Update peak depth
+            if self._global_depth > self._peak_depth:
+                self._peak_depth = self._global_depth
 
             # Update per-agent queue (for fairness)
             if self.fairness_enabled:
                 if agent_id not in self._agent_queues:
                     self._agent_queues[agent_id] = deque()
                 self._agent_queues[agent_id].append(queued_req)
+            else:
+                # Non-fairness path still needs a deque for dequeue_with_fairness fallback
+                self._agent_queues.setdefault("_global", deque()).append(queued_req)
 
             # Signal waiting consumers
             self._not_empty.notify_all()
 
-            est_wait = self._estimate_wait_time(new_depth)
+            est_wait = self._estimate_wait_time(self._global_depth)
             log.debug(
                 "BoundedQueue: enqueued decision_id=%s, agent_id=%s, depth=%d/%d, "
                 "est_wait=%.1fms",
-                decision_id, agent_id, new_depth, self.max_size, est_wait,
+                decision_id, agent_id, self._global_depth, self.max_size, est_wait,
             )
 
             return (True, est_wait)
@@ -229,19 +231,18 @@ class BoundedQueue:
         with self._not_empty:
             # Wait for queue to have items
             deadline = time.time() + timeout_sec
-            while len(self._global_queue) == 0:
+            while self._global_depth == 0:
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     log.debug("BoundedQueue: dequeue timeout after %.1fs", timeout_sec)
                     return None
                 self._not_empty.wait(timeout=remaining)
 
-            # Dequeue with fairness
-            if self.fairness_enabled and len(self._agent_queues) > 1:
-                queued_req = self._dequeue_fair()
-            else:
-                queued_req = self._global_queue.popleft()
+            queued_req = self._dequeue_fair()
+            if queued_req is None:
+                return None
 
+            self._global_depth -= 1
             self._total_dequeued += 1
 
             # Mark processing start
@@ -253,17 +254,16 @@ class BoundedQueue:
                 "BoundedQueue: dequeued decision_id=%s, agent_id=%s, wait_time=%.1fms, "
                 "depth=%d",
                 queued_req.decision_id, queued_req.agent_id, wait_time,
-                len(self._global_queue),
+                self._global_depth,
             )
 
             return queued_req
 
     def _dequeue_fair(self) -> Optional[QueuedRequest]:
-        """Round-robin dequeue by agent (prevents starvation)."""
+        """Round-robin dequeue by agent (prevents starvation). All operations O(1)."""
         if not self._agent_queues:
-            return self._global_queue.popleft()
+            return None
 
-        # Round-robin through agents
         agent_ids = list(self._agent_queues.keys())
         attempts = 0
 
@@ -273,12 +273,8 @@ class BoundedQueue:
 
             agent_q = self._agent_queues[agent_id]
             if agent_q:
-                queued_req = agent_q.popleft()
+                queued_req = agent_q.popleft()   # O(1) — no global remove needed
 
-                # Remove from global queue
-                self._global_queue.remove(queued_req)
-
-                # Clean up empty agent queues
                 if not agent_q:
                     del self._agent_queues[agent_id]
 
@@ -286,8 +282,7 @@ class BoundedQueue:
 
             attempts += 1
 
-        # Fallback (shouldn't happen)
-        return self._global_queue.popleft() if self._global_queue else None
+        return None
 
     def _estimate_wait_time(self, queue_depth: int) -> float:
         """
@@ -302,12 +297,12 @@ class BoundedQueue:
     def depth(self) -> int:
         """Current queue depth."""
         with self._lock:
-            return len(self._global_queue)
+            return self._global_depth
 
     def metrics(self) -> BackpressureMetrics:
         """Return current metrics snapshot."""
         with self._lock:
-            current_depth = len(self._global_queue)
+            current_depth = self._global_depth
 
             # Compute wait time percentiles
             wait_times_list = sorted(self._wait_times)
@@ -343,8 +338,8 @@ class BoundedQueue:
     def clear(self) -> None:
         """Clear all queued requests (destructive — for testing/reset)."""
         with self._lock:
-            self._global_queue.clear()
             self._agent_queues.clear()
+            self._global_depth = 0
             log.info("BoundedQueue: cleared all requests")
 
     def shutdown(self) -> None:

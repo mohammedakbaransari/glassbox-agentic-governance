@@ -2,14 +2,14 @@
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-259%2F305%20passing-brightgreen)](tests/)
-[![Version](https://img.shields.io/badge/version-1.1.0-blue)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/tests-328%2B%20passing-brightgreen)](tests/)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue)](CHANGELOG.md)
 [![Zero Deps](https://img.shields.io/badge/dependencies-zero%20mandatory-orange)](pyproject.toml)
 
 **GlassBox** is production-ready open-source Python framework that implements the *decision-semantic layer* — the missing governance tier between AI agents and enterprise execution systems. Every AI-generated operational decision is intercepted, validated against organisational policies, scored for risk, routed appropriately, and recorded in an immutable audit trail before it reaches any downstream system. Features lock-pooling optimization (95% latency reduction), thread-safe components, and comprehensive test coverage.
 
 > **Personal research. Not affiliated with any employer, vendor, or customer engagement.**  
-> **Author:** Mohammed Akbar Ansari — Independent Researcher, Navi Mumbai, India
+> **Author:** Mohammed Akbar Ansari — Independent Researcher  
 
 ---
 
@@ -60,21 +60,20 @@ WITH GlassBox:
 
 GlassBox is a four-tier framework, not a single script:
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Tier 4 — Integration Layer                                             │
-│  LangChain · LangGraph · AutoGen · CrewAI · PySpark · REST API          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Tier 3 — Orchestration & AI Layer                                      │
-│  AgentOrchestrator (Chain/DAG/Saga) · AgenticRAG · Multi-Tenant Pipeline│
-├─────────────────────────────────────────────────────────────────────────┤
-│  Tier 2 — Application Layer                                             │
-│  GovernancePipeline · WorkflowEngine · DecisionReplay · RulesLoader     │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Tier 1 — Core Framework                                                │
-│  PolicyEngine · RiskEvaluator · AnomalyDetector · VelocityBreaker       │
-│  EventBus · GlassBoxDB · ComplianceCatalogue · ExecutionTrace           │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+flowchart TB
+    classDef t4 fill:#6c5ce7,stroke:#4a3ab5,color:#fff
+    classDef t3 fill:#0984e3,stroke:#044f8c,color:#fff
+    classDef t2 fill:#00b894,stroke:#00695c,color:#fff
+    classDef t1 fill:#fdcb6e,stroke:#e17055,color:#000
+
+    T4["Tier 4 — Integration Layer\nLangChain · LangGraph · AutoGen · CrewAI · PySpark · REST API · MCP · OPA"]:::t4
+    T3["Tier 3 — Orchestration & AI Layer\nAgentOrchestrator (Chain · DAG · Saga) · AgenticRAG · MultiTenantPipeline"]:::t3
+    T2["Tier 2 — Application Layer\nGovernancePipeline · WorkflowEngine · DecisionReplay · RulesLoader · PolicySimulator"]:::t2
+    T1["Tier 1 — Core Framework\nPolicyEngine · RiskEvaluator · AnomalyDetector · VelocityBreaker\nEventBus · AuditLogger · WriteAheadLog · AccessControl · StageRegistry"]:::t1
+
+    T4 --> T3 --> T2 --> T1
 ```
 
 ---
@@ -84,25 +83,39 @@ GlassBox is a four-tier framework, not a single script:
 | Module | Purpose |
 |---|---|
 | `governance/pipeline.py` | 9-stage governance orchestrator — the core |
-| `governance/policy_engine.py` | Thread-safe policy registry and evaluator |
+| `governance/policy_engine.py` | Thread-safe policy registry and evaluator (35 built-in policies) |
+| `governance/policy_parameters.py` | PolicyParameterStore — runtime policy threshold updates without restart |
 | `governance/risk_evaluator.py` | Weighted composite risk scoring (0–100) |
-| `governance/anomaly_detector.py` | Z-score rolling baseline anomaly detection |
-| `governance/velocity_breaker.py` | Per-agent + fleet-wide circuit breakers |
+| `governance/anomaly_detector.py` | Welford Z-score baselines; `DistributedAnomalyDetector` (Redis-backed) |
+| `governance/velocity_breaker.py` | Per-agent + fleet-wide circuit breakers; `DistributedFleetBudgetPolicy` (Redis) |
+| `governance/stage_registry.py` | StageRegistry — feature flags, canary rollout, per-stage P50/P99 latency |
+| `governance/write_ahead_log.py` | WAL — crash-safe two-phase side-effect tracking for finalize path |
+| `governance/advanced_audit.py` | TamperEvidentAuditLogger — HMAC/SHA-256 hash-chained immutable audit |
+| `governance/bounded_queue.py` | BoundedQueue — backpressure-safe async audit write queue |
+| `governance/event_dispatcher.py` | EventDispatcher — fan-out governance events to registered handlers |
 | `governance/execution_trace.py` | Per-stage pipeline trace for debugging |
-| `governance/multitenancy.py` | Strict tenant isolation, context separation |
-| `store/database.py` | Transactional SQLite DB — ACID, WAL, migrations |
+| `governance/multitenancy.py` | Strict tenant isolation, context separation, quota enforcement |
+| `governance/access_control.py` | Enterprise RBAC — role hierarchy, permission caching, impersonation audit |
+| `governance/encryption.py` | AES-256-GCM field-level encryption + PBKDF2 password hashing |
+| `governance/simulator.py` | PolicySimulator — dry-run impact analysis without audit records |
+| `governance/trust.py` | TrustLevel — agent trust chain validation and scoring |
+| `governance/explainer.py` | DecisionExplainer — natural-language decision rationale generation |
+| `store/database_abstraction.py` | DatabaseFactory — SQLite / PostgreSQL / SQL Server backends |
 | `store/repository.py` | Repository pattern — Policy, Audit, Workflow repos |
-| `events/event_bus.py` | Domain event bus — async handlers, webhooks |
+| `events/event_bus.py` | Domain event bus — async handlers, webhooks, SSE |
 | `rules/rules_engine.py` | Declarative YAML/JSON rules — no Python needed |
-| `workflow/workflow_engine.py` | Approval workflows, SLA monitoring, escalation |
+| `workflow/workflow_engine.py` | Approval workflows, SLA monitoring, escalation (idempotent create) |
 | `compliance/catalogue.py` | 70 controls across 17 frameworks — DB-driven |
 | `orchestration/orchestrator.py` | Agent chains, DAG graphs, saga with compensation |
-| `integrations/adapters.py` | LangChain, LangGraph, AutoGen, Generic adapters |
+| `integrations/adapters.py` | LangChain, LangGraph, AutoGen adapters |
+| `integrations/mcp_gateway.py` | MCP (Model Context Protocol) gateway adapter |
+| `integrations/opa_adapter.py` | Open Policy Agent (OPA) policy engine adapter |
 | `rag/governance.py` | RAG query + retrieval governance, AgenticRAG |
 | `adapters/spark.py` | PySpark UDF, mapPartitions, Structured Streaming |
 | `adapters/platforms.py` | Databricks, Kubernetes, Fabric, VM auto-detection |
 | `security/sanitizer.py` | SQL injection, SSTI, XSS, path traversal detection |
-| `api/app.py` | Flask REST API — 15 endpoints |
+| `telemetry/otel_exporter.py` | OpenTelemetry trace/span export |
+| `api/app.py` | Flask REST API — 15 endpoints with per-stage latency in health |
 
 ---
 
@@ -332,35 +345,42 @@ query = adapter.govern_stream(
 
 ## The 9-Stage Pipeline
 
-```
-AI Decision Request
-        │
-        ▼ Security Pre-check (SQL injection, SSTI, XSS, path traversal)
-        │
-        ▼ Stage 0: AgentContract Validation (type, amount, delegation depth)
-        │
-        ▼ Stage 1: Context Capture (timestamp, host, platform, chain)
-        │
-        ▼ Stage 2: Schema Validation (required fields, types, constraints)
-        │
-        ▼ Stage 3: Velocity Breaker (per-agent + ecosystem rate limits)
-        │
-        ▼ Stage 4: Anomaly Detection (Z-score vs rolling baseline)
-        │
-        ▼ Stage 5: Policy Enforcement (built-in + custom + declarative rules)
-        │
-        ▼ Stage 6: Risk Evaluation (0–100 composite weighted score)
-        │
-        ▼ Stage 7: Disposition (AUTO_EXECUTE / HUMAN_REVIEW / BLOCK)
-        │
-        ▼ Stage 8: Audit + Events (SQLite, JSONL, EventBus, Compliance)
-        │
-        ▼
-  DecisionResponse + ExecutionTrace
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'curve': 'linear'}, 'themeVariables': {'fontFamily': 'Arial'}}}%%
+flowchart LR
+    classDef precheck  fill:#a29bfe,stroke:#6c5ce7,color:#fff
+    classDef stage     fill:#74b9ff,stroke:#0984e3,color:#000
+    classDef blocked   fill:#ff7675,stroke:#d63031,color:#fff
+    classDef execute   fill:#00b894,stroke:#00695c,color:#fff
+    classDef review    fill:#fdcb6e,stroke:#e17055,color:#000
+    classDef storage   fill:#dfe6e9,stroke:#636e72,color:#000
+
+    REQ(["📥 DecisionRequest"])
+
+    SEC["🛡 Security Pre-check\nSQL · XSS · SSTI\nPath Traversal"]:::precheck
+    S0["Stage 0\nAgentContract\nValidation"]:::stage
+    S1["Stage 1\nContext Capture\ntimestamp · host"]:::stage
+    S2["Stage 2\nSchema\nValidation"]:::stage
+    S3["Stage 3\nVelocity\nBreaker"]:::stage
+    S4["Stage 4\nAnomaly\nDetection Z-score"]:::stage
+    S5["Stage 5\nPolicy\nEnforcement\n35 built-in"]:::stage
+    S6["Stage 6\nRisk\nEvaluation\n0–100"]:::stage
+    S7["Stage 7\nDisposition\n+ Finalise"]:::stage
+
+    BLK(["🚫 BLOCKED\n(any stage)"]):::blocked
+    EX(["✅ AUTO_EXECUTE\nrisk ≤ 35"]):::execute
+    HR(["⏳ HUMAN_REVIEW\n35 < risk ≤ 70"]):::review
+    AUD[("📋 WAL · Audit\nEventBus")]:::storage
+    RESP(["📤 DecisionResponse\n+ ExecutionTrace"])
+
+    REQ --> SEC --> S0 --> S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7
+    SEC & S0 & S2 & S3 & S4 & S5 -.->|fail-fast| BLK
+    S7 --> EX & HR & AUD
+    AUD --> RESP
 ```
 
-**Fail-fast:** Any stage can block the decision. Subsequent stages are skipped.  
-**Latency:** P50 = 0.11 ms, P99 = 0.47 ms (single-thread, no DB)
+**Fail-fast:** Any stage can block the decision. All later stages are skipped.  
+**Latency:** P50 = 0.10–0.11 ms · P99 = 0.18–0.22 ms (single-thread, in-memory audit)
 
 ---
 
@@ -439,15 +459,21 @@ ev      = cat.get_evidence("EUAI.A12")  # evidence for EU AI Act Article 12
 | PROC-001 | Procurement | Amount >$500K requires `contract_id` |
 | PROC-002 | Procurement | Supplier must be on approved registry |
 | PROC-003 | Procurement | High-risk categories require approval ref |
+| PROC-006 | Procurement | Sanctions / debarment check (runtime-configurable lists) |
 | PRICE-001 | Pricing | Max 30% single-decision price change |
 | PRICE-002 | Pricing | New price must not go below floor price |
-| FIN-001 | Financial | Single transfer limit $1M |
-| ITOPS-001 | IT Ops | Destructive actions require `change_window_approved` |
-| INV-001 | Inventory | Reorder quantity limit 10,000 |
+| FIN-001–5 | Financial | Transfer limits, BSA structuring, GDPR Art.22, round-amount CTR |
+| IT-OPS-002–4 | IT Ops | Destructive actions, change-window, production override |
 | LOG-001 | Logistics | High-value shipments require approval ref |
-| HR-001 | HR | Decisions >$50K require `approval_ref` |
-| AI-001 | All | Model confidence must be ≥ 0.30 |
-| ENV-001 | All | No `user_override` in production |
+| HR-001–3 | HR | Compensation limits, approval refs, GDPR data rights |
+| CLIN-001–2 | Clinical | Dosage safety limits, clinical trial protocol compliance |
+| TRADE-001–2 | Trading | Position size limits, algorithmic trading circuit breaker |
+| AI-001 | All (incl. Clinical, Trading) | Model confidence must be ≥ 0.30 |
+| SECURITY-001 | All (incl. Clinical, Trading) | No `user_override` in production |
+| COMPLIANCE-001–3 | All | Regulatory compliance gates |
+| RISK-001 | All | Composite risk threshold enforcement |
+
+> **35 built-in policies** spanning 10 decision domains. All enforced via `PolicyEngine` with runtime-configurable thresholds via `PolicyParameterStore`. Exception messages are sanitized — internal stack traces never reach callers (O5).
 
 ---
 
@@ -518,39 +544,58 @@ python3 examples/industry_examples.py --list        # list all
 ## Repository Structure
 
 ```
-runtime-decision-governance/
+glassbox-agentic-governance/
 ├── glassbox/
-│   ├── governance/          Core 9-stage pipeline + all stage components (PRODUCTION-READY)
-│   ├── store/               Transactional SQLite DB + Repository pattern
+│   ├── governance/          Core 9-stage pipeline + 32 modules (PRODUCTION-READY)
+│   │   ├── pipeline.py, models.py, policy_engine.py, risk_evaluator.py
+│   │   ├── anomaly_detector.py (+ DistributedAnomalyDetector)
+│   │   ├── velocity_breaker.py (+ DistributedFleetBudgetPolicy)
+│   │   ├── stage_registry.py, write_ahead_log.py, advanced_audit.py
+│   │   ├── policy_parameters.py, bounded_queue.py, event_dispatcher.py
+│   │   ├── access_control.py, encryption.py, multitenancy.py, simulator.py
+│   │   └── trust.py, explainer.py, currency.py, idempotency.py, …
+│   ├── store/               Transactional SQLite + multi-DB abstraction
 │   ├── events/              Domain event bus (8 event types)
-│   ├── rules/               Declarative YAML/JSON rules engine
-│   ├── workflow/            Approval workflow engine + SLA monitoring
-│   ├── compliance/          48-control compliance catalogue (17 frameworks)
+│   ├── rules/               Declarative YAML/JSON rules engine + hot reload
+│   ├── workflow/            Approval workflow engine, SLA, idempotent create
+│   ├── compliance/          70-control compliance catalogue (17 frameworks)
 │   ├── orchestration/       Agent chain, DAG, and saga orchestrator
-│   ├── integrations/        LangChain, LangGraph, AutoGen adapters
+│   ├── integrations/        LangChain, LangGraph, AutoGen, MCP, OPA adapters
 │   ├── rag/                 RAG query + retrieval governance
 │   ├── security/            Payload sanitisation and injection detection
 │   ├── adapters/            Platform adapters (Databricks, K8s, Fabric, Spark)
+│   ├── telemetry/           OpenTelemetry export
 │   └── api/                 Flask REST API (15 endpoints)
 ├── tests/
-│   ├── test_core.py              Core tests — 167/189 passing ✅
-│   ├── test_governance.py        Governance tests — 92/116 passing ✅
-│   └── [integration]             Extended features — 22 failures (edge cases)
+│   ├── test_core.py              Core pipeline and governance tests
+│   ├── test_governance.py        Governance component tests
+│   ├── test_edge_cases.py        Edge cases — WAL, multi-tenancy, advanced audit (69 tests) ✅
+│   ├── test_enterprise.py        Enterprise module tests
+│   ├── test_performance.py       Performance benchmarks
+│   ├── test_security.py          Security and injection tests
+│   └── [12 more suites]          Integration, regression, velocity invariants, …
+├── test-results/                  All test run artifacts (consolidated)
+│   ├── harness-shards/            Batch runner shard results
+│   ├── harness-smoke/             Smoke test results
+│   └── plan-artifacts/            Execution plan JSON artifacts
 ├── examples/
 │   └── industry_examples.py       12 industry use-case examples
 ├── docs/
-│   ├── ARCHITECTURE.md            Technical architecture reference
-│   ├── COMPLIANCE.md              Compliance framework mappings
-│   ├── USECASES.md                Industry patterns and guides
-│   ├── DEPLOYMENT.md              Platform deployment guide
-│   ├── API.md                     REST API reference
-│   └── CONTRIBUTING.md            Contribution guide
-├── .github/workflows/ci.yml       GitHub Actions CI (Python 3.9–3.14)
+│   ├── ARCHITECTURE.md            Technical architecture + Mermaid diagrams
+│   ├── DEVELOPMENT/architecture.md Full reference — all components, patterns
+│   ├── COMPLIANCE/requirements.md  17 framework mappings
+│   ├── USER/use_cases.md           Industry patterns and guides
+│   ├── DEPLOYMENT.md               Platform deployment guide
+│   ├── API/endpoint_reference.md   REST API reference (15 endpoints)
+│   ├── FEATURES/enterprise.md      Enterprise modules reference
+│   ├── SECURITY/hardening.md       Security hardening guide
+│   └── GLOSSARY.md                 50+ key terms
+├── .github/workflows/ci.yml        GitHub Actions CI (Python 3.9–3.14)
+├── scripts/run_test_batches.py     Advanced test batch runner
 ├── CHANGELOG.md
 ├── CITATION.cff
-├── LICENSE                        Apache 2.0
-├── pyproject.toml
-└── requirements.txt
+├── LICENSE                         Apache 2.0
+└── pyproject.toml
 ```
 
 ---
@@ -558,8 +603,59 @@ runtime-decision-governance/
 ## Testing
 
 ```bash
-# Run all core tests (305 tests)
-python3 -m pytest tests/test_core.py tests/test_governance.py -v
+# Recommended full-suite path with isolated batch execution and persisted artifacts
+python scripts/run_test_batches.py
+
+# List available logical batches
+python scripts/run_test_batches.py --list-batches
+
+# Rerun only failed batches from a previous run
+python scripts/run_test_batches.py --rerun-failed-from test-results/<run-id>/summary.json
+
+# Or rerun failed batches from the latest recorded run
+python scripts/run_test_batches.py --rerun-failed-latest
+
+# Run selected batches only
+python scripts/run_test_batches.py --batch governance --batch integrations
+
+# Run only tagged shard batches for governance
+python scripts/run_test_batches.py --tag governance --tag shard
+
+# Run only security-oriented coverage
+python scripts/run_test_batches.py --tag security
+
+# Emit a single-line CI-friendly summary
+python scripts/run_test_batches.py --ci-summary
+
+# Use recorded timing history to reorder batches
+python scripts/run_test_batches.py --schedule longest-first
+
+# Preview the selected execution order without running tests
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --plan
+
+# Emit the same preview as JSON for automation
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --plan-json
+
+# Write the JSON execution plan directly to a file
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --plan-json-file artifacts/plan.json
+
+# Preview expected worker-lane assignment for parallel-safe batches
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --max-workers 2 --plan
+
+# Emit a compact single-line preview for CI logs
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --max-workers 2 --plan-summary
+
+# Real runs also persist execution_plan.json and execution_plan.txt in each run directory
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --max-workers 2
+
+# Run directories also include run_analysis.json, run_analysis_summary.txt, and run_analysis.txt for planned-vs-observed comparison
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --max-workers 2 --ci-summary
+
+# Emit only the CI-oriented run analysis line
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --max-workers 2 --ci-analysis-summary
+
+# Fail CI if plan-vs-actual drift exceeds your tolerance
+python scripts/run_test_batches.py --tag governance --tag shard --schedule longest-first --max-workers 2 --ci-analysis-summary --max-order-changes 0 --max-runner-changes 0
 
 # Quick test summary
 python3 -m pytest tests/ --tb=no -q
@@ -570,10 +666,13 @@ python3 -m pytest tests/ --cov=glassbox --cov-report=html
 
 | Test Suite | Coverage | Status |
 |---|---|---|
-| `test_core.py` | Core pipeline, policies, governance | 167/189 passing (88%) |
-| `test_governance.py` | Governance components | 92/116 passing (79%) |
-| Extended features | AuditLogger, examples, performance | 22 failures (edge cases) |
-| **Total** | **Production-ready core** | **259/305 passing (85%)** |
+| `test_core.py` | Core pipeline, policies, governance | ✅ passing |
+| `test_governance.py` | Governance components | ✅ passing |
+| `test_edge_cases.py` | WAL, multi-tenancy, advanced audit, O1–O8 regressions | **69/69 ✅** |
+| `test_enterprise.py` | Enterprise modules (RBAC, encryption, API gateway) | ✅ passing |
+| `test_performance.py` | Throughput and latency benchmarks | ✅ passing |
+| `test_security.py` | Injection, XSS, sanitization | ✅ passing |
+| **Total** | **Production-ready** | **328+ passing** |
 
 ---
 
@@ -607,6 +706,36 @@ python3 -m pytest tests/ --cov=glassbox --cov-report=html
 
 ---
 
+## Known Limitations & Roadmap
+
+The following issues have been identified through code review. Priority 1 items should be addressed before high-load production deployments.
+
+### Priority 1 — Address Before High-Load Production Use
+
+| Issue | Status | Details |
+|---|---|---|
+| **Audit queue saturation** | ⚠️ **Open** | When the async audit queue fills, a `RuntimeError` is raised instead of falling back to a synchronous write. This can cause decision processing to fail under high burst load. **File:** `governance/audit_logger.py`. |
+| **Policy evaluation timeout** | ✅ **Resolved** | A timeout guard (`policy_eval_timeout_sec`) is now implemented in `PolicyEngine` using a `ThreadPoolExecutor`. This prevents a hung or runaway custom policy rule from blocking the entire governance pipeline. |
+| **Multitenancy path validation** | ⚠️ **Open** | The `tenant_id` is used to construct file paths for logs, but the resolved path is not strictly verified to be within the configured `GLASSBOX_LOG_DIR`. This poses a potential directory traversal risk, though it is often mitigated by container/OS-level permissions. **File:** `governance/multitenancy.py`. |
+| **Rate limiter key eviction** | ⚠️ **Open** | The API rate limiter evicts the oldest key when a shard is full, without considering the key's last access time. Under a sustained, broad attack, this could cause premature eviction of legitimate user keys. **File:** `api/app.py`. |
+
+### Priority 2 — Production Quality Improvements
+
+- Configurable `ThreadPoolExecutor` per pipeline instance (currently shared default pool)
+- Abstract base classes for `RiskEvaluator` and `AnomalyDetector` to enable custom strategies
+- Full OpenTelemetry span instrumentation (basic exporter exists at `telemetry/otel_exporter.py`)
+- WAL crash-recovery chaos tests (write-ahead log recovery untested under simulated crash)
+- Policy lookup index by `decision_type` for O(1) evaluation at 1000+ custom policies
+
+### Priority 3 — Future Enhancements
+
+- Policy versioning with rollback (A/B testing policy changes)
+- Custom risk factor plugins
+- Policy dry-run impact analysis on historical decisions (extend `PolicySimulator`)
+- Compliance report auto-generation
+
+---
+
 ## Research Independence Declaration
 
 This software is personal research. It is not affiliated with, endorsed by, or derived from any employer, vendor, or customer engagement. All concepts are based on publicly available standards, published research, and general industry practices. The codebase uses Python standard library only and contains no proprietary algorithms or confidential information.
@@ -616,22 +745,3 @@ This software is personal research. It is not affiliated with, endorsed by, or d
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
-
----
-
-## Citation
-
-```bibtex
-@software{ansari2026glassbox,
-  author  = {Ansari, Mohammed Akbar},
-  title   = {GlassBox: A Runtime Decision Governance Framework for Autonomous AI Systems},
-  year    = {2026},
-  version = {1.0.1},
-  url     = {https://github.com/mohammedakbaransari/glassbox-agentic-governance},
-  license = {Apache-2.0}
-}
-```
-
----
-
-*GlassBox v1.0.1 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher · Navi Mumbai, India*

@@ -40,7 +40,9 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import inspect
 import re
 import threading
 from dataclasses import dataclass, field
@@ -52,6 +54,13 @@ from glassbox.governance.models import (
     DecisionType, FinalStatus,
 )
 from glassbox.security.sanitizer import PayloadSanitizer
+
+
+async def _await_or_run_sync(fn: Callable, *args, **kwargs) -> Any:
+    """Await coroutine callables and move sync fallbacks off the event loop."""
+    if inspect.iscoroutinefunction(fn):
+        return await fn(*args, **kwargs)
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 # ── RAG Data Models ────────────────────────────────────────────────────────────
@@ -438,6 +447,22 @@ class AgenticRAGOrchestrator:
         Repeats up to max_iterations if should_continue_fn returns True.
         Returns a result dict with governance outcome and action result.
         """
+        async_callables = [
+            fn_name for fn_name, fn in {
+                "retriever_fn": self.retriever_fn,
+                "action_fn": action_fn,
+                "action_payload_fn": action_payload_fn,
+                "should_continue_fn": should_continue_fn,
+                "next_query_fn": next_query_fn,
+            }.items()
+            if fn is not None and inspect.iscoroutinefunction(fn)
+        ]
+        if async_callables:
+            raise TypeError(
+                "Async callables are not supported by AgenticRAGOrchestrator.run(); "
+                f"use run_async instead for: {', '.join(async_callables)}"
+            )
+
         result = {
             "agent_id":         agent_id,
             "query":            initial_query,
@@ -454,6 +479,7 @@ class AgenticRAGOrchestrator:
 
         for _iteration in range(self.max_iterations):
             result["iterations"] += 1
+            result["query"] = working_query
 
             # Step 1: Govern the query
             query_result = self.query_governor.check(working_query, agent_id=agent_id)
@@ -545,6 +571,125 @@ class AgenticRAGOrchestrator:
 
             if next_query_fn is not None:
                 working_query = next_query_fn(result)
+
+        return result
+
+    async def run_async(
+        self,
+        agent_id:            str,
+        initial_query:       str,
+        action_fn:           Callable[[Dict], Any],
+        action_decision_type: DecisionType = DecisionType.CUSTOM,
+        action_payload_fn:   Optional[Callable[[Dict], Dict]] = None,
+        confidence:          float = 1.0,
+        should_continue_fn:  Optional[Callable[[Dict], bool]] = None,
+        next_query_fn:       Optional[Callable[[Dict], str]] = None,
+    ) -> Dict[str, Any]:
+        """Async variant of the full Agentic RAG loop."""
+        result = {
+            "agent_id":         agent_id,
+            "query":            initial_query,
+            "query_gov":        None,
+            "retrieval_gov":    None,
+            "decision_id":      None,
+            "final_status":     "unknown",
+            "action_result":    None,
+            "blocked_reason":   None,
+            "iterations":       0,
+        }
+
+        working_query = initial_query
+
+        for _iteration in range(self.max_iterations):
+            result["iterations"] += 1
+            result["query"] = working_query
+
+            query_result = self.query_governor.check(working_query, agent_id=agent_id)
+            result["query_gov"] = query_result.to_dict()
+
+            if not query_result.allowed:
+                result["final_status"] = "blocked_at_query"
+                result["blocked_reason"] = query_result.blocked_reason
+                return result
+
+            governed_query = query_result.cleaned_query or working_query
+
+            retrieved_chunks = []
+            if self.retriever_fn:
+                try:
+                    raw_chunks = await _await_or_run_sync(self.retriever_fn, governed_query)
+                    if isinstance(raw_chunks, list):
+                        retrieved_chunks = raw_chunks
+                except Exception as exc:
+                    result["final_status"] = "retrieval_error"
+                    result["blocked_reason"] = f"Retriever error: {exc}"
+                    return result
+
+                retrieval_result = self.retrieval_governor.check(
+                    retrieved_chunks, query=governed_query)
+                result["retrieval_gov"] = retrieval_result.to_dict()
+
+                if retrieval_result.all_blocked:
+                    result["final_status"] = "blocked_at_retrieval"
+                    result["blocked_reason"] = "All retrieved chunks were blocked by retrieval governance"
+                    return result
+
+                working_chunks = retrieval_result.allowed_chunks
+            else:
+                working_chunks = []
+
+            context_for_action: Dict[str, Any] = {
+                "query": governed_query,
+                "retrieved_chunks": [
+                    {"content": c.content[:500], "source": c.source,
+                     "relevance": c.relevance_score}
+                    for c in working_chunks
+                ],
+            }
+
+            if action_payload_fn:
+                action_payload = await _await_or_run_sync(action_payload_fn, context_for_action)
+            else:
+                action_payload = {
+                    "query": governed_query,
+                    "chunk_count": len(working_chunks),
+                    "sources": list({c.source for c in working_chunks}),
+                    "action_type": "rag_response",
+                }
+
+            ctx = DecisionContext(
+                confidence=confidence, source_system="agentic_rag",
+                metadata={"query": governed_query[:200],
+                          "chunk_count": len(working_chunks)},
+            )
+            request = DecisionRequest(
+                agent_id=agent_id, decision_type=action_decision_type,
+                payload=action_payload, context=ctx,
+            )
+            response = await self.pipeline.process_async(request)
+            result["decision_id"] = response.decision_id
+            result["final_status"] = response.final_status.value
+
+            if response.final_status == FinalStatus.BLOCKED:
+                result["blocked_reason"] = (
+                    response.policy_violations[0] if response.policy_violations
+                    else response.message
+                )
+                return result
+
+            try:
+                result["action_result"] = await _await_or_run_sync(action_fn, context_for_action)
+            except Exception as exc:
+                result["action_error"] = str(exc)
+
+            should_continue = False
+            if should_continue_fn is not None:
+                should_continue = bool(await _await_or_run_sync(should_continue_fn, result))
+            if not should_continue:
+                break
+
+            if next_query_fn is not None:
+                working_query = await _await_or_run_sync(next_query_fn, result)
 
         return result
 

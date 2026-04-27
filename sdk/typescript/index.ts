@@ -183,9 +183,16 @@ export class GlassBoxClient {
     agent_id?: string;
     limit?: number;
   }): Promise<{ records: unknown[]; count: number }> {
-    const qs = params
-      ? '?' + new URLSearchParams(params as Record<string, string>).toString()
-      : '';
+    let qs = '';
+    if (params) {
+      const searchParams = new URLSearchParams();
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined) {
+          searchParams.append(key, String(value));
+        }
+      });
+      qs = '?' + searchParams.toString();
+    }
     return this._get(`/decisions${qs}`);
   }
 

@@ -20,10 +20,10 @@ pipeline = adapter.create_pipeline()
 
 ```python
 from glassbox.governance.pipeline import GovernancePipeline
-from glassbox.store.database      import GlassBoxDB
+from glassbox.store.database      import GlassBoxDatabase
 from glassbox.events.event_bus    import EventBus
 
-db       = GlassBoxDB("/var/lib/glassbox/glassbox.db")
+db       = GlassBoxDatabase("/var/lib/glassbox/glassbox.db")
 bus      = EventBus()
 pipeline = GovernancePipeline(
     event_bus          = bus,
@@ -150,7 +150,7 @@ python3 -m glassbox.api.app   # → http://localhost:8000
 
 # Endpoints
 POST /decisions              Submit decision for governance
-GET  /decisions              List audit records (paginated)
+GET  /decisions              List audit records (paginated, requires audit repository)
 GET  /decisions/<id>         Get specific audit record
 POST /decisions/<id>/replay  Replay historical decision
 GET  /stats                  Aggregate governance statistics
@@ -160,6 +160,9 @@ GET  /health                 K8s-compatible health check
 ```
 
 See [API/endpoint_reference.md](../API/endpoint_reference.md) for full reference.
+
+Production note: configure persistent audit storage before relying on `GET /decisions`.
+If no `audit_repo` is configured, the API returns `503 Service Unavailable` for list reads.
 
 ---
 
@@ -177,8 +180,10 @@ See [API/endpoint_reference.md](../API/endpoint_reference.md) for full reference
 
 - [ ] **Log Level**: Set `GLASSBOX_LOG_LEVEL=WARNING` (reduce noise, improve performance)
 - [ ] **Log Directory**: Point `GLASSBOX_LOG_DIR` to persistent volume (not ephemeral `/tmp`)
-- [ ] **Database**: Use `GlassBoxDB("/var/lib/glassbox/glassbox.db")` — not `:memory:`
-- [ ] **WAL Mode**: Enable SQLite WAL for concurrent access — `enable_wal=True`
+- [ ] **Database**: Use `GlassBoxDatabase("/var/lib/glassbox/glassbox.db")` — not `:memory:`
+- [ ] **SQLite Journal WAL**: `GlassBoxDatabase` enables SQLite journal WAL mode internally; if you use `DatabaseFactory.create("sqlite", ...)`, keep `enable_wal=True`
+- [ ] **Governance WAL**: If you need finalize-path recovery records, configure `glassbox.governance.write_ahead_log.WriteAheadLog` separately from SQLite journal WAL mode
+- [ ] **WAL Recovery**: Enable `recover_wal_on_startup=True` if this instance should replay unfinished finalize-time work on startup
 - [ ] **Async Writes**: Set `async_audit_writes=True` for throughput >1,000 decisions/sec
 - [ ] **Environment**: Set `environment="production"` in pipeline configuration
 
@@ -231,7 +236,7 @@ Starting point: Estimate your decision volume (decisions/second, decisions/day, 
 | Decision Volume | Recommended Setup | Database | Notes |
 |---|---|---|---|
 | **0–1,000/day** | Single VM (2 CPU, 4GB RAM) | SQLite (`:memory:` OK) | Development/staging |
-| **1K–10K/day** | Single VM (4 CPU, 8GB RAM) | SQLite, `enable_wal=True` | Production pilot |
+| **1K–10K/day** | Single VM (4 CPU, 8GB RAM) | SQLite via `GlassBoxDatabase` | Production pilot |
 | **10K–100K/day** | Single instance (8 CPU, 16GB RAM) + persistent storage | SQLite file, daily backups | Small production |
 | **100K–1M/day** | Multiple API instances (2–4 pods) + load balancer | PostgreSQL cluster | Medium production |
 | **1M–10M/day** | Kubernetes cluster (16+ pods) + database cluster | PostgreSQL, read replicas | Large enterprise |
@@ -540,8 +545,14 @@ Error: database is locked
 
 **Solution:**
 ```python
-# Enable WAL (Write-Ahead Logging) mode
-db = GlassBoxDB("/var/lib/glassbox/glassbox.db", enable_wal=True)
+# Relational storage path
+from glassbox.store.database import GlassBoxDatabase
+
+db = GlassBoxDatabase("/var/lib/glassbox/glassbox.db")
+
+# Note: this enables SQLite journal WAL mode internally.
+# If you also want governance finalize-path recovery records,
+# configure glassbox.governance.write_ahead_log.WriteAheadLog on the pipeline.
 
 # This allows concurrent reads while writes are buffered
 ```
@@ -717,15 +728,23 @@ pipeline = GovernancePipeline(
 **Use Environment Variables, Never Hardcode:**
 ```python
 # ❌ Bad
-db = GlassBoxDB(
-    path="/var/lib/glassbox/glassbox.db",
-    password="postgres123"  # EXPOSED!
+from glassbox.store.database_abstraction import DatabaseFactory
+
+db = DatabaseFactory.create(
+  "postgresql",
+  host="postgres.internal",
+  database="glassbox",
+  user="glassbox",
+  password="postgres123",  # EXPOSED!
 )
 
 # ✅ Good
-db = GlassBoxDB(
-    path="/var/lib/glassbox/glassbox.db",
-    password=os.environ["GLASSBOX_DB_PASSWORD"]
+db = DatabaseFactory.create(
+  "postgresql",
+  host="postgres.internal",
+  database="glassbox",
+  user="glassbox",
+  password=os.environ["GLASSBOX_DB_PASSWORD"],
 )
 ```
 
@@ -784,4 +803,4 @@ sudo mount /dev/mapper/glassbox_encrypted /var/log/glassbox
 
 ---
 
-*GlassBox v1.0.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher · Navi Mumbai, India*
+*GlassBox v1.0.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher ·  *

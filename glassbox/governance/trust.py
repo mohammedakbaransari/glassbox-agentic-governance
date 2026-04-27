@@ -1,5 +1,5 @@
 """
-GlassBox — Agent Behavioral Trust Scorer  (v1.0.0)
+GlassBox — Agent Behavioral Trust Scorer  (v1.2.0)
 ===================================================
 Tracks the operational decision quality of each AI agent over time.
 
@@ -122,7 +122,7 @@ class AgentTrustProfile:
 class _AgentStats:
     """Internal mutable statistics for one agent."""
     __slots__ = ["total","executed","blocked","review","violations",
-                 "anomalies","trips","approvals","rejections","score","last_ts"]
+                 "anomalies","trips","approvals","rejections","score","last_ts","last_decay_ts"]
 
     def __init__(self):
         self.total      = 0
@@ -136,6 +136,7 @@ class _AgentStats:
         self.rejections = 0
         self.score      = 700.0   # Start at RELIABLE tier
         self.last_ts    = time.time()
+        self.last_decay_ts = self.last_ts
 
 
 class AgentTrustScorer:
@@ -161,10 +162,11 @@ class AgentTrustScorer:
     DECAY_RATE_PER_HOUR = 1.0   # points per hour of inactivity, toward 600
     DECAY_TARGET        = 600.0
 
-    def __init__(self):
+    def __init__(self, event_bus=None):
         self._agents: Dict[str, _AgentStats] = {}
         self._locks:  Dict[str, threading.Lock] = {}
         self._global_lock = threading.Lock()
+        self._event_bus = event_bus
 
     def handle_event(self, event) -> None:
         """
@@ -183,6 +185,7 @@ class AgentTrustScorer:
 
             with lock:
                 stats.last_ts = time.time()
+                stats.last_decay_ts = stats.last_ts
                 if etype == "decision.executed":
                     stats.total    += 1
                     stats.executed += 1
@@ -212,6 +215,22 @@ class AgentTrustScorer:
                 elif etype == "workflow.rejected":
                     stats.rejections += 1
                     stats.score = max(0, stats.score - 30)
+
+                # Publish updated score so OtelExporter can record the metric
+                if agent and self._event_bus:
+                    tier, _ = self._tier_for(stats.score)
+                    try:
+                        from glassbox.events.event_bus import GlassBoxEvent
+                        self._event_bus.publish(GlassBoxEvent(
+                            event_type="trust.score.updated",
+                            payload={
+                                "agent_id": agent,
+                                "score": round(stats.score, 1),
+                                "tier": tier,
+                            },
+                        ))
+                    except Exception:
+                        pass
         except Exception:
             pass  # Trust scoring never breaks the calling thread
 
@@ -286,7 +305,9 @@ class AgentTrustScorer:
 
     def _apply_decay(self, stats: _AgentStats) -> float:
         """Apply time-based decay toward DECAY_TARGET."""
-        hours_inactive = (time.time() - stats.last_ts) / 3600.0
+        now = time.time()
+        decay_baseline = getattr(stats, "last_decay_ts", stats.last_ts)
+        hours_inactive = (now - decay_baseline) / 3600.0
         if hours_inactive < 1.0:
             return stats.score
         decay = hours_inactive * self.DECAY_RATE_PER_HOUR
@@ -294,6 +315,7 @@ class AgentTrustScorer:
             stats.score = max(self.DECAY_TARGET, stats.score - decay)
         elif stats.score < self.DECAY_TARGET:
             stats.score = min(self.DECAY_TARGET, stats.score + decay)
+        stats.last_decay_ts = now
         return stats.score
 
     @staticmethod

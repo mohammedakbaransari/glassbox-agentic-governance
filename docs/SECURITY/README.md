@@ -13,16 +13,19 @@ This directory contains security documentation, hardening guides, and best pract
   - Network security
   - Vulnerability management
 
-## 🔒 Security-First Design
+## Security-First Design
 
 GlassBox follows "Security by Default":
-- ✅ All inputs validated
-- ✅ All state protected by locks
-- ✅ All decisions audited
-- ✅ All API requests authenticated
-- ✅ All traffic encryptable
-- ✅ No hardcoded credentials
-- ✅ Principle of least privilege
+- All inputs validated (PayloadSanitizer, 25+ injection patterns)
+- All state protected by locks (RLock, per-agent lock pool)
+- All decisions audited (immutable HMAC/SHA-256 hash chain)
+- All API requests authenticatable (Bearer token middleware)
+- All traffic encryptable (AES-256-GCM field-level)
+- No hardcoded credentials or secrets
+- Principle of least privilege (RBAC with role hierarchy)
+- **Policy exception messages sanitized** — internal stack traces never reach callers (v1.2.0)
+- **Sanctions lists runtime-configurable** — no code deployment needed (v1.2.0)
+- **Tamper-evident audit** — HMAC/SHA-256 hash chaining detects any record modification
 
 ## 🛡️ Security Layers
 
@@ -64,39 +67,67 @@ GlassBox follows "Security by Default":
 ## 🔐 Security Controls
 
 ### Authentication
-```python
-# API Key Authentication
-headers = {
-    'Authorization': 'Bearer YOUR_API_KEY'
-}
 
-# Multi-Factor Authentication (optional)
-from glassbox.security import MFAValidator
-mfa = MFAValidator()
-token = mfa.validate_2fa(user_id, code)
+API endpoints are unauthenticated in the default distribution. Add a Bearer-token middleware for production:
+
+```python
+# Bearer token middleware (add to glassbox/api/app.py or a reverse proxy)
+from functools import wraps
+from flask import request, jsonify
+import os
+
+def require_api_key(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get("Authorization", "")
+        expected = f"Bearer {os.environ.get('GLASSBOX_API_KEY', '')}"
+        if token != expected:
+            return jsonify({"error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
 ```
 
 ### Encryption
-```python
-# Enable encryption
-from glassbox.governance import GovernancePipeline
 
-pipeline = GovernancePipeline(
-    encryption_enabled=True,
-    encryption_algorithm='AES-256-CBC',
-    encryption_key=os.getenv('GLASSBOX_ENCRYPTION_KEY')
-)
+Field-level AES-256-GCM encryption is provided by `glassbox.governance.encryption`:
+
+```python
+from glassbox.governance.encryption import FieldEncryptor
+import os
+
+encryptor = FieldEncryptor(password=os.environ["GLASSBOX_ENCRYPT_PASSWORD"])
+
+# Encrypt a sensitive field before storing
+ciphertext = encryptor.encrypt("patient-id-12345")
+
+# Decrypt on retrieval
+plaintext = encryptor.decrypt(ciphertext)
 ```
 
 ### Access Control
-```python
-# Role-Based Access Control
-from glassbox.security import ACL
 
-acl = ACL()
-acl.grant_permission('user-123', 'decision:read')
-acl.grant_permission('admin-456', 'policy:write')
-acl.grant_role('user-123', 'viewer')
+RBAC is in `glassbox.governance.access_control`:
+
+```python
+from glassbox.governance.access_control import AccessController, Role, Permission
+
+controller = AccessController()
+
+# Create roles
+admin_role = Role("admin")
+viewer_role = Role("viewer")
+
+# Assign permissions
+admin_role.add_permission(Permission("policy:write"))
+viewer_role.add_permission(Permission("decision:read"))
+
+# Grant roles to users
+controller.assign_role("user-123", viewer_role)
+controller.assign_role("admin-456", admin_role)
+
+# Enforce at runtime
+if not controller.has_permission("user-123", "policy:write"):
+    raise PermissionError("Insufficient privileges")
 ```
 
 ## ✅ Security Checklist
@@ -239,10 +270,17 @@ def test_authentication_required():
 
 Found a security vulnerability?
 1. **Do NOT** open a public GitHub issue
-2. Email: security@glassbox.io
+2. Open a **private** security advisory at: [github.com/mohammedakbaransari/glassbox-agentic-governance/security/advisories](https://github.com/mohammedakbaransari/glassbox-agentic-governance/security/advisories)
 3. Include: Description, impact, reproduction steps
-4. We'll respond within 24 hours
-5. Coordinated disclosure between us
-6. Credit in release notes (if desired)
+4. Credit in release notes (if desired)
+
+## Known Security Considerations (v1.2.0)
+
+| Item | Risk | Status |
+|---|---|---|
+| `tenant_id` path validation does not verify result stays inside `GLASSBOX_LOG_DIR` after `Path.resolve()` | MEDIUM — mitigated by OS file permissions | Open — fix: add `startswith(base_log_dir)` check |
+| `user_override` accepted from request body in v1.0.0 | HIGH | Fixed in v1.0.1 — now restricted to authenticated sessions only |
+| Policy snapshot uses `object.__setattr__` guard; can be bypassed via `object.__setattr__` directly | LOW — requires code access | Accepted risk |
+| GENESIS_SENTINEL (`"0"*64`) hardcoded in advanced audit | LOW — only affects crash recovery edge case | Accepted risk |
 
 

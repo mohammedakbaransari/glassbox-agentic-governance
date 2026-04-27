@@ -31,6 +31,7 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 from __future__ import annotations
 
 import copy
+import os
 import re
 import threading
 import time
@@ -47,6 +48,36 @@ from glassbox.governance.velocity_breaker import VelocityBreaker
 
 if TYPE_CHECKING:
     from glassbox.governance.pipeline import GovernancePipeline
+
+
+def _resolve_tenant_log_dir(log_dir: Optional[str], tenant_id: str) -> Optional[str]:
+    """Resolve a tenant log directory and verify it is strictly inside log_dir.
+
+    Uses pathlib.Path.resolve() to canonicalize both paths (follows symlinks on
+    existing components, normalizes '..' on non-existing ones) then asserts
+    containment with relative_to(), which is unambiguous and handles Windows
+    drive-letter case folding correctly.
+
+    Raises ValueError if the resolved path escapes the base directory.
+    """
+    if not log_dir:
+        return None
+
+    from pathlib import Path
+
+    # Resolve the base directory to an absolute, symlink-free canonical path.
+    # strict=False so this works even when log_dir doesn't exist yet.
+    base = Path(log_dir).resolve()
+    candidate = (base / tenant_id).resolve()
+
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        raise ValueError(
+            f"tenant_id {tenant_id!r} resolves to '{candidate}' which is outside "
+            f"the configured log directory '{base}'"
+        )
+    return str(candidate)
 
 
 # ── Per-tenant component bundle ────────────────────────────────────────────────
@@ -85,7 +116,7 @@ class TenantComponents:
             window_size  = anom_cfg.get("window_size", 50),
         )
         # Tenant-specific audit log directory
-        tenant_log = f"{log_dir}/{tenant_id}" if log_dir else None
+        tenant_log = _resolve_tenant_log_dir(log_dir, tenant_id)
         self.audit_logger = AuditLogger(log_dir=tenant_log, echo=False)
 
     def register_policy(self, policy: Policy) -> None:
@@ -110,7 +141,7 @@ class TenantRegistry:
         registry = TenantRegistry(
             base_policies=DEFAULT_POLICIES,
             max_tenants=10000,  # max concurrent tenants
-            tenant_id_pattern=r'^[a-z0-9_\-]{3,64}$',
+            tenant_id_pattern=r'^[a-z0-9_-]{3,64}$',
         )
 
         # Get (or lazily create) components for a tenant
@@ -136,7 +167,7 @@ class TenantRegistry:
         self._log_dir         = log_dir
         self._max_tenants     = max_tenants
         self._tenant_id_pattern = re.compile(
-            tenant_id_pattern or r'^[a-z0-9_-]{3,64}$', re.IGNORECASE
+            tenant_id_pattern or r'^[a-z0-9_-]{3,64}$'
         )
         self._tenants: Dict[str, TenantComponents] = {}
         self._tenant_last_access: Dict[str, float] = {}
@@ -162,6 +193,9 @@ class TenantRegistry:
 
         if "\x00" in tenant_id:
             raise ValueError("tenant_id contains null byte")
+
+        if ".." in tenant_id:
+            raise ValueError("tenant_id must not contain traversal tokens")
 
         if "/" in tenant_id or "\\" in tenant_id:
             raise ValueError("tenant_id must not contain path separators")
@@ -331,12 +365,14 @@ class MultiTenantPipeline:
         The tenant's policy engine, velocity breaker, and anomaly detector
         are used — completely isolated from other tenants.
         """
-        # Shallow-copy the request and its context so that stamping tenant_id
-        # into context.metadata does NOT mutate the caller's original object.
+        # Deep-copy the request and its context so that stamping tenant_id into
+        # context.metadata cannot mutate the caller's original object, including
+        # any nested mutable values that a shallow copy would share by reference.
+        # This is a tenant isolation boundary — deepcopy is the correct choice.
         request = copy.copy(request)
         if request.context:
             request.context = copy.copy(request.context)
-            request.context.metadata = dict(request.context.metadata)
+            request.context.metadata = copy.deepcopy(request.context.metadata or {})
             request.context.metadata["tenant_id"] = tenant_id
         else:
             request.context = DecisionContext(
@@ -350,11 +386,11 @@ class MultiTenantPipeline:
         request:   DecisionRequest,
         tenant_id: str,
     ) -> DecisionResponse:
-        # Copy request to avoid mutating caller's object (same safety as process()).
+        # Deep-copy — same isolation guarantee as the sync path above.
         request = copy.copy(request)
         if request.context:
             request.context = copy.copy(request.context)
-            request.context.metadata = dict(request.context.metadata)
+            request.context.metadata = copy.deepcopy(request.context.metadata or {})
             request.context.metadata["tenant_id"] = tenant_id
         else:
             request.context = DecisionContext(metadata={"tenant_id": tenant_id})

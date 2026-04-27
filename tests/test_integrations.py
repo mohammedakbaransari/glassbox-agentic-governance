@@ -381,6 +381,56 @@ class TestIntegrationAdapters(unittest.TestCase):
         with self.assertRaises(GovernanceBlockedError):
             governed._run('{"amount": 2000000, "destination_account": "ACC-001", "reference": "REF-1"}')
 
+    def test_langchain_adapter_async_prefers_native_async_tool(self):
+        from glassbox.integrations.adapters import LangChainAdapter
+
+        class MockTool:
+            name = "procurement_tool"
+
+            def _run(self, tool_input):
+                raise AssertionError("sync path should not be used")
+
+            async def _arun(self, tool_input):
+                return {"placed": True, "mode": "async"}
+
+        tool = MockTool()
+        adapter = LangChainAdapter(self.p, agent_id="lc_async_agent")
+        governed = adapter.wrap_tool(tool)
+        result = asyncio.run(governed._arun('{"amount": 5000, "supplier_id": "SUP-001", "category": "hardware"}'))
+        self.assertEqual(result["mode"], "async")
+
+    def test_mcp_gateway_async_moves_sync_tool_off_loop(self):
+        from glassbox.integrations.mcp_gateway import MCPGovernanceGateway
+
+        gateway = MCPGovernanceGateway(self.p, agent_id="mcp_async_agent")
+
+        def create_order(amount=0, supplier_id="SUP-001", category="hardware"):
+            time.sleep(0.02)
+            return {"ordered": True, "amount": amount}
+
+        async def go():
+            ticks = 0
+
+            async def counter():
+                nonlocal ticks
+                for _ in range(20):
+                    await asyncio.sleep(0)
+                    ticks += 1
+
+            result, _ = await asyncio.gather(
+                gateway.call_tool_async(
+                    "create_order",
+                    {"amount": 5000, "supplier_id": "SUP-001", "category": "hardware"},
+                    tool_fn=create_order,
+                ),
+                counter(),
+            )
+            return result, ticks
+
+        result, ticks = asyncio.run(go())
+        self.assertTrue(result["ordered"])
+        self.assertGreater(ticks, 0)
+
     def test_infer_decision_type_logic(self):
         from glassbox.integrations.adapters import _infer_decision_type
         self.assertEqual(_infer_decision_type("place_order"),       DecisionType.PROCUREMENT)
@@ -580,6 +630,55 @@ class TestAgenticRAGOrchestrator(unittest.TestCase):
         result = gov.check(chunks)
         self.assertEqual(result.passed_count, 1)
 
+    def test_run_rejects_async_callables(self):
+        async def async_action(ctx):
+            return {"answer": "async"}
+
+        with self.assertRaises(TypeError):
+            self.rag.run(
+                agent_id="rag_async_misuse",
+                initial_query="What is the procurement limit?",
+                action_fn=async_action,
+                action_decision_type=DecisionType.CUSTOM,
+            )
+
+    def test_run_async_supports_async_retriever_and_action(self):
+        from glassbox.rag.governance import RetrievedChunk
+
+        async def async_retriever(query):
+            return [RetrievedChunk("c1", "Policy content", "doc://kb", relevance_score=0.9)]
+
+        async def async_action(ctx):
+            return {"chunks_used": len(ctx.get("retrieved_chunks", []))}
+
+        async def async_next_query(result):
+            return result["query"] + " refined"
+
+        rag = self.rag.__class__(
+            pipeline=_pipe(),
+            query_governor=self.rag.query_governor,
+            retrieval_governor=self.rag.retrieval_governor,
+            retriever_fn=async_retriever,
+            max_iterations=2,
+        )
+
+        async def go():
+            return await rag.run_async(
+                agent_id="rag_async_agent",
+                initial_query="What is the procurement limit?",
+                action_fn=async_action,
+                action_decision_type=DecisionType.CUSTOM,
+                action_payload_fn=lambda ctx: {"description": "async rag", "query": ctx["query"]},
+                should_continue_fn=lambda result: result["iterations"] == 1,
+                next_query_fn=async_next_query,
+            )
+
+        result = asyncio.run(go())
+        self.assertEqual(result["final_status"], "executed")
+        self.assertEqual(result["action_result"]["chunks_used"], 1)
+        self.assertEqual(result["iterations"], 2)
+        self.assertTrue(result["query"].endswith("refined"))
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MULTI-TENANCY
@@ -627,7 +726,7 @@ class TestMultiTenancy(unittest.TestCase):
         def always_fail(payload, ctx):
             return PolicyEvaluation("TENANT-001", "Tenant Policy", "fail", "Always fail")
         self.registry.register_policy("org_a",
-            Policy("TENANT-001", "Tenant Policy", [DecisionType.PROCUREMENT], always_fail))
+            Policy(policy_id="TENANT-001", policy_name="Tenant Policy", decision_types=[DecisionType.PROCUREMENT], rule=always_fail))
         # org_a should fail
         resp_a = self.mtp.process(_req(), tenant_id="org_a")
         self.assertEqual(resp_a.final_status, FinalStatus.BLOCKED)
@@ -838,6 +937,27 @@ class TestAsyncAuditWrites(unittest.TestCase):
         self.assertEqual(len(p_sync.audit_logger.get_all()),
                          len(p_async.audit_logger.get_all()))
 
+    def test_async_audit_queue_persists_via_background_worker(self):
+        from glassbox.store.repository import SQLiteAuditRepository
+        audit_repo = SQLiteAuditRepository(":memory:")
+        p = GovernancePipeline(
+            echo=False,
+            audit_repo=audit_repo,
+            async_audit_writes=True,
+        )
+        for idx in range(5):
+            p.process(_req(agent=f"async_{idx}"))
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if audit_repo.count() == 5:
+                break
+            time.sleep(0.02)
+        stats = p.audit_logger.summary_stats()
+        self.assertEqual(audit_repo.count(), 5)
+        self.assertGreaterEqual(stats["async_enqueued"], 5)
+        self.assertGreaterEqual(stats["async_flush_batches"], 1)
+        self.assertTrue(stats["async_worker_alive"])
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FULL INTEGRATION — ALL COMPONENTS TOGETHER
@@ -923,6 +1043,29 @@ class TestFullStackIntegration(unittest.TestCase):
                       depends_on=["procurement"]),
         ]
         result = orch.run_graph(nodes)
+        self.assertEqual(result.status, "completed")
+        orch.shutdown()
+
+    def test_run_graph_async_does_not_deadlock_with_single_worker_pool(self):
+        from glassbox.orchestration.orchestrator import AgentOrchestrator, AgentNode
+
+        orch = AgentOrchestrator(_pipe(), max_parallel_workers=1)
+        nodes = [
+            AgentNode(
+                "g1", "g1_agent", DecisionType.PROCUREMENT,
+                lambda ctx: {"amount": 5000, "supplier_id": "SUP-001", "category": "hardware"},
+            ),
+            AgentNode(
+                "g2", "g2_agent", DecisionType.PROCUREMENT,
+                lambda ctx: {"amount": 5000, "supplier_id": "SUP-001", "category": "hardware"},
+                depends_on=["g1"],
+            ),
+        ]
+
+        async def go():
+            return await asyncio.wait_for(orch.run_graph_async(nodes), timeout=2.0)
+
+        result = asyncio.run(go())
         self.assertEqual(result.status, "completed")
         orch.shutdown()
 

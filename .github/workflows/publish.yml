@@ -1,0 +1,131 @@
+name: Publish to PyPI
+
+# Triggers on GitHub Release creation (tag must match v*.*.*)
+# or manual dispatch for test-publish to TestPyPI.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Publish target: pypi or testpypi"
+        required: true
+        default: testpypi
+        type: choice
+        options: [pypi, testpypi]
+
+jobs:
+  validate:
+    name: Pre-publish Validation
+    runs-on: ubuntu-latest
+    steps:
+      # SHA-pinned to actions/checkout v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      # SHA-pinned to actions/setup-python v5.3.0
+      - name: Set up Python 3.11
+        uses: actions/setup-python@0acd6d15e3de519e62de48b7f73a07f79e4c0a8
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies and test tools
+        run: |
+          pip install pytest pytest-cov \
+            flask>=3.0.0,<5.0 \
+            cryptography>=42.0.0,<46.0
+
+      - name: Run test suite (must pass before publishing)
+        env:
+          GLASSBOX_LOG_LEVEL: CRITICAL
+        run: |
+          python -m pytest tests/ -v --tb=short \
+            --cov=glassbox \
+            --cov-fail-under=80
+
+      - name: Verify version in pyproject.toml matches git tag
+        if: github.event_name == 'release'
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(python -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project']['version'])")
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "ERROR: git tag v$TAG does not match pyproject.toml version $PKG_VERSION"
+            exit 1
+          fi
+          echo "Version check passed: $PKG_VERSION"
+
+  build:
+    name: Build Distribution
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      # SHA-pinned to actions/checkout v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      # SHA-pinned to actions/setup-python v5.3.0
+      - name: Set up Python 3.11
+        uses: actions/setup-python@0acd6d15e3de519e62de48b7f73a07f79e4c0a8
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: pip install build>=1.0 twine>=5.0
+
+      - name: Build source distribution and wheel
+        run: python -m build
+
+      - name: Verify package with twine
+        run: twine check dist/*
+
+      # SHA-pinned to actions/upload-artifact v4.6.0
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    runs-on: ubuntu-latest
+    needs: build
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.target == 'testpypi'
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/glassbox-governance
+    permissions:
+      id-token: write  # Required for PyPI Trusted Publishing (OIDC)
+    steps:
+      # SHA-pinned to actions/download-artifact v4.1.8
+      - uses: actions/download-artifact@fa0a91b85d4f404e444306a96b0ad2d1e18d0e33
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebf8537cc8c2f2be66
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: build
+    if: |
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.target == 'pypi')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/glassbox-governance
+    permissions:
+      id-token: write  # Required for PyPI Trusted Publishing (OIDC)
+    steps:
+      # SHA-pinned to actions/download-artifact v4.1.8
+      - uses: actions/download-artifact@fa0a91b85d4f404e444306a96b0ad2d1e18d0e33
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebf8537cc8c2f2be66

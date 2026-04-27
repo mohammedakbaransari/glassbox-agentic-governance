@@ -45,6 +45,20 @@ SCHEMAS: Dict[str, List[Dict[str, Any]]] = {
         {"field": "action",      "type": str, "required": True},
         {"field": "employee_id", "type": str, "required": False},
     ],
+    DecisionType.CLINICAL.value: [
+        {"field": "drug_name", "type": str, "required": True},
+        {"any_of": ["dose_mg", "dosage_mg"], "type": (int, float), "required": True, "min": 0},
+    ],
+    DecisionType.TRADING.value: [
+        {"field": "symbol", "type": str, "required": True},
+        {"any_of": ["notional", "order_value", "quantity"], "type": (int, float), "required": True, "min": 0},
+    ],
+    DecisionType.CONTENT.value: [
+        {"field": "content", "type": str, "required": True},
+    ],
+    DecisionType.LEGAL.value: [
+        {"field": "action", "type": str, "required": True},
+    ],
     DecisionType.CUSTOM.value: [
         # CUSTOM type accepts any payload - no schema validation
         # (Decision ID and timestamp are added by the pipeline, not required from user)
@@ -70,22 +84,34 @@ class SchemaValidator:
         if not isinstance(payload, dict):
             return False, "Payload must be a dictionary."
 
+        if decision_type == DecisionType.CUSTOM:
+            return True, None
+
         if not payload:
             return False, "Payload cannot be empty."
 
         schema = SCHEMAS.get(decision_type.value, [])
 
         for rule in schema:
-            fname = rule["field"]
+            candidate_fields = rule.get("any_of") or [rule["field"]]
+            field_label = " or ".join(f"'{field_name}'" for field_name in candidate_fields)
             required = rule.get("required", False)
             expected_type = rule.get("type")
             min_val = rule.get("min")
 
-            value = payload.get(fname)
+            fname = None
+            value = None
+            for field_name in candidate_fields:
+                if payload.get(field_name) is not None:
+                    fname = field_name
+                    value = payload.get(field_name)
+                    break
 
             # Required field check
             if required and value is None:
-                return False, f"Required field '{fname}' is missing from payload."
+                if len(candidate_fields) == 1:
+                    return False, f"Required field {field_label} is missing from payload."
+                return False, f"One of fields {field_label} is required in payload."
 
             if value is not None:
                 # Type check

@@ -4,7 +4,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "glassbox-governance"
-version = "1.1.0"
+version = "1.2.0"
 description = "Runtime Decision Governance Framework for Autonomous AI Systems"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -30,15 +30,27 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-api   = ["flask>=3.0.0"]
-spark = ["pyspark>=3.3.0"]
-yaml  = ["pyyaml>=6.0"]
-dev   = ["flask>=3.0.0", "pyyaml>=6.0"]
+api    = ["flask>=3.0.0,<5.0"]
+spark  = ["pyspark>=3.3.0,<4.0"]
+yaml   = ["pyyaml>=6.0.1,<7.0"]
+crypto = ["cryptography>=42.0.0,<46.0"]
+redis  = ["redis>=5.0.0,<6.0"]
+authoring = ["anthropic>=0.25.0,<1.0"]
+dev    = [
+  "glassbox-governance[api,yaml,crypto,redis,authoring,spark]",
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+  "black>=24.4.2",
+  "isort>=5.0",
+  "pylint>=3.0",
+  "mypy>=1.0",
+  "hypothesis>=6.0",
+]
 
 [project.urls]
-Homepage   = "https://github.com/mohammedakbaransari/runtime-decision-governance"
-Repository = "https://github.com/mohammedakbaransari/runtime-decision-governance"
-Issues     = "https://github.com/mohammedakbaransari/runtime-decision-governance/issues"
+Homepage   = "https://github.com/mohammedakbaransari/glassbox-agentic-governance"
+Repository = "https://github.com/mohammedakbaransari/glassbox-agentic-governance"
+Issues     = "https://github.com/mohammedakbaransari/glassbox-agentic-governance/issues"
 
 [tool.setuptools.packages.find]
 where   = ["."]
@@ -47,3 +59,26 @@ include = ["glassbox*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+addopts = ["--tb=short"]
+
+[tool.coverage.run]
+source = ["glassbox"]
+omit = ["tests/*", "examples/*", "glassbox/benchmarks/*"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_ignores = true
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100

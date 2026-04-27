@@ -1,5 +1,5 @@
 """
-GlassBox — Decision Explanation API  (v1.0.0)
+GlassBox — Decision Explanation API  (v1.2.0)
 =============================================
 Generates plain-language explanations for every governed decision.
 
@@ -28,6 +28,7 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -89,6 +90,9 @@ class DecisionExplainer:
         "PROC-004": ("Sole-source procurement requires justification",
                      ["Provide sole_source_justification documenting why competitive bidding is not feasible"],
                      ["FAR 6.302", "UK PCR 2015 Reg.32"]),
+        "PROC-005": ("High-value procurement requires an audit trail reference",
+                 ["Provide audit_ref for procurements above the configured threshold"],
+                 ["SOX Record Retention Controls", "ISO 9001 Audit Evidence"]),
         "PROC-006": ("Sanctioned country or debarred supplier",
                      ["Do not proceed — OFAC/UN sanctions apply. Contact compliance team."],
                      ["OFAC SDN List", "UN Security Council Resolutions", "31 CFR Part 501"]),
@@ -98,6 +102,12 @@ class DecisionExplainer:
         "PRICE-002": ("New price is below floor price",
                       ["Set new_price above the configured floor_price to prevent margin erosion"],
                       ["Internal Pricing Policy", "Competition Law (margin squeeze)"]),
+        "PRICE-003": ("New price exceeds the approved ceiling price",
+                  ["Reduce new_price below ceiling_price or update the approved price ceiling"],
+                  ["Internal Pricing Policy", "Consumer Protection Act"]),
+        "PRICE-004": ("Price exceeds competitor benchmark tolerance",
+                  ["Review competitor_avg_price and obtain approval for the variance if justified"],
+                  ["Internal Pricing Governance", "Competition Law"]),
         "FIN-001":   ("Financial transfer exceeds $1M single-transaction limit",
                       ["Split into multiple authorised transactions or obtain executive_approval_ref"],
                       ["BSA 31 CFR 1010", "PSD2 Art.74", "MiFID II Art.17"]),
@@ -113,24 +123,42 @@ class DecisionExplainer:
         "FIN-005":   ("Potential transaction structuring detected",
                       ["Review transaction pattern — if legitimate, add structuring_review_ref"],
                       ["BSA 31 CFR 1010.314 (Structuring)", "AML compliance team escalation"]),
-        "ITOPS-001": ("Destructive IT action requires change window approval",
-                      ["Obtain change_window_approved=True from Change Advisory Board"],
-                      ["ITIL Change Management", "NIST SP 800-53 CM-3", "SOC 2 CC8.1"]),
-        "INV-001":   ("Inventory reorder quantity exceeds per-decision limit",
-                      ["Split into multiple reorder events or obtain inventory_override_ref"],
-                      ["Internal Supply Chain Policy"]),
-        "LOG-001":   ("High-value shipment requires approval reference",
-                      ["Obtain shipment_approval_ref from logistics management"],
-                      ["Customs Trade Partnership (CTPAT)", "EU Customs Code"]),
+        "IT-OPS-002": ("Destructive IT action requires change window approval",
+                       ["Obtain change_window_approved=True from Change Advisory Board"],
+                       ["ITIL Change Management", "NIST SP 800-53 CM-3", "SOC 2 CC8.1"]),
+        "IT-OPS-003": ("Critical service changes require explicit approval",
+                   ["Set requires_approval=True and record the approving authority for critical services"],
+                   ["NIST SP 800-53 CM-3", "ITIL Change Management"]),
+        "IT-OPS-004": ("Major IT changes require a change log reference",
+                   ["Provide change_id for major operational changes before execution"],
+                   ["SOC 2 CC8.1", "ISO 27001 A.12.1.2"]),
+        "LOG-001":   ("Fleet budget threshold reached or exceeded",
+                  ["Reduce spend or obtain fleet budget approval before proceeding"],
+                  ["Internal Budget Controls", "COSO ERM Framework"]),
         "HR-001":    ("Salary adjustment exceeds threshold requiring HR approval",
                       ["Obtain approval_ref from HR Director or People Operations"],
                       ["Internal Compensation Policy", "FLSA", "Equal Pay Act"]),
+        "HR-002":    ("Promotion requires both manager and HR approval",
+                  ["Collect manager_approval and hr_approval before finalizing the promotion"],
+                  ["Internal Promotion Policy", "Equal Employment Governance"]),
+        "HR-003":    ("Privileged access provisioning requires security clearance",
+                  ["Complete security review before granting ADMIN, SUPER, or ROOT access"],
+                  ["ISO 27001 A.9", "NIST SP 800-53 AC-2"]),
         "AI-001":    ("AI model confidence below governance threshold",
                       ["Retry with a higher-confidence model or route to human review"],
                       ["NIST AI RMF MEASURE 2.5", "EU AI Act Art. 9 Risk Management"]),
-        "ENV-001":   ("User override not permitted in production environment",
-                      ["Remove user_override=True flag — production decisions require proper policy compliance"],
-                      ["SOX IT General Controls", "ISO 27001 A.12.1.2"]),
+        "SECURITY-001": ("User override not permitted in production environment",
+                         ["Remove user_override=True flag — production decisions require proper policy compliance"],
+                         ["SOX IT General Controls", "ISO 27001 A.12.1.2"]),
+        "COMPLIANCE-001": ("Potential PII exposure detected in selected fields",
+                  ["Remove or mask sensitive fields before release or processing"],
+                  ["GDPR Art. 5", "HIPAA Privacy Rule", "CCPA 1798.100"]),
+        "COMPLIANCE-002": ("Data residency region is not approved",
+                  ["Move data to an approved region or update the approved residency policy"],
+                  ["GDPR Data Transfer Controls", "Data Residency Policy"]),
+        "COMPLIANCE-003": ("Regulatory breach notification has not been completed",
+                  ["Notify the relevant authority within the required reporting window"],
+                  ["GDPR Art. 33", "Incident Response Policy"]),
         "AGG-001":   ("Fleet aggregate budget limit approached or exceeded",
                       ["Defer procurement or obtain fleet_budget_override from Finance"],
                       ["Internal Budget Controls", "COSO ERM Framework"]),
@@ -152,6 +180,15 @@ class DecisionExplainer:
         "GEN-002":   ("Automated decision affecting EU individual lacks required disclosure",
                       ["Set human_review_available=True or gdpr_art22_disclosed=True"],
                       ["GDPR Art. 22 Automated Decision-Making", "EU AI Act Art. 13"]),
+        "LEGAL-001": ("Contract value exceeds AI authority limit",
+                      ["Provide authority_ref or approval_ref from an authorised legal approver"],
+                      ["Contract Approval Policy", "SOX Delegation of Authority Controls"]),
+        "LEGAL-002": ("Legal hold applies to the requested action",
+                      ["Preserve records and obtain legal_hold_release_ref before proceeding"],
+                      ["FRCP Rule 37(e)", "Legal Hold Policy", "eDiscovery Preservation Duty"]),
+        "RISK-001":  ("Aggregated component risk exceeds the configured threshold",
+                  ["Reduce the contributing component_risks or raise risk_threshold with approval"],
+                  ["NIST AI RMF MANAGE", "Enterprise Risk Management Policy"]),
     }
 
     # Maps risk factors to plain-language descriptions
@@ -291,11 +328,24 @@ class DecisionExplainer:
             recommended_actions=recommended_acts,
         )
 
+    # Regex matching policy IDs like PROC-001, FIN-002, IT-OPS-003, SECURITY-001, etc.
+    _POLICY_ID_RE = re.compile(r'^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)[:\s\]]')
+
     @staticmethod
     def _extract_policy_id(message: str) -> Optional[str]:
-        """Extract policy ID from a violation/warning message like '[PROC-001] ...'."""
-        if message and message.startswith("[") and "]" in message:
+        """Extract policy ID from formats: '[PROC-001] ...' or 'PROC-001: ...'."""
+        if not message:
+            return None
+        # Bracket format: "[PROC-001] ..."
+        if message.startswith("[") and "]" in message:
             return message[1:message.index("]")]
+        # Colon format: "PROC-001: ..."
+        colon = message.find(": ")
+        if colon > 0:
+            candidate = message[:colon]
+            # Validate it looks like a policy ID (uppercase, digits, hyphens)
+            if re.match(r'^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$', candidate):
+                return candidate
         return None
 
     def explain_dict(self, response: "DecisionResponse", level: str = "STANDARD") -> Dict[str, Any]:

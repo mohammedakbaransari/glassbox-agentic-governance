@@ -228,7 +228,7 @@ def scenario_replay():
                 f"Amount ${amount:,.0f} exceeds new $200K limit without contract.")
         return PolicyEvaluation("PROC-001-STRICT","Strict Limit","pass","OK.")
     eng = PolicyEngine(); eng.disable("PROC-001")
-    eng.register(Policy("PROC-001-STRICT","Strict Limit",[DecisionType.PROCUREMENT],_strict))
+    eng.register(Policy(policy_id="PROC-001-STRICT", policy_name="Strict Limit", decision_types=[DecisionType.PROCUREMENT], rule=_strict))
     rep_pipeline = GovernancePipeline(policy_engine=eng, echo=False)
     replay = DecisionReplay(rep_pipeline)
 
@@ -322,8 +322,8 @@ def scenario_fleet_budget():
         return PolicyEvaluation("AGG-001","Fleet Budget Control","pass",
             f"Fleet budget at {util:.0f}%.")
 
-    p.policy_engine.register(Policy("AGG-001","Fleet Procurement Budget",
-        [DecisionType.PROCUREMENT], _agg_budget,
+    p.policy_engine.register(Policy(policy_id="AGG-001", policy_name="Fleet Procurement Budget",
+        decision_types=[DecisionType.PROCUREMENT], rule=_agg_budget,
         description=f"Cross-agent fleet budget: ${FLEET_BUDGET:,.0f}/day"))
 
     print(f"  Fleet daily budget: ${FLEET_BUDGET:,.0f} across all regional agents\n")

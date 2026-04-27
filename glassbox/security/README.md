@@ -47,7 +47,7 @@ if not report.is_safe:
 else:
     # Safe to pass to pipeline
     pipeline = GovernancePipeline()
-    result = pipeline.execute(payload)
+    result = pipeline.process(payload)
 ```
 
 ---
@@ -151,7 +151,7 @@ def make_decision():
         }, 400
     
     # 2. Safe; pass to governance
-    result = pipeline.execute(payload)
+    result = pipeline.process(payload)
     return {"disposition": result.disposition}, 200
 ```
 
@@ -338,12 +338,12 @@ for chunk in chunks:
 payload = {"user": "admin'; DROP TABLE;--"}
 
 # Forgot to call validate()
-result = pipeline.execute(payload)  # SQL injection NOT caught
+result = pipeline.process(payload)  # SQL injection NOT caught
 
 # Correct:
 report = sanitizer.validate(payload)
 if report.is_safe:
-    result = pipeline.execute(payload)  # Now safe
+    result = pipeline.process(payload)  # Now safe
 ```
 
 **Solution:**
@@ -360,7 +360,7 @@ def safe_execute(payload):
         raise SecurityException(f"Payload validation failed: {report.violations}")
     
     pipeline = GovernancePipeline()
-    return pipeline.execute(payload)
+    return pipeline.process(payload)
 ```
 
 ---

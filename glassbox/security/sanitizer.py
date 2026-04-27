@@ -52,6 +52,15 @@ _SQL_PATTERNS: List[re.Pattern] = [
     re.compile(r"(?i)\bsleep\s*\(|benchmark\s*\(|waitfor\b"),
     re.compile(r"(?i)\bchar\s*\(\s*\d+"),                          # CHAR(65)
     re.compile(r"(?i)\b(xp_cmdshell|openrowset|bulk\s+insert)\b"),
+    # Extended patterns
+    re.compile(r"(?i)\binto\s+outfile\b"),                         # MySQL file write
+    re.compile(r"(?i)\bload_file\s*\("),                           # MySQL file read
+    re.compile(r"0x[0-9a-fA-F]{4,}"),                             # Hex-encoded payloads
+    re.compile(r"(?i)\bwaitfor\s+delay\b"),                        # MSSQL time-based blind
+    re.compile(r"(?i)\bpg_sleep\s*\("),                            # PostgreSQL time-based
+    re.compile(r"(?i)/\*[^*]*\*+(?:[^/*][^*]*\*+)*/"),           # Block comment bypass
+    re.compile(r"(?i)\bcast\s*\(.*\bas\b"),                        # CAST type confusion
+    re.compile(r"(?i)\bconvert\s*\(.*,\s*(int|varchar|char)\b"),   # CONVERT coercion
 ]
 
 # ── Script / template injection patterns ────────────────────────────────────
@@ -70,9 +79,33 @@ _SCRIPT_PATTERNS: List[re.Pattern] = [
 # All entries MUST be lowercase; case-insensitive matching is applied in
 # _scan_string via s.lower(). Adding uppercase variants is NOT needed.
 _BLOCKED_KEYWORDS: List[str] = [
-    "passwd", "/etc/shadow", "cmd.exe", "powershell",
-    "base64_decode", "/etc/hosts", "/proc/self",
-    "net user", "whoami", "nmap",
+    # File system & credential targets
+    "passwd", "/etc/shadow", "/etc/hosts", "/proc/self",
+    # Windows shell execution
+    "cmd.exe", "powershell", "net user", "net localgroup",
+    # Recon tools
+    "whoami", "nmap", "netstat", "ifconfig", "ipconfig",
+    # Encoding-based bypass helpers
+    "base64_decode", "base64_encode", "fromcharcode",
+    # Python dangerous builtins — not covered by regex (no parens required for presence check)
+    "__import__", "__builtins__", "__class__", "__subclasses__",
+    # Serialisation-based code execution
+    "pickle.loads", "marshal.loads", "yaml.load", "jsonpickle",
+    # Common reverse-shell tokens
+    "/dev/tcp", "/dev/udp", "bash -i", "sh -i", "nc -e",
+]
+
+# ── Encoding bypass detection patterns ────────────────────────────────────────
+# Detects payloads that encode dangerous content to slip past keyword filters.
+_ENCODING_PATTERNS: List[re.Pattern] = [
+    # Pure base64 blobs longer than 40 chars (likely encoded payload, not a GUID)
+    re.compile(r"(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?"),
+    # Percent-encoded hex sequences (URL encoding of non-printable / script chars)
+    re.compile(r"(?:%[0-9a-fA-F]{2}){6,}"),
+    # Unicode escape sequences: eval → "eval"
+    re.compile(r"(?:\\u[0-9a-fA-F]{4}){4,}"),
+    # HTML entity encoding of angle brackets (XSS bypass): &#60; &#62;
+    re.compile(r"(?:&#x?[0-9a-fA-F]{2,4};){3,}"),
 ]
 
 
@@ -286,13 +319,37 @@ class PayloadSanitizer:
                 break  # one finding per string per category
 
         # Unicode normalisation check (homoglyph attack detection)
+        # Apply NFKD (decomposed) normalization to catch look-alike confusables
+        # such as Cyrillic 'с' (с) masquerading as Latin 'c'.
+        nfkd = unicodedata.normalize("NFKD", s)
         nfkc = unicodedata.normalize("NFKC", s)
-        if nfkc != s and len(s) < 200:  # only check short strings (identifiers)
+        if (nfkc != s or nfkd != s) and len(s) < 200:  # only check short strings (identifiers)
             findings.append(SecurityFinding(
-                severity="low", category="unicode_anomaly",
+                severity="medium", category="unicode_anomaly",
                 field_path=path,
                 detail="String contains Unicode characters that normalise differently (possible homoglyph)"
             ))
+            # Re-check blocked keywords on the NFKC-normalised form to catch homoglyph bypasses.
+            nfkc_lower = nfkc.lower()
+            for kw in _BLOCKED_KEYWORDS:
+                if kw in nfkc_lower:
+                    findings.append(SecurityFinding(
+                        severity="critical", category="blocked_keyword_homoglyph",
+                        field_path=path,
+                        detail=f"Blocked keyword '{kw}' detected after Unicode normalisation"
+                    ))
+                    break
+
+        # Encoding bypass detection — flag suspicious encoded blobs
+        # (long base64 strings, percent-encoded sequences, unicode escapes)
+        for enc_pattern in _ENCODING_PATTERNS:
+            if enc_pattern.search(s):
+                findings.append(SecurityFinding(
+                    severity="medium", category="encoding_bypass",
+                    field_path=path,
+                    detail=f"Possible encoding bypass detected: {enc_pattern.pattern[:60]}"
+                ))
+                break  # one finding per field per category
 
     def _sanitise(self, value: Any) -> Any:
         """Return a clean copy of the payload with strings truncated."""

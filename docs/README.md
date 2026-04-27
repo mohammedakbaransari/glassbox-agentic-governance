@@ -271,7 +271,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 - **Documentation Issues** → File a GitHub issue
 - **Questions?** → Check [USER/troubleshooting.md](USER/troubleshooting.md)
 - **Feedback** → Open a discussion on GitHub
-- **Security Issues** → Email security@glassbox.io (do not open public issue)
+- **Security Issues** → Email `security@glassbox.dev` (do not open public issue)
 
 ---
 

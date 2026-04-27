@@ -66,8 +66,27 @@ try:
 except ImportError:
     pass
 
-# Note: EnhancedGovernancePipeline example moved to ARCHIVE/RELEASES/pipeline_v1_1_reference.py
-# Can be imported from there if needed
+# v1.1.0+: Enterprise components
+from glassbox.governance.enterprise_pipeline import EnterpriseGovernancePipeline
+from glassbox.governance.advanced_audit import TamperEvidentAuditLogger
+from glassbox.governance.access_control import AccessControl
+from glassbox.governance.request_context import RequestContext
+from glassbox.governance.policy_parameters import PolicyParameterStore
 
-__version__ = "1.1.0"  # Derived from git tags
+__all__.extend([
+    "EnterpriseGovernancePipeline",
+    "TamperEvidentAuditLogger",
+    "AccessControl",
+    "RequestContext",
+    "PolicyParameterStore",
+])
+
+# CryptoManager requires the 'cryptography' package (optional)
+try:
+    from glassbox.governance.encryption import CryptoManager, SecretManager, EncryptedField
+    __all__.extend(["CryptoManager", "SecretManager", "EncryptedField"])
+except (ImportError, RuntimeError):
+    pass
+
+__version__ = "1.2.0"  # Derived from git tags
 __author__ = "Mohammed Akbar Ansari"

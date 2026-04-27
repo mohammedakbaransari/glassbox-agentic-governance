@@ -33,10 +33,17 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import re
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+# Maximum bytes of a tool name/description that pattern-matching will inspect.
+# Truncating before regex prevents catastrophic backtracking on adversarial input
+# while still capturing all realistic injection content.
+_MAX_SCAN_CHARS = 4_000
 
 from glassbox.governance.models import (
     DecisionContext, DecisionRequest, DecisionType, FinalStatus,
@@ -134,6 +141,103 @@ class MCPToolScanner:
     def __init__(self, trusted_tool_names: Optional[List[str]] = None):
         self._trusted = set(trusted_tool_names or _TYPOSQUATTING_TRUSTED)
 
+    @staticmethod
+    def _append_findings(
+        findings: List[MCPScanFinding],
+        seen: set,
+        *,
+        text: str,
+        location: str,
+        poisoning_only: bool = False,
+    ) -> None:
+        # Truncate before regex to prevent catastrophic backtracking on
+        # adversarially crafted tool descriptions (ReDoS hardening).
+        safe_text = text[:_MAX_SCAN_CHARS] if len(text) > _MAX_SCAN_CHARS else text
+        for pattern, category, severity in _TOOL_POISONING_PATTERNS:
+            if pattern.search(safe_text):
+                key = (severity, category, location)
+                if key not in seen:
+                    findings.append(MCPScanFinding(
+                        severity=severity,
+                        category=category,
+                        description=f"Pattern detected in tool spec: {pattern.pattern[:60]}",
+                        location=location,
+                    ))
+                    seen.add(key)
+
+        if poisoning_only:
+            return
+
+        for pattern, category in _SENSITIVE_TOOL_PATTERNS:
+            if pattern.search(safe_text):
+                key = ("medium", category, location)
+                if key not in seen:
+                    findings.append(MCPScanFinding(
+                        severity="medium",
+                        category=category,
+                        description=f"Sensitive operation indicated: {category}",
+                        location=location,
+                    ))
+                    seen.add(key)
+
+    @classmethod
+    def _scan_schema_node(
+        cls,
+        node: Any,
+        location: str,
+        findings: List[MCPScanFinding],
+        seen: set,
+    ) -> None:
+        if isinstance(node, dict):
+            for field in ("description", "title", "examples", "default", "const"):
+                value = node.get(field)
+                if value is None:
+                    continue
+                if isinstance(value, list):
+                    for index, item in enumerate(value):
+                        if isinstance(item, str):
+                            cls._append_findings(
+                                findings,
+                                seen,
+                                text=item,
+                                location=f"{location}.{field}[{index}]",
+                            )
+                elif isinstance(value, str):
+                    cls._append_findings(
+                        findings,
+                        seen,
+                        text=value,
+                        location=f"{location}.{field}",
+                    )
+
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                for key, value in properties.items():
+                    cls._append_findings(
+                        findings,
+                        seen,
+                        text=str(key),
+                        location=f"{location}.properties.{key}",
+                        poisoning_only=True,
+                    )
+                    cls._scan_schema_node(value, f"{location}.properties.{key}", findings, seen)
+
+            items = node.get("items")
+            if items is not None:
+                cls._scan_schema_node(items, f"{location}.items", findings, seen)
+
+            for combiner in ("allOf", "anyOf", "oneOf"):
+                value = node.get(combiner)
+                if isinstance(value, list):
+                    for index, item in enumerate(value):
+                        cls._scan_schema_node(item, f"{location}.{combiner}[{index}]", findings, seen)
+
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                cls._scan_schema_node(item, f"{location}[{index}]", findings, seen)
+        elif isinstance(node, str):
+            cls._append_findings(findings, seen, text=node, location=location)
+
     def scan_tool_definition(self, tool_spec: Dict[str, Any]) -> MCPScanReport:
         """
         Scan a single tool definition for governance risks.
@@ -149,37 +253,26 @@ class MCPToolScanner:
         description = str(tool_spec.get("description", ""))
         params      = tool_spec.get("inputSchema", tool_spec.get("parameters", {}))
         findings    = []
+        seen        = set()
 
         # 1. Scan description for tool poisoning
-        for pattern, category, severity in _TOOL_POISONING_PATTERNS:
-            if pattern.search(description):
-                findings.append(MCPScanFinding(
-                    severity=severity, category=category,
-                    description=f"Pattern detected in tool description: {pattern.pattern[:60]}",
-                    location="description"
-                ))
+        self._append_findings(findings, seen, text=description, location="description")
 
-        # 2. Scan description for sensitive operation indicators
-        for pattern, category in _SENSITIVE_TOOL_PATTERNS:
-            if pattern.search(description):
-                findings.append(MCPScanFinding(
-                    severity="medium", category=category,
-                    description=f"Sensitive operation indicated: {category}",
-                    location="description"
-                ))
-
-        # 3. Typosquatting detection
+        # 2. Typosquatting detection
         name_lower = name.lower().replace("_","").replace("-","")
         for trusted in self._trusted:
             trusted_norm = trusted.lower().replace("_","").replace("-","")
             if name_lower != trusted_norm and self._levenshtein(name_lower, trusted_norm) <= 2:
-                findings.append(MCPScanFinding(
-                    severity="high", category="Typosquatting",
-                    description=f"Tool name '{name}' is similar to trusted tool '{trusted}'",
-                    location="name"
-                ))
+                key = ("high", "Typosquatting", f"name:{trusted}")
+                if key not in seen:
+                    findings.append(MCPScanFinding(
+                        severity="high", category="Typosquatting",
+                        description=f"Tool name '{name}' is similar to trusted tool '{trusted}'",
+                        location="name"
+                    ))
+                    seen.add(key)
 
-        # 4. Scan tool name for hidden instructions
+        # 3. Scan tool name for hidden instructions
         if len(name) > 100:
             findings.append(MCPScanFinding(
                 severity="medium", category="Anomalous tool name",
@@ -187,16 +280,8 @@ class MCPToolScanner:
                 location="name"
             ))
 
-        # 5. Check parameters for hidden instruction fields
-        if isinstance(params, dict):
-            for key in params.get("properties", {}).keys():
-                for pattern, category, severity in _TOOL_POISONING_PATTERNS:
-                    if pattern.search(key):
-                        findings.append(MCPScanFinding(
-                            severity=severity, category=f"Suspicious parameter: {key}",
-                            description=f"Parameter name contains injection pattern",
-                            location=f"parameters.{key}"
-                        ))
+        # 4. Scan parameter schema recursively for suspicious field names and text
+        self._scan_schema_node(params, "parameters", findings, seen)
 
         # Determine overall risk level
         if any(f.severity == "critical" for f in findings):
@@ -369,10 +454,9 @@ class MCPGovernanceGateway:
             raise GovernanceBlockedError(
                 tool_name, response.policy_violations, response.decision_id)
         if tool_fn is not None:
-            import asyncio
-            if asyncio.iscoroutinefunction(tool_fn):
+            if inspect.iscoroutinefunction(tool_fn):
                 return await tool_fn(**arguments)
-            return tool_fn(**arguments)
+            return await asyncio.to_thread(tool_fn, **arguments)
         return True
 
     def approve_tool_registry(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

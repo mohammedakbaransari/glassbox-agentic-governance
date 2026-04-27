@@ -18,6 +18,7 @@ import json
 import logging
 import logging.handlers
 import os
+import sys
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -47,6 +48,37 @@ class JsonFormatter(logging.Formatter):
                 if not k.startswith("_"):
                     log_obj[k] = v
         return json.dumps(log_obj, default=str)
+
+
+class ResilientStderrHandler(logging.StreamHandler):
+    """Stream handler that follows the current stderr stream safely.
+
+    Pytest swaps capture streams between test phases. If a handler keeps a stale
+    reference to a prior stream, later writes can fail with "I/O operation on
+    closed file". This handler rebinds to the current stderr stream before each
+    emit and drops only the specific closed-stream failure.
+    """
+
+    def __init__(self):
+        super().__init__(stream=sys.stderr)
+
+    def _current_stderr(self):
+        stream = getattr(sys, "stderr", None) or getattr(sys, "__stderr__", None)
+        return stream
+
+    def emit(self, record: logging.LogRecord) -> None:
+        current_stream = self._current_stderr()
+        if current_stream is None:
+            return
+
+        if self.stream is not current_stream or getattr(self.stream, "closed", False):
+            self.stream = current_stream
+
+        try:
+            super().emit(record)
+        except ValueError as exc:
+            if "closed file" not in str(exc).lower():
+                raise
 
 
 # ── GlassBox Logger ───────────────────────────────────────────────────────────
@@ -103,11 +135,18 @@ class GlassBoxLogger:
     def _setup_root(self):
         root = logging.getLogger("glassbox")
         root.setLevel(self.level)
-        root.handlers.clear()
+
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+
         root.propagate = False
 
         # Console handler
-        ch = logging.StreamHandler()
+        ch = ResilientStderrHandler()
         ch.setFormatter(self._make_formatter())
         ch.setLevel(self.level)
         root.addHandler(ch)
@@ -215,3 +254,75 @@ def get_logger(component: str) -> logging.Logger:
         level = os.environ.get("GLASSBOX_LOG_LEVEL", "INFO")
         _default_manager = GlassBoxLogger(level=level)
     return _default_manager.get_logger(component)
+
+
+# ── ContextualLogger — request-scoped structured log context ─────────────────
+
+_context_local = threading.local()
+
+
+class _ContextBinder:
+    """Context manager returned by ContextualLogger.bind()."""
+
+    def __init__(self, fields: dict):
+        self._fields = fields
+        self._prev: dict = {}
+
+    def __enter__(self) -> "_ContextBinder":
+        self._prev = getattr(_context_local, "fields", {}).copy()
+        _context_local.fields = {**self._prev, **self._fields}
+        return self
+
+    def __exit__(self, *_) -> None:
+        _context_local.fields = self._prev
+
+
+class ContextualLogger:
+    """
+    Thin wrapper around a stdlib Logger that automatically injects thread-local
+    context fields into every log record.
+
+    This enables correlation-ID propagation across policy/risk/anomaly log lines
+    without requiring every call site to pass decision_id explicitly.
+
+    Usage::
+
+        log = ContextualLogger(get_logger("pipeline"))
+
+        with log.bind(decision_id="abc", agent_id="agent_1"):
+            log.info("Starting pipeline")     # includes decision_id, agent_id
+            evaluate_policy(...)              # any get_logger("policy").info() call here
+            ...                               # does NOT inherit context — only this logger does
+        # After the with block, decision_id and agent_id are removed.
+    """
+
+    def __init__(self, logger: logging.Logger):
+        self._log = logger
+
+    def bind(self, **fields) -> _ContextBinder:
+        """Return a context manager that adds *fields* to all log records in scope."""
+        return _ContextBinder(fields)
+
+    def _make_extra(self, kwargs: dict) -> dict:
+        ctx = getattr(_context_local, "fields", {})
+        return {"structured": {**ctx, **kwargs}}
+
+    def debug(self, msg: str, **kwargs) -> None:
+        self._log.debug(msg, extra=self._make_extra(kwargs))
+
+    def info(self, msg: str, **kwargs) -> None:
+        self._log.info(msg, extra=self._make_extra(kwargs))
+
+    def warning(self, msg: str, **kwargs) -> None:
+        self._log.warning(msg, extra=self._make_extra(kwargs))
+
+    def error(self, msg: str, **kwargs) -> None:
+        self._log.error(msg, extra=self._make_extra(kwargs))
+
+    def exception(self, msg: str, **kwargs) -> None:
+        self._log.exception(msg, extra=self._make_extra(kwargs))
+
+
+def get_contextual_logger(component: str) -> ContextualLogger:
+    """Get a ContextualLogger for the given component."""
+    return ContextualLogger(get_logger(component))

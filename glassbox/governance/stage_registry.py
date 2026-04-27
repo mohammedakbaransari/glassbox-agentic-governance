@@ -199,6 +199,11 @@ class StageRegistry:
 
         # Execution stats
         self._execution_stats: Dict[str, int] = {}
+        # Per-stage rolling latency samples (last _LATENCY_WINDOW observations).
+        # Kept as a plain list; percentile calculation is O(n log n) but n is
+        # bounded so the cost is negligible compared to actual stage execution.
+        self._stage_latencies: Dict[str, list] = {}
+        self._LATENCY_WINDOW = 1000  # keep last N samples per stage
         self._stats_lock = threading.Lock()
 
         # Load config from file if provided
@@ -331,10 +336,63 @@ class StageRegistry:
         return plan
 
     def record_execution(self, stage_name: str, result: StageExecutionResult) -> None:
-        """Record stage execution for metrics."""
+        """Record stage execution outcome and latency for metrics."""
         with self._stats_lock:
-            key = f"{stage_name}:{'passed' if result.passed else 'blocked'}"
+            outcome = "skipped" if result.skipped else ("passed" if result.passed else "blocked")
+            key = f"{stage_name}:{outcome}"
             self._execution_stats[key] = self._execution_stats.get(key, 0) + 1
+
+            # O2: Track per-stage latency samples for P50/P99 breakdown.
+            if result.latency_ms > 0:
+                samples = self._stage_latencies.setdefault(stage_name, [])
+                samples.append(result.latency_ms)
+                if len(samples) > self._LATENCY_WINDOW:
+                    # Drop the oldest half to avoid O(n) list shifts every call;
+                    # this keeps memory bounded while preserving recent data.
+                    self._stage_latencies[stage_name] = samples[self._LATENCY_WINDOW // 2:]
+
+    def get_stage_latency_stats(self) -> Dict[str, Dict[str, float]]:
+        """
+        Return P50 and P99 latency (ms) for every stage that has been executed.
+
+        Returns:
+            {stage_name: {"p50_ms": float, "p99_ms": float, "samples": int}}
+        """
+        import math as _math
+
+        def _percentile(sorted_samples: list, pct: float) -> float:
+            if not sorted_samples:
+                return 0.0
+            idx = (len(sorted_samples) - 1) * pct / 100.0
+            lo, frac = int(idx), idx % 1
+            hi = min(lo + 1, len(sorted_samples) - 1)
+            return sorted_samples[lo] * (1 - frac) + sorted_samples[hi] * frac
+
+        result: Dict[str, Dict[str, float]] = {}
+        with self._stats_lock:
+            for stage_name, samples in self._stage_latencies.items():
+                if not samples:
+                    continue
+                sorted_s = sorted(samples)
+                result[stage_name] = {
+                    "p50_ms":  round(_percentile(sorted_s, 50), 3),
+                    "p99_ms":  round(_percentile(sorted_s, 99), 3),
+                    "samples": len(sorted_s),
+                }
+        return result
+
+    def get_runtime_plan(
+        self,
+        agent_id: str,
+        request_metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Tuple[PipelineStageConfig, Optional[PipelineStage]]]:
+        """Return enabled stages with implementations in execution order."""
+        configs = self.get_execution_plan(agent_id, request_metadata=request_metadata)
+        with self._stages_lock:
+            return [
+                (config, self._stages.get(config.name, (config, None))[1])
+                for config in configs
+            ]
 
     def stats(self) -> Dict[str, Any]:
         """Return registry statistics."""

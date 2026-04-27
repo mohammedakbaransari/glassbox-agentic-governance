@@ -4,9 +4,9 @@ The `compliance` package stores all compliance obligations as structured databas
 
 | Module | Role |
 |---|---|
-| `catalogue.py` | `ComplianceCatalogue` — 70 controls, 17 frameworks, evidence collection |
+| `catalogue.py` | `ComplianceCatalogue` — 97 controls, 24 frameworks, evidence collection |
 
-**Frameworks:** NIST AI RMF · EU AI Act · NIST CSF 2.0 · OWASP Agentic Top 10 · NIST 800-207 ZTA · ASD Essential Eight · IEC 62443 · NERC CIP · SOCI Act · Purdue Model 2.0 · Cyber Security Act 2024
+**Frameworks:** NIST AI RMF · EU AI Act · NIST CSF 2.0 · OWASP Agentic Top 10 · NIST 800-207 ZTA · ISO 27001:2022 · ISO/IEC 42001:2023 · SOC 2 Type II · HIPAA · Colorado AI Act · PCI DSS v4.0 · GDPR · DORA · APRA CPS 234 · FFIEC CAT · FDA 21 CFR Part 11 · MAS TRM · NIST SP 800-53 Rev.5 · ASD Essential Eight · IEC 62443 · NERC CIP · SOCI Act · Purdue Model 2.0 · Cyber Security Act 2024
 
 ---
 
@@ -74,15 +74,15 @@ gaps = cat.gap_analysis("EU AI Act")
 # Returns empty list even though controls are missing
 ```
 
-**Cause:** Gap analysis only returns controls with implementation_status != "implemented"
+**Cause:** Gap analysis only returns controls with `implementation_status == 'gap'`. Controls marked `partial` are not included.
 
 **Solution:**
 ```python
-# View all controls for framework, not just gaps
-all_controls = cat.get_framework_controls("EU AI Act")
-print(f"Implemented: {sum(1 for c in all_controls if c['status'] == 'implemented')}")
-print(f"Partial: {sum(1 for c in all_controls if c['status'] == 'partial')}")
-print(f"Missing: {sum(1 for c in all_controls if c['status'] == 'missing')}")
+# View all controls for a framework (not just gaps)
+all_controls = cat.list_controls(framework="EU AI Act")
+print(f"Implemented: {sum(1 for c in all_controls if c['implementation_status'] == 'implemented')}")
+print(f"Partial:     {sum(1 for c in all_controls if c['implementation_status'] == 'partial')}")
+print(f"Gap:         {sum(1 for c in all_controls if c['implementation_status'] == 'gap')}")
 ```
 
 ### Error: "Evidence not auto-collected"

@@ -1,4 +1,4 @@
-# GlassBox Framework v1.1.0 — Enterprise Features Reference Guide
+# GlassBox Framework v1.2.0 — Enterprise Features Reference Guide
 
 **Author:** Mohammed Akbar Ansari  
 **Status:** Production Ready
@@ -22,16 +22,21 @@
 
 ## Overview
 
-GlassBox v1.1.0 introduces **six new enterprise-grade modules** designed for large-scale, regulated deployments:
+GlassBox v1.2.0 features **enterprise-grade modules** for large-scale, regulated deployments plus **distributed governance components** for multi-replica correctness:
 
 | Module | Purpose | Key Features |
 |--------|---------|--------------|
 | **Database Abstraction** | Pluggable multi-DB support | SQLite, PostgreSQL, SQL Server + connection pooling |
 | **Access Control** | Enterprise RBAC/ABAC | Role hierarchy, permission scoping, impersonation audit |
 | **Encryption** | Field-level cryptography | AES-256-GCM, key derivation, HMAC verification |
-| **Advanced Audit** | Immutable audit trails | Hash chaining, tamper detection, compliance export |
+| **Advanced Audit** | Immutable audit trails | HMAC/SHA-256 hash chaining, tamper detection, compliance export |
 | **Request Context** | Multi-tenant isolation | Thread-local context, distributed tracing, config mgmt |
 | **API Gateway** | Middleware pipeline | Auth, rate-limiting, validation, CORS, logging |
+| **DistributedFleetBudgetPolicy** | Multi-replica fleet budget | Redis `INCRBYFLOAT` — atomic cumulative spend across replicas |
+| **DistributedAnomalyDetector** | Shared anomaly baselines | Redis Lua Welford — O(1) shared `mean`/`M2` across replicas |
+| **PolicyParameterStore** | Runtime threshold updates | Update sanctions lists, amount limits — no restart required |
+| **StageRegistry + P50/P99** | Pipeline observability | Per-stage latency percentiles in `/health` endpoint |
+| **WriteAheadLog** | Crash-safe finalization | Two-phase side-effect tracking with startup recovery |
 
 **Design Philosophy:**
 - **Zero configuration for development** (SQLite in-memory), **production-ready for enterprise** (PostgreSQL + connection pools)
@@ -1227,7 +1232,7 @@ version: '3.8'
 
 services:
   glassbox-api:
-    image: glassbox:v1.1.0
+    image: glassbox:v1.2.0
     environment:
       GLASSBOX_DB_BACKEND: postgresql
       GLASSBOX_DB_HOST: postgres
@@ -1293,18 +1298,122 @@ export GLASSBOX_CONFIG_PATH=/etc/glassbox/config.yaml
 
 ---
 
+## Distributed Governance Components (v1.2.0)
+
+### DistributedFleetBudgetPolicy
+
+Replaces the in-process `FleetBudgetPolicy` with a Redis-backed version for multi-replica correctness.
+
+```python
+import redis
+from glassbox.governance.velocity_breaker import DistributedFleetBudgetPolicy
+
+redis_client = redis.Redis(host="redis", port=6379, decode_responses=True)
+
+fleet = DistributedFleetBudgetPolicy(
+    budget=1_000_000.0,    # daily fleet-wide spend cap
+    period_hours=24,
+    redis_client=redis_client,
+    policy_id="FLEET-001",
+    warn_threshold=0.8,    # warn at 80% utilisation
+)
+
+# Register as a policy
+pipeline.policy_engine.register(fleet.as_policy())
+
+# After decision executes, record spend (call from EventBus handler)
+fleet.record_execution(amount=50_000.0)
+```
+
+Key properties:
+- `_rule()` **previews** projected spend atomically before committing
+- `record_execution()` commits spend via Redis `INCRBYFLOAT` after execution
+- Falls back to in-memory counter if Redis is unavailable
+- Key pattern: `{namespace}:fleet_budget:{YYYY-MM-DD}`
+
+### DistributedAnomalyDetector
+
+Extends `AnomalyDetectorOptimized` to share Welford running statistics across replicas via Redis.
+
+```python
+from glassbox.governance.anomaly_detector import DistributedAnomalyDetector, RedisAnomalyStore
+
+store = RedisAnomalyStore(
+    redis_client=redis_client,
+    namespace="prod",       # Key prefix for isolation
+    window_size=100,        # Welford window
+)
+detector = DistributedAnomalyDetector(store=store, z_threshold=3.0)
+pipeline  = GovernancePipeline(anomaly_detector=detector)
+```
+
+Key properties:
+- Atomic Lua script maintains `{count, mean, M2}` per `{namespace}:{agent_id}:{type}:{field}` Redis Hash
+- Exponential forgetting when `count >= window_size` keeps memory O(1)
+- Categorical tracking remains in-process (per replica)
+- Falls back to parent in-process stats on Redis failure (`_store_ok = False`)
+
+### PolicyParameterStore — Runtime Updates
+
+```python
+from glassbox.governance.policy_parameters import _param_store
+
+# Update PROC-006 sanctions list at runtime — takes effect immediately
+_param_store.set(
+    "PROC-006",
+    "sanctioned_countries",
+    ["IR", "KP", "SY", "CU", "RU", "BY", "XX"],   # new list
+    updated_by="compliance_officer",
+)
+
+# Update debarred suppliers
+_param_store.set(
+    "PROC-006",
+    "debarred_suppliers",
+    ["DEBARRED-001", "BLACKLISTED-CORP", "NEW-BAD-VENDOR"],
+    updated_by="procurement_admin",
+)
+```
+
+Changes take effect on the **next policy evaluation** — no restart, no redeployment.
+
+### Write-Ahead Log — Crash Recovery
+
+```python
+# Enable WAL recovery on startup
+pipeline = GovernancePipeline(recover_wal_on_startup=True)
+
+# WAL replays any PENDING or IN_PROGRESS entries from the last run
+# WorkflowEngine.create_from_decision() is idempotent — replay-safe
+```
+
+WAL state transitions:
+```
+begin_transaction() → PENDING
+mark_side_effect()  → IN_PROGRESS
+commit()            → COMMITTED
+rollback()          → ROLLED_BACK
+```
+
+---
+
 ## Summary
 
-GlassBox v1.1.0 provides **production-ready enterprise features**:
+GlassBox v1.2.0 provides **production-ready enterprise features**:
 
 | Feature | Module | Benefit |
 |---------|--------|---------|
 | Multi-DB support | `database_abstraction` | Scale from SQLite to PostgreSQL |
 | RBAC/ABAC | `access_control` | Fine-grained permission control |
 | AES-256-GCM | `encryption` | Industry-standard data protection |
-| Immutable audit trail | `advanced_audit` | Tamper-proof compliance records |
+| Immutable audit trail | `advanced_audit` | HMAC/SHA-256 tamper-proof records |
 | Request isolation | `request_context` | Secure multi-tenant operation |
 | Middleware pipeline | `api_gateway` | Composable security layers |
+| Redis fleet budget | `velocity_breaker` | Multi-replica spend correctness |
+| Redis anomaly baselines | `anomaly_detector` | Shared Welford stats across replicas |
+| Runtime policy params | `policy_parameters` | Live threshold updates, no restart |
+| Stage latency tracking | `stage_registry` | P50/P99 per stage in `/health` |
+| Write-ahead log | `write_ahead_log` | Crash-safe finalization + recovery |
 
 **See also:**
 - [API Reference](../API/endpoint_reference.md)
@@ -1314,5 +1423,16 @@ GlassBox v1.1.0 provides **production-ready enterprise features**:
 
 ---
 
+## Known Limitations (v1.2.0)
+
+| Module | Issue | Workaround |
+|---|---|---|
+| `access_control.py` | Role cycle detection: `set_parent()` allows circular role inheritance; `get_all_permissions()` returns an incomplete set if A→B→A | Validate role hierarchy at configuration time; cycle resolution is non-destructive |
+| `multitenancy.py` | `tenant_id` path validation does not assert that the resolved path stays inside `GLASSBOX_LOG_DIR` | Restrict tenant IDs to alphanumeric via `[a-z0-9_-]+` regex before calling API |
+| `advanced_audit.py` | `GENESIS_SENTINEL = "0"*64` is hardcoded; a partial genesis record in WAL on crash could break chain verification | Enable `recover_wal_on_startup=True` to replay before reading chain |
+| `api_gateway.py` | Rate limiter evicts oldest shard key without timestamp awareness under sustained attack | Tune `_max_keys_per_shard` upward; back with Redis for distributed deployments |
+
+---
+
 **Author:** Mohammed Akbar Ansari  
-**License:** BSD 3-Clause
+**License:** Apache 2.0

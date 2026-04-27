@@ -46,6 +46,7 @@ class Disposition(str, Enum):
     AUTO_EXECUTE  = "auto_execute"
     HUMAN_REVIEW  = "human_review"
     BLOCK         = "block"
+    APPROVED      = "approved"
 
 class FinalStatus(str, Enum):
     EXECUTED       = "executed"
@@ -162,8 +163,8 @@ class DecisionContext:
 @dataclass
 class DecisionRequest:
     agent_id:      str
-    decision_type: DecisionType
-    payload:       Dict[str, Any]
+    decision_type: DecisionType = DecisionType.CUSTOM
+    payload:       Dict[str, Any] = field(default_factory=dict)
     context:       Optional[DecisionContext] = None
     request_id:    str = field(default_factory=lambda: str(uuid.uuid4()))
 
@@ -171,9 +172,11 @@ class DecisionRequest:
 @dataclass
 class PolicyEvaluation:
     policy_id:   str
-    policy_name: str
-    result:      str
-    message:     str
+    policy_name: str = ""
+    result:      str = ""
+    message:     str = ""
+    compliant:   bool = True
+    reasoning:   str = ""
 
 @dataclass
 class PolicyResult:
@@ -207,11 +210,14 @@ class CircuitBreakerResult:
 
 @dataclass
 class ExecutionResult:
-    success:        bool
+    success:        bool = True
     result:         Optional[Dict[str, Any]] = None
     error:          Optional[str]            = None
     attempts:       int                      = 1
     total_delay_ms: float                    = 0.0
+    response:       Optional[Any]            = None
+    decision_time_ms: float                  = 0.0
+    trace:          Optional[Any]            = None
 
 
 @dataclass
@@ -235,12 +241,18 @@ class AuditRecord:
     contract_validated:     bool                           = False
 
     def to_dict(self) -> Dict[str, Any]:
-        def _v(v: Any) -> Any:
+        def _v(v: Any, _seen: set = None) -> Any:
+            if _seen is None:
+                _seen = set()
             if isinstance(v, Enum): return v.value
-            if isinstance(v, list): return [_v(i) for i in v]
-            if isinstance(v, dict): return {k: _v(vv) for k, vv in v.items()}
+            if isinstance(v, list): return [_v(i, _seen) for i in v]
+            if isinstance(v, dict): return {k: _v(vv, _seen) for k, vv in v.items()}
             if hasattr(v, "__dataclass_fields__"):
-                return {k: _v(getattr(v, k)) for k in v.__dataclass_fields__}
+                obj_id = id(v)
+                if obj_id in _seen:
+                    return f"<circular ref: {type(v).__name__}>"
+                _seen = _seen | {obj_id}
+                return {k: _v(getattr(v, k), _seen) for k in v.__dataclass_fields__}
             return v
         return {k: _v(getattr(self, k)) for k in self.__dataclass_fields__}
 
@@ -249,6 +261,7 @@ class AuditRecord:
 class DecisionResponse:
     decision_id:               str
     final_status:              FinalStatus
+    request_id:                Optional[str]         = None
     risk_level:                Optional[RiskLevel]   = None
     risk_score:                Optional[float]       = None
     disposition:               Optional[Disposition] = None
@@ -258,21 +271,28 @@ class DecisionResponse:
     circuit_breaker_reason:    Optional[str]         = None
     ecosystem_breaker:         bool                  = False
     message:                   str                   = ""
+    reasoning:                 str                   = ""
     pipeline_latency_ms:       Optional[float]       = None
     retry_attempts:            int                   = 0
     audit_record:              Optional[AuditRecord] = None
-    execution_trace:           Optional[Any]         = None  # ExecutionTrace (opt-in)
+    execution_trace:           Optional[Any]         = None
     # v1.1 additions
-    risk_explanation:          Optional[str]         = None  # Plain-language risk explanation
-    explanation:               Optional[str]         = None  # Why blocked (EU AI Act Art.13)
+    risk_explanation:          Optional[str]         = None
+    explanation:               Optional[str]         = None
 
     def to_dict(self) -> Dict[str, Any]:
-        def _v(v: Any) -> Any:
+        def _v(v: Any, _seen: set = None) -> Any:
+            if _seen is None:
+                _seen = set()
             if isinstance(v, Enum): return v.value
-            if isinstance(v, list): return [_v(i) for i in v]
-            if isinstance(v, dict): return {k: _v(vv) for k, vv in v.items()}
+            if isinstance(v, list): return [_v(i, _seen) for i in v]
+            if isinstance(v, dict): return {k: _v(vv, _seen) for k, vv in v.items()}
             if hasattr(v, "__dataclass_fields__"):
-                return {k: _v(getattr(v, k)) for k in v.__dataclass_fields__}
+                obj_id = id(v)
+                if obj_id in _seen:
+                    return f"<circular ref: {type(v).__name__}>"
+                _seen = _seen | {obj_id}
+                return {k: _v(getattr(v, k), _seen) for k in v.__dataclass_fields__}
             return v
         d = {k: _v(getattr(self, k)) for k in self.__dataclass_fields__ if k != "audit_record"}
         if self.audit_record: d["audit_record"] = self.audit_record.to_dict()
