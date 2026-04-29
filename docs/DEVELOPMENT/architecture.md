@@ -41,7 +41,7 @@ flowchart TB
     classDef t2 fill:#00b894,stroke:#00695c,color:#fff
     classDef t1 fill:#fdcb6e,stroke:#e17055,color:#000
 
-    T4["Tier 4 — Integration Layer\nREST API (15 endpoints) · PySpark Adapter · LangChain · LangGraph · AutoGen · MCP Gateway · OPA · CrewAI"]:::t4
+    T4["Tier 4 — Integration Layer\nREST API (17 endpoints) · PySpark Adapter · LangChain · LangGraph · AutoGen · MCP Gateway · OPA · CrewAI"]:::t4
     T3["Tier 3 — Orchestration & AI Layer\nAgentOrchestrator (Chain/DAG/Saga) · AgenticRAG · MultiTenantPipeline · EnterprisePipeline"]:::t3
     T2["Tier 2 — Application Layer\nGovernancePipeline · WorkflowEngine · DecisionReplay · RulesLoader · PolicySimulator · DecisionExplainer"]:::t2
     T1["Tier 1 — Core Framework\nPolicyEngine (35 policies) · PolicyParameterStore · RiskEvaluator\nAnomalyDetector + DistributedAnomalyDetector · VelocityBreaker + DistributedFleetBudgetPolicy\nStageRegistry (P50/P99) · WriteAheadLog · TamperEvidentAuditLogger · AuditLogger\nEventBus · EventDispatcher · BoundedQueue · AccessControl · Encryption\nSQLite/PostgreSQL Repositories · TenantRegistry · PayloadSanitizer"]:::t1
@@ -672,5 +672,6 @@ P50 = 0.11 ms · P99 = 0.47 ms (single-thread, in-memory, no DB)
 
 *GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher ·  *
 *Not affiliated with any employer, vendor, or customer engagement.*
+
 
 

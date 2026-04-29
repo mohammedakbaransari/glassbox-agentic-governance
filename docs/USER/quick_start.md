@@ -1,4 +1,4 @@
-ï»¿# GlassBox v1.1.0 â€” Complete User Guide
+# GlassBox v1.2.0 - Complete User Guide
 
 **Runtime Decision Governance for Autonomous AI Systems**
 
@@ -20,7 +20,7 @@ contracts, multi-tenancy, integrations, testing, and debugging.
 8. [Risk-Based Disposition](#8-risk-based-disposition)
 9. [Velocity & Anomaly Limits](#9-velocity--anomaly-limits)
 10. [Running the REST API](#10-running-the-rest-api)
-11. [REST API â€” All Endpoints](#11-rest-api--all-endpoints)
+11. [REST API — All Endpoints](#11-rest-api--all-endpoints)
 12. [Multi-Tenancy](#12-multi-tenancy)
 13. [LangChain / AutoGen Integration](#13-langchain--autogen-integration)
 14. [MCP Gateway](#14-mcp-gateway)
@@ -36,11 +36,11 @@ contracts, multi-tenancy, integrations, testing, and debugging.
 
 | Requirement | Minimum | Notes |
 |---|---|---|
-| Python | 3.9 | 3.10â€“3.14 also supported |
+| Python | 3.9 | 3.10–3.14 also supported |
 | Operating system | Linux / macOS / Windows | All three tested in CI |
-| Flask | 3.0+ | **Optional** â€” only for the REST API |
-| PyYAML | 6.0+ | **Optional** â€” only for YAML rules files |
-| PySpark | 3.3+ | **Optional** â€” only for Spark batch adapter |
+| Flask | 3.0+ | **Optional** — only for the REST API |
+| PyYAML | 6.0+ | **Optional** — only for YAML rules files |
+| PySpark | 3.3+ | **Optional** — only for Spark batch adapter |
 
 GlassBox core has **zero mandatory dependencies**. A plain `pip install` with no
 extras gives you the full governance engine using Python stdlib only.
@@ -49,12 +49,12 @@ extras gives you the full governance engine using Python stdlib only.
 
 ## 2. Installation
 
-### Option A â€” Install from source (recommended)
+### Option A — Install from source (recommended)
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/mohammedakbaransari/runtime-decision-governance.git
-cd runtime-decision-governance
+git clone https://github.com/mohammedakbaransari/glassbox-agentic-governance.git
+cd glassbox-agentic-governance
 
 # 2. Create and activate a virtual environment
 python -m venv .venv
@@ -76,7 +76,7 @@ pip install -e ".[dev]"
 pip install pytest
 ```
 
-### Option B â€” Install from PyPI
+### Option B — Install from PyPI
 
 ```bash
 pip install glassbox-governance            # core only
@@ -106,7 +106,7 @@ python scripts/validate.py
 
 ## 4. Five-Minute Quickstart
 
-The smallest working program â€” no configuration required:
+The smallest working program — no configuration required:
 
 ```python
 from glassbox.governance.pipeline import GovernancePipeline
@@ -114,7 +114,7 @@ from glassbox.governance.models   import (
     DecisionContext, DecisionRequest, DecisionType,
 )
 
-# 1. Create the pipeline (all defaults â€” safe out of the box)
+# 1. Create the pipeline (all defaults — safe out of the box)
 pipeline = GovernancePipeline()
 
 # 2. Build a decision request
@@ -136,7 +136,7 @@ request = DecisionRequest(
 response = pipeline.process(request)
 
 print(f"Status  : {response.final_status.value}")   # executed / blocked / pending_review
-print(f"Risk    : {response.risk_score}")            # 0â€“100
+print(f"Risk    : {response.risk_score}")            # 0–100
 print(f"Latency : {response.pipeline_latency_ms} ms")
 ```
 
@@ -151,7 +151,7 @@ Latency : 0.83 ms
 ### Triggering review and block thresholds
 
 ```python
-# Amount in the review band (risk 35â€“70) -> pending_review
+# Amount in the review band (risk 35–70) -> pending_review
 request.payload["amount"] = 150_000
 response = pipeline.process(request)
 print(response.final_status.value)   # pending_review
@@ -192,32 +192,32 @@ Every decision passes through these stages in order. The first failure at any
 stage short-circuits the pipeline and returns immediately.
 
 ```
-Stage 0a  AgentID Validation     â€” format check on agent_id string
-Stage 0b  Security Sanitizer     â€” injection / XSS / prompt injection scan
-Stage 0c  Agent Contract         â€” max_amount, permitted_types, delegation depth
-Stage 1   Context Capture        â€” enrich request with runtime metadata
-Stage 2   Audit Record Init      â€” create the AuditRecord to be persisted
-Stage 3   Schema Validation      â€” payload structure per decision type
-Stage 4   Velocity Breaker       â€” per-agent + ecosystem circuit breakers
-Stage 5   Anomaly Detection      â€” z-score deviation from rolling baseline
-Stage 6   Policy Enforcement     â€” every registered policy is evaluated
-Stage 7   Risk Evaluation        â€” weighted composite score 0â€“100
-Stage 8   Disposition            â€” EXECUTE / REVIEW / BLOCK routing
+Stage 0a  AgentID Validation     — format check on agent_id string
+Stage 0b  Security Sanitizer     — injection / XSS / prompt injection scan
+Stage 0c  Agent Contract         — max_amount, permitted_types, delegation depth
+Stage 1   Context Capture        — enrich request with runtime metadata
+Stage 2   Audit Record Init      — create the AuditRecord to be persisted
+Stage 3   Schema Validation      — payload structure per decision type
+Stage 4   Velocity Breaker       — per-agent + ecosystem circuit breakers
+Stage 5   Anomaly Detection      — z-score deviation from rolling baseline
+Stage 6   Policy Enforcement     — every registered policy is evaluated
+Stage 7   Risk Evaluation        — weighted composite score 0–100
+Stage 8   Disposition            — EXECUTE / REVIEW / BLOCK routing
 ```
 
 ### Final Status Values
 
 | Value | Meaning |
 |---|---|
-| `executed` | Passed all stages â€” action approved |
-| `pending_review` | Risk score 35â€“70 â€” routed to human reviewers |
+| `executed` | Passed all stages — action approved |
+| `pending_review` | Risk score 35–70 — routed to human reviewers |
 | `blocked` | Failed policy, contract, circuit breaker, or risk > 70 |
 
 ### DecisionContext Fields
 
 ```python
 context = DecisionContext(
-    confidence    = 0.92,             # AI model confidence 0.0â€“1.0
+    confidence    = 0.92,             # AI model confidence 0.0–1.0
     environment   = "production",     # production / staging / development
     agent_chain   = ["parent_agent"], # delegation ancestry list
     source_system = "erp_system",     # originating platform name
@@ -247,10 +247,10 @@ for p in engine.list_policies():
 ```
 
 Sample built-ins include:
-- `FIN-001` â€” Single transfer limit $1,000,000
-- `AI-001`  â€” Block if model confidence < 0.30
-- `IT-001`  â€” Production deployments only inside change window
-- `HR-001`  â€” Compensation changes within approved band
+- `FIN-001` — Single transfer limit $1,000,000
+- `AI-001`  — Block if model confidence < 0.30
+- `IT-001`  — Production deployments only inside change window
+- `HR-001`  — Compensation changes within approved band
 
 ### Register a custom policy via lambda
 
@@ -345,9 +345,9 @@ map directly to the final disposition:
 
 | Score range | Disposition | Final status |
 |---|---|---|
-| 0 â€“ 35 | `AUTO_EXECUTE` | `executed` |
-| 36 â€“ 70 | `HUMAN_REVIEW` | `pending_review` |
-| 71 â€“ 100 | `BLOCK` | `blocked` |
+| 0 – 35 | `AUTO_EXECUTE` | `executed` |
+| 36 – 70 | `HUMAN_REVIEW` | `pending_review` |
+| 71 – 100 | `BLOCK` | `blocked` |
 
 Read the score and disposition from any response:
 
@@ -362,7 +362,7 @@ print(response.disposition.value)  # auto_execute / human_review / block
 
 ## 9. Velocity & Anomaly Limits
 
-### Velocity Breaker â€” per-agent rate limiting
+### Velocity Breaker — per-agent rate limiting
 
 ```python
 from glassbox.governance.velocity_breaker import VelocityBreaker
@@ -383,7 +383,7 @@ all subsequent decisions from that agent are blocked for `cooldown_seconds`.
 The ecosystem limit triggers a fleet-wide block when the combined request rate
 from all agents exceeds `ecosystem_limit`.
 
-### Anomaly Detector â€” z-score outlier detection
+### Anomaly Detector — z-score outlier detection
 
 ```python
 from glassbox.governance.anomaly_detector import AnomalyDetector
@@ -416,7 +416,7 @@ python -m glassbox.api.app
 GLASSBOX_API_HOST=0.0.0.0 GLASSBOX_API_PORT=9000 python -m glassbox.api.app
 ```
 
-### Health check â€” confirm the server is running
+### Health check — confirm the server is running
 
 ```bash
 curl http://localhost:8000/health
@@ -514,7 +514,7 @@ curl -s -X POST http://localhost:8000/decisions/simulate \
 ### Real-time event stream (Server-Sent Events)
 
 ```bash
-# Streams a continuous event feed â€” press Ctrl+C to stop
+# Streams a continuous event feed — press Ctrl+C to stop
 curl -N http://localhost:8000/events/stream
 
 # Output format:
@@ -535,7 +535,7 @@ curl http://localhost:8000/ecosystem
 
 ---
 
-## 11. REST API â€” All Endpoints
+## 11. REST API — All Endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -544,7 +544,7 @@ curl http://localhost:8000/ecosystem
 | `GET` | `/decisions/{id}` | Retrieve a specific audit record |
 | `POST` | `/decisions/{id}/replay` | Replay a historical decision |
 | `POST` | `/decisions/batch` | Submit up to 499 decisions at once |
-| `POST` | `/decisions/simulate` | Dry-run â€” no audit record persisted |
+| `POST` | `/decisions/simulate` | Dry-run — no audit record persisted |
 | `GET` | `/events/stream` | Real-time SSE event stream |
 | `GET` | `/stats` | Aggregate governance statistics |
 | `GET` | `/stats/agents` | Per-agent decision statistics |
@@ -578,7 +578,7 @@ tenant_a_engine = PolicyEngine()
 tenant_b_engine = PolicyEngine()
 tenant_b_engine.register(Policy(
     policy_id      = "TENANT-B-CAP",
-    name           = "Tenant B spending cap â€” $50k",
+    name           = "Tenant B spending cap — $50k",
     decision_types = [DecisionType.PROCUREMENT],
     rule           = lambda p, c: (
         p.get("amount", 0) <= 50_000,
@@ -593,7 +593,7 @@ registry.register("tenant_b", policy_engine=tenant_b_engine)
 
 mt_pipeline = MultiTenantPipeline(registry=registry)
 
-# tenant_id is stamped onto a deep-copy of the request â€” no cross-tenant leakage
+# tenant_id is stamped onto a deep-copy of the request — no cross-tenant leakage
 response = mt_pipeline.process(request, tenant_id="tenant_b")
 print(response.final_status.value)
 ```
@@ -623,7 +623,7 @@ adapter = LangChainGovernanceAdapter(
     auto_block    = True,   # raise GlassBoxBlockedError on BLOCKED decisions
 )
 
-# Wrap any LangChain agent â€” governance is fully transparent
+# Wrap any LangChain agent — governance is fully transparent
 governed_agent = adapter.wrap(langchain_agent)
 result = governed_agent.invoke({"input": "Buy 10,000 units of component X"})
 ```
@@ -754,7 +754,7 @@ record   = response.audit_record
 print(record.decision_id)
 print(record.final_status.value)
 print(record.policy_result.violations)     # list of policy violation messages
-print(record.risk_result.risk_score)       # numeric score 0â€“100
+print(record.risk_result.risk_score)       # numeric score 0–100
 print(record.circuit_breaker_result)       # None if not triggered
 print(record.pipeline_latency_ms)
 ```
@@ -811,7 +811,7 @@ python examples/industry_examples.py --list
 # Run all 18 examples sequentially
 python examples/industry_examples.py
 
-# Run a single example by ID (e.g. example 2 â€” healthcare)
+# Run a single example by ID (e.g. example 2 — healthcare)
 python examples/industry_examples.py --id 2
 ```
 
@@ -819,11 +819,11 @@ python examples/industry_examples.py --id 2
 
 | ID | Industry | Decision type |
 |---|---|---|
-| 1 | Financial services â€” algorithmic trading | `FINANCIAL` |
-| 2 | Healthcare â€” clinical prescription validation | `CLINICAL` |
-| 3 | Manufacturing â€” production scheduling | `CUSTOM` |
-| 4 | Insurance â€” underwriting automation | `CUSTOM` |
-| 5 | Energy â€” grid dispatch authorisation | `CUSTOM` |
+| 1 | Financial services — algorithmic trading | `FINANCIAL` |
+| 2 | Healthcare — clinical prescription validation | `CLINICAL` |
+| 3 | Manufacturing — production scheduling | `CUSTOM` |
+| 4 | Insurance — underwriting automation | `CUSTOM` |
+| 5 | Energy — grid dispatch authorisation | `CUSTOM` |
 | 6 | Multi-agent chains, DAGs, sagas | Multiple |
 | 7 | LangChain transparent governance | `CUSTOM` |
 | 8 | LangGraph workflow governance | `CUSTOM` |
@@ -841,7 +841,7 @@ python examples/industry_examples.py --id 2
 | `GLASSBOX_LOG_LEVEL` | `INFO` | Logging verbosity: `DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL` |
 | `GLASSBOX_API_HOST` | `127.0.0.1` | API server bind address |
 | `GLASSBOX_API_PORT` | `8000` | API server port |
-| `GLASSBOX_API_DEBUG` | `false` | Flask debug mode â€” **never** `true` in production |
+| `GLASSBOX_API_DEBUG` | `false` | Flask debug mode — **never** `true` in production |
 | `GLASSBOX_API_MAX_PAYLOAD_BYTES` | `8192` | Maximum request body size in bytes |
 | `GLASSBOX_API_TIMEOUT_SECONDS` | `30` | Per-request processing timeout |
 
@@ -853,7 +853,7 @@ python examples/industry_examples.py --id 2
 |---|---|
 | Understand the 9-stage pipeline architecture | [../DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md) |
 | Implement a custom policy or adapter | [../DEVELOPMENT/implementation_guide.md](../DEVELOPMENT/implementation_guide.md) |
-| REST API â€” full request/response schemas | [../API/endpoint_reference.md](../API/endpoint_reference.md) |
+| REST API — full request/response schemas | [../API/endpoint_reference.md](../API/endpoint_reference.md) |
 | Deploy to Kubernetes / Docker / Databricks | [../DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md) |
 | Performance tuning and latency benchmarks | [../DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md) |
 | Security hardening production checklist | [../SECURITY/hardening.md](../SECURITY/hardening.md) |
@@ -861,4 +861,6 @@ python examples/industry_examples.py --id 2
 | Real-world industry patterns | [use_cases.md](use_cases.md) |
 | Common errors and solutions | [troubleshooting.md](troubleshooting.md) |
 | Contribute policies, adapters, or examples | [../../CONTRIBUTING.md](../../CONTRIBUTING.md) |
-| Full version history and migration notes | [../../CHANGELOG.md](../../CHANGELOG.md) |
+| Full version history and migration notes | `Version history is currently tracked in git tags/commits.` |
+
+

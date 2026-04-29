@@ -306,7 +306,7 @@ Australia's Essential Eight Maturity Model.
 | Control ID | Mitigation | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
 | E8.ML2.01 | App Control | Agent whitelisting | AgentContract permitted decision types | ✅ Implemented |
-| E8.ML2.02 | Patching | Version management | pyproject.toml, CHANGELOG.md | ⚠️ Partial |
+| E8.ML2.02 | Patching | Version management | pyproject.toml, repository release history (git tags/commits) | ⚠️ Partial |
 | E8.ML2.03 | Audit Logging | Activity logging | AuditLogger, SQLiteAuditRepository | ✅ Implemented |
 | E8.ML3.01 | MFA | Privileged operations | AgentContract + WorkflowEngine dual-approval | ⚠️ Partial |
 
@@ -421,3 +421,4 @@ all_controls = cat.list_controls(framework="EU AI Act")
 ---
 
 *GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher*
+

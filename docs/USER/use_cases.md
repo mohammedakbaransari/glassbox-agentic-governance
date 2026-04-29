@@ -1,6 +1,6 @@
 # GlassBox — Industry Use-Case Patterns
 
-**v1.0.0 | Mohammed Akbar Ansari | Independent Researcher**
+**v1.2.0 | Mohammed Akbar Ansari | Independent Researcher**
 
 This document describes how GlassBox applies to real enterprise AI governance scenarios. Each pattern includes the business context, the failure mode GlassBox prevents, and an implementation guide.
 
@@ -358,4 +358,6 @@ query  = adapter.govern_stream(
 
 ---
 
-*GlassBox v1.0.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher ·  *
+*GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher ·  *
+
+

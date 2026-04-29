@@ -284,3 +284,4 @@ Found a security vulnerability?
 | GENESIS_SENTINEL (`"0"*64`) hardcoded in advanced audit | LOW — only affects crash recovery edge case | Accepted risk |
 
 
+

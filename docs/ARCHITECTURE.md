@@ -81,7 +81,7 @@ flowchart TB
         AG[AutoGen]:::tier4
         CA[CrewAI]:::tier4
         SP[PySpark /<br/>Databricks]:::tier4
-        API[REST API<br/>15 endpoints]:::tier4
+        API[REST API<br/>17 endpoints]:::tier4
         MCP[MCP\nGateway]:::tier4
         OPA[OPA\nAdapter]:::tier4
     end
@@ -672,7 +672,7 @@ glassbox/
 │   └── otel_exporter.py          OpenTelemetry trace/span export
 │
 └── api/                          REST API
-    └── app.py                    Flask — 15 endpoints, built-in rate limiting
+    └── app.py                    Flask — 17 endpoints, built-in rate limiting
 ```
 
 ---
@@ -741,3 +741,4 @@ See [README.md](../README.md#known-limitations--roadmap) for the full prioritise
 ---
 
 *GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari*
+
