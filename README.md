@@ -56,6 +56,38 @@ python -m pytest tests --cov=glassbox --cov-report=term-missing
 python scripts/run_test_batches.py
 ```
 
+## Validation and Reproducibility
+
+### Canonical Validation Run
+
+| Item | Value |
+|---|---|
+| Command | `python -m pytest -q` |
+| Execution date | April 29, 2026 |
+| Outcome | **883 passed, 1 skipped** |
+| Collected tests (`--collect-only`) | **884 total** |
+
+### Test Suite Composition (Collected Test Count by Module)
+
+| Module | Count |
+|---|---:|
+| `tests/test_core.py` | 211 |
+| `tests/test_governance.py` | 127 |
+| `tests/test_integrations.py` | 74 |
+| `tests/test_api.py` | 70 |
+| `tests/test_edge_cases.py` | 69 |
+| `tests/test_framework.py` | 68 |
+| `tests/test_security.py` | 60 |
+| `tests/test_comprehensive.py` | 49 |
+| `tests/test_enterprise.py` | 41 |
+| `tests/test_sqlite_repo.py` | 28 |
+| `tests/test_batch_runner.py` | 22 |
+| `tests/test_regression.py` | 22 |
+| `tests/test_velocity_breaker_invariants.py` | 17 |
+| `tests/test_hash_chain_tamper.py` | 11 |
+| `tests/test_performance.py` | 11 |
+| `tests/test_remediation.py` | 4 |
+
 ## Run examples
 
 ```bash
