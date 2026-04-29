@@ -80,8 +80,8 @@ flowchart TB
         LG[LangGraph]:::tier4
         AG[AutoGen]:::tier4
         CA[CrewAI]:::tier4
-        SP[PySpark /<br/>Databricks]:::tier4
-        API[REST API<br/>17 endpoints]:::tier4
+        SP["PySpark\\nDatabricks"]:::tier4
+        API["REST API\\n17 endpoints"]:::tier4
         MCP[MCP\nGateway]:::tier4
         OPA[OPA\nAdapter]:::tier4
     end
@@ -107,8 +107,8 @@ flowchart TB
         direction LR
         PE[PolicyEngine\n35 policies]:::tier1
         RE[RiskEvaluator\n0–100]:::tier1
-        AD[AnomalyDetector<br/>Welford O(1)]:::tier1
-        VB[VelocityBreaker<br/>Rate Limits]:::tier1
+        AD["AnomalyDetector\\nWelford O(1)"]:::tier1
+        VB["VelocityBreaker\\nRate Limits"]:::tier1
         AL[AuditLogger\nLock-Pooled]:::tier1
         TA[TamperEvident\nAudit SHA-256]:::tier1
         WAL[WriteAheadLog\nCrash-Safe]:::tier1
@@ -741,4 +741,5 @@ See [README.md](../README.md#known-limitations--roadmap) for the full prioritise
 ---
 
 *GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari*
+
 
