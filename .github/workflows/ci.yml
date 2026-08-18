@@ -382,10 +382,10 @@ jobs:
       - name: Regenerate the lockfile and check for drift
         run: |
           uv pip compile pyproject.toml --extra dev --generate-hashes \
-            --output-file requirements-lock.check.txt
-          if ! diff -q requirements-lock.txt requirements-lock.check.txt > /dev/null; then
+            --output-file requirements-lock.txt
+          if ! git diff --quiet -- requirements-lock.txt; then
             echo "::error::requirements-lock.txt is stale. Regenerate with:"
             echo "  uv pip compile pyproject.toml --extra dev --generate-hashes --output-file requirements-lock.txt"
-            diff requirements-lock.txt requirements-lock.check.txt || true
+            git diff -- requirements-lock.txt
             exit 1
           fi
