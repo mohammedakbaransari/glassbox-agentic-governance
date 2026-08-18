@@ -815,8 +815,8 @@ class RelationalAuditRepository:
             self._conn()
             # `where` is built only from a hardcoded literal list above.
             .execute(
-                f"SELECT COUNT(*) FROM audit_records {where}", params
-            ).fetchone()[  # nosec B608
+                f"SELECT COUNT(*) FROM audit_records {where}", params  # nosec B608
+            ).fetchone()[
                 0
             ]
         )

@@ -284,7 +284,9 @@ def apply_migrations(provider: ConnectionProvider) -> List[int]:
             continue
         try:
             with provider.transaction() as cursor:
-                cursor.execute(statements, ())
+                # Passing even an empty parameter tuple selects psycopg's
+                # extended protocol, which rejects multi-statement SQL.
+                cursor.execute(statements)
                 cursor.execute(
                     "INSERT INTO glassbox_schema_migration (version, description) "
                     "VALUES (%s, %s) ON CONFLICT (version) DO NOTHING",

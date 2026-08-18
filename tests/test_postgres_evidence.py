@@ -38,6 +38,7 @@ from glassbox.adapters.outbound.postgres.schema import (
     MIGRATIONS,
     RETENTION_PURGE_GUC,
     SCHEMA_VERSION,
+    apply_migrations,
 )
 from glassbox.domain.errors import EvidenceWriteError
 from glassbox.domain.evidence import GENESIS_PREV_HASH, IntegrityStatus
@@ -534,6 +535,42 @@ class TestSchema:
         assert versions == sorted(versions)
         assert versions == list(range(1, len(versions) + 1))
         assert versions[-1] == SCHEMA_VERSION
+
+    def test_multi_statement_migrations_use_the_simple_execute_path(self) -> None:
+        """psycopg rejects multi-command SQL when any params argument is supplied."""
+
+        class MigrationCursor:
+            def __init__(self) -> None:
+                self.calls: List[Tuple[Any, ...]] = []
+                self.last_sql = ""
+
+            def execute(self, *args: Any) -> None:
+                self.calls.append(args)
+                self.last_sql = args[0]
+
+            def fetchone(self) -> Optional[Tuple[Any, ...]]:
+                if "to_regclass" in self.last_sql:
+                    return (False,)
+                return None
+
+            def fetchall(self) -> List[Tuple[Any, ...]]:
+                return []
+
+        class MigrationProvider:
+            def __init__(self) -> None:
+                self.cursor = MigrationCursor()
+
+            @contextmanager
+            def transaction(self) -> Iterator[MigrationCursor]:
+                yield self.cursor
+
+            def close(self) -> None:
+                return None
+
+        provider = MigrationProvider()
+        assert apply_migrations(provider) == [version for version, _, _ in MIGRATIONS]
+        for _version, _description, statements in MIGRATIONS:
+            assert (statements,) in provider.cursor.calls
 
     def test_evidence_is_append_only_by_revoke_and_by_trigger(self) -> None:
         """Defence in depth: neither mechanism carries the guarantee alone."""

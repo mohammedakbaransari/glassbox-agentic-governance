@@ -587,6 +587,24 @@ class TestToolchainConfiguration:
         )
         assert not missing, f"CI does not pin these to the same version as pyproject: {missing}"
 
+    def test_ci_quotes_shell_sensitive_requirement_ranges(self) -> None:
+        """Bash treats unquoted ``<``/``>`` in PEP 440 ranges as redirection."""
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        unquoted = re.findall(
+            r'(?m)(?<!\S)(?!["\'])[A-Za-z0-9_.-]+(?:\[[^\]\s]+\])?(?:>=|<=|>|<)[^"\'\s\\]+',
+            workflow,
+        )
+        assert not unquoted, (
+            "CI requirement ranges containing '<' or '>' must be quoted for Bash: "
+            f"{unquoted}"
+        )
+
+    def test_lockfile_freshness_does_not_upgrade_dependencies(self) -> None:
+        """Freshness validates declared constraints; dependency refresh is deliberate."""
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        assert "--constraint requirements-lock.txt" in workflow
+        assert "--no-header" in workflow
+
     def test_ci_matrix_matches_the_declared_floor(self, project_table: Mapping[str, Any]) -> None:
         """Testing a version we no longer support wastes a job and misleads readers."""
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
