@@ -1,7 +1,5 @@
 # GlassBox — Industry Use-Case Patterns
 
-**v1.2.0 | Mohammed Akbar Ansari | Independent Researcher**
-
 This document describes how GlassBox applies to real enterprise AI governance scenarios. Each pattern includes the business context, the failure mode GlassBox prevents, and an implementation guide.
 
 Run all examples: `python3 examples/industry_examples.py`
@@ -358,6 +356,6 @@ query  = adapter.govern_stream(
 
 ---
 
-*GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher ·  *
+*GlassBox · Apache 2.0*
 
 

@@ -1,6 +1,9 @@
 # glassbox/api - Flask REST API
 
-`glassbox.api.app` exposes governance operations over HTTP.
+`glassbox.api.app` exposes governance operations over HTTP, built on the
+original synchronous `GovernancePipeline`. The HTTP entry point onto the
+current `DecisionService` is `glassbox/adapters/inbound/http/app.py`; see
+[docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md#0-current-architecture).
 
 ## Start
 

@@ -32,10 +32,13 @@ import random
 import time
 from typing import Any, Callable, Coroutine, Dict, Optional
 
-from glassbox.governance.models import (
-    AuditRecord, ExecutionResult, RetryConfig, RetryStrategy,
-)
 from glassbox.governance.logging_manager import get_logger
+from glassbox.governance.models import (
+    AuditRecord,
+    ExecutionResult,
+    RetryConfig,
+    RetryStrategy,
+)
 
 log = get_logger("retry")
 
@@ -64,13 +67,13 @@ class RetryExecutor:
         delay = cfg.base_delay_s * (cfg.backoff_factor ** (attempt - 1))
         delay = min(delay, cfg.max_delay_s)
         if cfg.strategy == RetryStrategy.EXPONENTIAL_JITTER:
-            delay = delay * (0.5 + random.random() * 0.5)   # 50–100%
+            delay = delay * (0.5 + random.random() * 0.5)  # 50–100%
         return delay
 
     def execute(
         self,
         executor_fn: Callable[[AuditRecord], Dict[str, Any]],
-        record:      AuditRecord,
+        record: AuditRecord,
     ) -> ExecutionResult:
         """
         Synchronous retry executor.
@@ -85,23 +88,39 @@ class RetryExecutor:
             try:
                 result = executor_fn(record)
                 if attempt > 1:
-                    log.info("Executor succeeded on attempt %d/%d for %s",
-                             attempt, cfg.max_attempts, record.decision_id)
+                    log.info(
+                        "Executor succeeded on attempt %d/%d for %s",
+                        attempt,
+                        cfg.max_attempts,
+                        record.decision_id,
+                    )
                 return ExecutionResult(
-                    success=True, result=result,
-                    attempts=attempt, total_delay_ms=total_delay_ms,
+                    success=True,
+                    result=result,
+                    attempts=attempt,
+                    total_delay_ms=total_delay_ms,
                 )
             except cfg.retryable_exceptions as exc:
                 last_exc = exc
                 if attempt < cfg.max_attempts and cfg.strategy != RetryStrategy.NONE:
                     delay_s = self._delay_seconds(attempt)
                     total_delay_ms += delay_s * 1000
-                    log.warning("Executor attempt %d/%d failed for %s: %s. Retrying in %.2fs.",
-                                attempt, cfg.max_attempts, record.decision_id, exc, delay_s)
+                    log.warning(
+                        "Executor attempt %d/%d failed for %s: %s. Retrying in %.2fs.",
+                        attempt,
+                        cfg.max_attempts,
+                        record.decision_id,
+                        exc,
+                        delay_s,
+                    )
                     time.sleep(delay_s)
                 else:
-                    log.error("Executor failed permanently after %d attempts for %s: %s",
-                              attempt, record.decision_id, exc)
+                    log.error(
+                        "Executor failed permanently after %d attempts for %s: %s",
+                        attempt,
+                        record.decision_id,
+                        exc,
+                    )
                     break
             except Exception as exc:
                 log.error("Executor non-retryable error for %s: %s", record.decision_id, exc)
@@ -122,7 +141,7 @@ class RetryExecutor:
     async def async_execute(
         self,
         executor_fn: Callable[[AuditRecord], Coroutine[Any, Any, Dict[str, Any]]],
-        record:      AuditRecord,
+        record: AuditRecord,
     ) -> ExecutionResult:
         """
         Asynchronous retry executor.
@@ -137,23 +156,39 @@ class RetryExecutor:
             try:
                 result = await executor_fn(record)
                 if attempt > 1:
-                    log.info("Async executor succeeded on attempt %d/%d for %s",
-                             attempt, cfg.max_attempts, record.decision_id)
+                    log.info(
+                        "Async executor succeeded on attempt %d/%d for %s",
+                        attempt,
+                        cfg.max_attempts,
+                        record.decision_id,
+                    )
                 return ExecutionResult(
-                    success=True, result=result,
-                    attempts=attempt, total_delay_ms=total_delay_ms,
+                    success=True,
+                    result=result,
+                    attempts=attempt,
+                    total_delay_ms=total_delay_ms,
                 )
             except cfg.retryable_exceptions as exc:
                 last_exc = exc
                 if attempt < cfg.max_attempts and cfg.strategy != RetryStrategy.NONE:
                     delay_s = self._delay_seconds(attempt)
                     total_delay_ms += delay_s * 1000
-                    log.warning("Async executor attempt %d/%d failed for %s: %s. Retrying in %.2fs.",
-                                attempt, cfg.max_attempts, record.decision_id, exc, delay_s)
-                    await asyncio.sleep(delay_s)   # never blocks event loop
+                    log.warning(
+                        "Async executor attempt %d/%d failed for %s: %s. Retrying in %.2fs.",
+                        attempt,
+                        cfg.max_attempts,
+                        record.decision_id,
+                        exc,
+                        delay_s,
+                    )
+                    await asyncio.sleep(delay_s)  # never blocks event loop
                 else:
-                    log.error("Async executor failed permanently after %d attempts for %s: %s",
-                              attempt, record.decision_id, exc)
+                    log.error(
+                        "Async executor failed permanently after %d attempts for %s: %s",
+                        attempt,
+                        record.decision_id,
+                        exc,
+                    )
                     break
             except Exception as exc:
                 log.error("Async executor non-retryable error for %s: %s", record.decision_id, exc)

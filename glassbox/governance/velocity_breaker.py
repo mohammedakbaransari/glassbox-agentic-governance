@@ -44,21 +44,21 @@ log = get_logger("velocity_distributed")
 class VelocityBreaker:
     """
     Single-instance velocity breaker for rate limiting per agent.
-    
+
     Prevents agents from making too many decisions in a time window,
     with automatic cooldown to recover.
-    
+
     Usage:
         breaker = VelocityBreaker(max_decisions=20, window_seconds=60)
         triggered, reason, count = breaker.check("agent_1")
         if triggered:
             # Reject decision
             pass
-    
+
     Thread-Safe: Yes (uses RLock per agent)
     Multi-Instance: No (use DistributedVelocityBreaker for that)
     """
-    
+
     def __init__(
         self,
         max_decisions: int = 20,
@@ -83,7 +83,7 @@ class VelocityBreaker:
         self.ecosystem_max = ecosystem_max
         self.ecosystem_window_seconds = ecosystem_window_seconds
         self.ecosystem_cooldown_seconds = ecosystem_cooldown_seconds
-        
+
         # Per-agent time windows: agent_id -> deque of monotonic timestamps (sorted ascending).
         # Using deque + popleft() gives O(k) amortised eviction where k = expired entries,
         # vs. O(n) list-comprehension filter on every check call.
@@ -107,14 +107,14 @@ class VelocityBreaker:
             if agent_id not in self._agent_locks:
                 self._agent_locks[agent_id] = threading.RLock()
             return self._agent_locks[agent_id]
-    
+
     def check(self, agent_id: str) -> Tuple[bool, Optional[str], int]:
         """
         Check if agent has exceeded velocity limit.
-        
+
         Args:
             agent_id: Unique identifier for agent
-        
+
         Returns:
             (triggered: bool, reason: Optional[str], window_count: int)
             - triggered: True if limit exceeded or in cooldown
@@ -182,11 +182,11 @@ class VelocityBreaker:
                 self._agent_windows[agent_id] = deque()
             self._agent_windows[agent_id].append(now)
             return (False, None, len(self._agent_windows[agent_id]))
-    
+
     def reset(self, agent_id: str) -> None:
         """
         Reset agent's velocity window and cooldown.
-        
+
         Args:
             agent_id: Agent to reset
         """
@@ -195,12 +195,12 @@ class VelocityBreaker:
             with agent_lock:
                 self._agent_windows.pop(agent_id, None)
                 self._cooldown_until.pop(agent_id, None)
-    
+
     def reset_ecosystem(self) -> None:
         """Reset ecosystem-level velocity window."""
         with self._global_lock:
             self._ecosystem_window.clear()
-    
+
     def reset_all(self) -> None:
         """Reset all agents and ecosystem state."""
         with self._global_lock:
@@ -214,11 +214,11 @@ class VelocityBreaker:
             finally:
                 for agent_lock in reversed(agent_locks):
                     agent_lock.release()
-    
+
     def status(self, agent_id: str) -> dict:
         """
         Get status for an agent.
-        
+
         Returns:
             Dict with keys:
             - count: Current window count
@@ -227,10 +227,10 @@ class VelocityBreaker:
             - active: True if agent has recent decisions
         """
         now = self._now()
-        
+
         with self._global_lock:
             agent_lock = self._agent_locks.get(agent_id)
-        
+
         if not agent_lock:
             return {
                 "count": 0,
@@ -238,26 +238,26 @@ class VelocityBreaker:
                 "cooldown_remaining": 0,
                 "active": False,
             }
-        
+
         with agent_lock:
             window = self._agent_windows.get(agent_id, deque())
             cutoff = now - self.window_seconds
             count = sum(1 for t in window if t > cutoff)
-            
+
             cooldown_until = self._cooldown_until.get(agent_id, 0)
             cooldown_remaining = max(0, int(cooldown_until - now))
-            
+
             return {
                 "count": count,
                 "limit": self.max_decisions,
                 "cooldown_remaining": cooldown_remaining,
                 "active": count > 0,
             }
-    
+
     def ecosystem_status(self) -> dict:
         """
         Get ecosystem-level velocity status (fleet-wide).
-        
+
         Returns:
             Dict with keys:
             - mode: Literal "local" (for single-instance)
@@ -268,38 +268,38 @@ class VelocityBreaker:
             - global_circuit_open: Always False for local mode
         """
         now = self._now()
-        
+
         with self._global_lock:
             # Count active agents (with decisions in current window)
             agents_tracked = 0
             agents_in_cooldown = 0
-            
+
             for agent_id, window in self._agent_windows.items():
                 cutoff = now - self.window_seconds
                 if any(t > cutoff for t in window):
                     agents_tracked += 1
-                
+
                 cooldown_until = self._cooldown_until.get(agent_id, 0)
                 if now < cooldown_until:
                     agents_in_cooldown += 1
-            
+
             # Count decisions in current ecosystem window
             cutoff_eco = now - self.ecosystem_window_seconds
             ecosystem_count = sum(1 for t in self._ecosystem_window if t > cutoff_eco)
-            
+
             return {
                 "mode": "local",
                 "agents_tracked": agents_tracked,
                 "agents_in_cooldown": agents_in_cooldown,
                 "current_ecosystem_count": ecosystem_count,
-                "ecosystem_limit": self.ecosystem_max or float('inf'),
+                "ecosystem_limit": self.ecosystem_max or float("inf"),
                 "global_circuit_open": False,
             }
 
 
 class RedisVelocityBreakerBackend:
     """Low-level Redis operations for distributed velocity breaking."""
-    
+
     def __init__(self, redis_client, namespace: str = "glassbox:velocity"):
         """
         Args:
@@ -309,7 +309,7 @@ class RedisVelocityBreakerBackend:
         self.redis = redis_client
         self.namespace = namespace
         self._init_lua_scripts()
-    
+
     def _init_lua_scripts(self):
         """Load Lua scripts for atomic operations."""
         # Script 1: Check and add timestamp (atomic)
@@ -335,7 +335,7 @@ class RedisVelocityBreakerBackend:
             
             return {1, count + 1}  -- [allowed, new_count]
         """)
-        
+
         # Script 2: Get current window count (read-only)
         self.get_count_script = self.redis.register_script("""
             local key = KEYS[1]
@@ -348,7 +348,7 @@ class RedisVelocityBreakerBackend:
             -- Return count
             return redis.call('ZCARD', key)
         """)
-        
+
         # Script 3: Check ecosystem global state
         self.check_ecosystem_script = self.redis.register_script("""
             local key = KEYS[1]
@@ -372,7 +372,7 @@ class RedisVelocityBreakerBackend:
             
             return {1, count + 1}  -- [allowed, new_count]
         """)
-    
+
     def check_and_add(
         self,
         agent_id: str,
@@ -382,16 +382,16 @@ class RedisVelocityBreakerBackend:
     ) -> Tuple[bool, int]:
         """
         Atomically check agent velocity and add timestamp if allowed.
-        
+
         Args:
             agent_id: Agent identifier
             now: Current timestamp (time.time())
             window_sec: Window size in seconds
             max_count: Maximum decisions in window
-        
+
         Returns:
             (allowed: bool, current_count: int)
-        
+
         Atomic: Uses Lua script to prevent race conditions
         """
         key = f"{self.namespace}:agent:{agent_id}"
@@ -406,7 +406,7 @@ class RedisVelocityBreakerBackend:
         except Exception as exc:
             log.error(f"Redis check_and_add failed: {exc}")
             raise
-    
+
     def get_count(
         self,
         agent_id: str,
@@ -416,14 +416,16 @@ class RedisVelocityBreakerBackend:
         """Get current window count (read-only, cleans old entries)."""
         key = f"{self.namespace}:agent:{agent_id}"
         try:
-            return int(self.get_count_script(
-                keys=[key],
-                args=[now, window_sec],
-            ))
+            return int(
+                self.get_count_script(
+                    keys=[key],
+                    args=[now, window_sec],
+                )
+            )
         except Exception as exc:
             log.error(f"Redis get_count failed: {exc}")
             raise
-    
+
     def check_ecosystem_and_add(
         self,
         now: float,
@@ -443,7 +445,7 @@ class RedisVelocityBreakerBackend:
         except Exception as exc:
             log.error(f"Redis ecosystem check failed: {exc}")
             raise
-    
+
     def reset_agent(self, agent_id: str) -> None:
         """Reset agent's velocity window."""
         key = f"{self.namespace}:agent:{agent_id}"
@@ -456,9 +458,9 @@ class RedisVelocityBreakerBackend:
 class DistributedVelocityBreaker:
     """
     Distributed velocity breaker backed by Redis with local fallback.
-    
+
     API-compatible with VelocityBreaker but with cross-instance coordination.
-    
+
     Usage:
         redis_client = redis.Redis(host='localhost', port=6379)
         breaker = DistributedVelocityBreaker(
@@ -466,10 +468,10 @@ class DistributedVelocityBreaker:
             max_decisions=20,
             window_seconds=60,
         )
-        
+
         triggered, reason, count = breaker.check(agent_id)
     """
-    
+
     def __init__(
         self,
         redis_client=None,
@@ -484,29 +486,29 @@ class DistributedVelocityBreaker:
         self.max_decisions = max_decisions
         self.window_seconds = window_seconds
         self.cooldown_seconds = cooldown_seconds
-        
+
         self.ecosystem_max = ecosystem_max
         self.ecosystem_window_seconds = ecosystem_window_seconds
         self.ecosystem_cooldown_seconds = ecosystem_cooldown_seconds
-        
+
         self.fallback_mode = fallback_mode
         self._redis_available = False
         self._circuit_breaker_open = False
         self._circuit_breaker_timestamp: Optional[float] = None
-        
+
         # Redis backend
         self._redis_backend = None
         self._redis_backend_lock = threading.Lock()
         self._init_redis(redis_client)
-        
+
         # Cooldown tracking (per-instance, local)
         self._tripped: Dict[str, float] = {}
         self._tripped_lock = threading.Lock()
-        
+
         # Fallback: local in-memory windows (if Redis unavailable)
         self._local_fallback_windows: Dict[str, list] = {}
         self._local_fallback_lock = threading.Lock()
-    
+
     def _init_redis(self, redis_client):
         """Initialize Redis backend with health check."""
         try:
@@ -523,7 +525,7 @@ class DistributedVelocityBreaker:
             self._redis_available = False
             if not self.fallback_mode:
                 raise
-    
+
     def _check_circuit_breaker(self) -> bool:
         """Check if circuit breaker is open (Redis unavailable too long)."""
         if self._circuit_breaker_open:
@@ -535,18 +537,18 @@ class DistributedVelocityBreaker:
                         self._redis_backend.redis.ping()
                         self._circuit_breaker_open = False
                         log.info("Redis recovered; closing circuit breaker")
-                except:
-                    pass
+                except Exception as exc:
+                    log.debug("Circuit breaker recovery check failed: %s", exc)
             return self._circuit_breaker_open
         return False
-    
+
     def check(self, agent_id: str) -> Tuple[bool, Optional[str], int]:
         """
         Check velocity for agent (distributed).
-        
+
         Returns:
             (triggered: bool, reason: Optional[str], window_count: int)
-        
+
         Logic:
           1. Check cooldown (local; if tripped, stay tripped)
           2. Try Redis check (atomic)
@@ -554,7 +556,7 @@ class DistributedVelocityBreaker:
           4. Return result
         """
         now = time.time()
-        
+
         # ── Cooldown check (local) ──
         with self._tripped_lock:
             trip_time = self._tripped.get(agent_id)
@@ -565,14 +567,14 @@ class DistributedVelocityBreaker:
             elif trip_time:
                 # Cooldown expired
                 del self._tripped[agent_id]
-        
+
         # ── Redis check (distributed) ──
-        if self._redis_available and not self._check_circuit_breaker():
+        if self._redis_available and self._redis_backend and not self._check_circuit_breaker():
             try:
                 allowed, count = self._redis_backend.check_and_add(
                     agent_id, now, self.window_seconds, self.max_decisions
                 )
-                
+
                 if not allowed:
                     # Trigger and set cooldown
                     with self._tripped_lock:
@@ -582,7 +584,7 @@ class DistributedVelocityBreaker:
                         f"Agent '{agent_id}' velocity limit ({self.max_decisions}/{self.window_seconds}s) exceeded",
                         count,
                     )
-                
+
                 # Ecosystem check
                 if self.ecosystem_max:
                     eco_allowed, eco_count = self._redis_backend.check_ecosystem_and_add(
@@ -596,14 +598,14 @@ class DistributedVelocityBreaker:
                             f"Fleet ecosystem limit ({self.ecosystem_max}/{self.ecosystem_window_seconds}s) exceeded",
                             eco_count,
                         )
-                
+
                 return (False, None, count)
-            
+
             except Exception as exc:
                 log.warning(f"Redis check failed: {exc}; falling back to local")
                 self._circuit_breaker_open = True
                 self._circuit_breaker_timestamp = now
-        
+
         # ── Fallback: local in-memory (if enabled) ──
         if self.fallback_mode:
             return self._check_local(agent_id, now)
@@ -611,78 +613,76 @@ class DistributedVelocityBreaker:
             # No fallback; fail open (allow)
             log.warning(f"Redis unavailable and fallback disabled; allowing request")
             return (False, None, 0)
-    
+
     def _check_local(self, agent_id: str, now: float) -> Tuple[bool, Optional[str], int]:
         """Local fallback check (single-instance behavior)."""
         with self._local_fallback_lock:
             if agent_id not in self._local_fallback_windows:
                 self._local_fallback_windows[agent_id] = []
-            
+
             window = self._local_fallback_windows[agent_id]
-            
+
             # Remove old entries
             window = [t for t in window if now - t < self.window_seconds]
             self._local_fallback_windows[agent_id] = window
-            
+
             count = len(window)
-            
+
             if count >= self.max_decisions:
                 return (True, f"Local fallback: velocity exceeded", count)
-            
+
             # Add new entry
             window.append(now)
             return (False, None, count + 1)
-    
+
     def _get_window_count(self, agent_id: str, now: float) -> int:
         """Get current window count."""
-        if self._redis_available and not self._check_circuit_breaker():
+        if self._redis_available and self._redis_backend and not self._check_circuit_breaker():
             try:
-                return self._redis_backend.get_count(
-                    agent_id, now, self.window_seconds
-                )
-            except:
-                pass
-        
+                return self._redis_backend.get_count(agent_id, now, self.window_seconds)
+            except Exception as exc:
+                log.debug("Redis window count read failed: %s", exc)
+
         # Fallback
         with self._local_fallback_lock:
             window = self._local_fallback_windows.get(agent_id, [])
             return len([t for t in window if now - t < self.window_seconds])
-    
+
     def reset_agent(self, agent_id: str) -> None:
         """Reset agent's velocity window."""
-        if self._redis_available:
+        if self._redis_available and self._redis_backend:
             try:
                 self._redis_backend.reset_agent(agent_id)
             except Exception as exc:
                 log.warning(f"Redis reset_agent failed: {exc}")
-        
+
         with self._local_fallback_lock:
             self._local_fallback_windows.pop(agent_id, None)
-        
+
         # Also clear cooldown
         with self._tripped_lock:
             self._tripped.pop(agent_id, None)
-    
+
     def reset(self, agent_id: str) -> None:
         """Alias for reset_agent (compatibility with VelocityBreaker)."""
         self.reset_agent(agent_id)
-    
+
     def reset_ecosystem(self) -> None:
         """Reset ecosystem-level state (compatibility with VelocityBreaker)."""
         # Note: In distributed mode, ecosystem state is in Redis
         # We only clear it if no ecosystem_max configured
-        if self.ecosystem_max and self._redis_available:
+        if self.ecosystem_max and self._redis_available and self._redis_backend:
             try:
                 key = f"{self._redis_backend.namespace}:ecosystem:global"
                 self._redis_backend.redis.delete(key)
                 log.info("Ecosystem state reset")
             except Exception as exc:
                 log.warning(f"Redis ecosystem reset failed: {exc}")
-    
+
     def reset_all(self) -> None:
         """Reset all per-agent and ecosystem state."""
         # Get all agents from Redis
-        if self._redis_available:
+        if self._redis_available and self._redis_backend:
             try:
                 pattern = f"{self._redis_backend.namespace}:agent:*"
                 keys = list(self._redis_backend.redis.scan_iter(match=pattern))
@@ -691,22 +691,22 @@ class DistributedVelocityBreaker:
                 log.info(f"Reset {len(keys)} agent windows")
             except Exception as exc:
                 log.warning(f"Redis reset_all failed: {exc}")
-        
+
         # Reset local state
         with self._tripped_lock:
             self._tripped.clear()
-        
+
         with self._local_fallback_lock:
             self._local_fallback_windows.clear()
-        
+
         self.reset_ecosystem()
-    
+
     def status(self, agent_id: str) -> dict:
         """Get agent status (compatibility with VelocityBreaker)."""
         now = time.time()
-        
+
         count = self._get_window_count(agent_id, now)
-        
+
         with self._tripped_lock:
             is_tripped = agent_id in self._tripped
             cooldown_remaining = 0
@@ -714,7 +714,7 @@ class DistributedVelocityBreaker:
                 trip_time = self._tripped[agent_id]
                 elapsed = now - trip_time
                 cooldown_remaining = max(0, int(self.cooldown_seconds - elapsed))
-        
+
         return {
             "agent_id": agent_id,
             "decisions_in_window": count,
@@ -723,11 +723,11 @@ class DistributedVelocityBreaker:
             "tripped": is_tripped,
             "cooldown_remaining": cooldown_remaining,
         }
-    
+
     def ecosystem_status(self) -> dict:
         """Get ecosystem status (compatibility with VelocityBreaker)."""
         now = time.time()
-        
+
         if not self.ecosystem_max:
             return {
                 "enabled": False,
@@ -737,19 +737,19 @@ class DistributedVelocityBreaker:
                 "tripped": False,
                 "cooldown_remaining": 0,
             }
-        
+
         # Try to get count from Redis
         count = 0
         tripped = False
-        
-        if self._redis_available and not self._check_circuit_breaker():
+
+        if self._redis_available and self._redis_backend and not self._check_circuit_breaker():
             try:
                 key = f"{self._redis_backend.namespace}:ecosystem:global"
                 count = int(self._redis_backend.redis.zcard(key) or 0)
                 tripped = count >= self.ecosystem_max
             except Exception as exc:
                 log.warning(f"Redis ecosystem_status failed: {exc}")
-        
+
         return {
             "enabled": True,
             "decisions_in_window": count,
@@ -769,6 +769,7 @@ class DistributedVelocityBreaker:
 # Solution: RedisFleetBudgetBackend uses a single Redis key to track
 # cumulative spend atomically.  DistributedFleetBudgetPolicy wraps it with
 # the same interface as FleetBudgetPolicy (drop-in replacement).
+
 
 class RedisFleetBudgetBackend:
     """
@@ -790,7 +791,7 @@ class RedisFleetBudgetBackend:
         policy_id: str = "LOG-001",
         namespace: str = "glassbox:fleet_budget",
     ):
-        self.redis     = redis_client
+        self.redis = redis_client
         self.policy_id = policy_id
         self.namespace = namespace
 
@@ -848,29 +849,30 @@ class DistributedFleetBudgetPolicy:
         fallback_mode: bool = True,
     ):
         from glassbox.governance.models import DecisionType, PolicyEvaluation
-        self._DecisionType    = DecisionType
+
+        self._DecisionType = DecisionType
         self._PolicyEvaluation = PolicyEvaluation
 
-        self.budget         = float(budget)
+        self.budget = float(budget)
         self.warn_threshold = float(warn_threshold)
-        self.policy_id      = policy_id
-        self.fallback_mode  = fallback_mode
+        self.policy_id = policy_id
+        self.fallback_mode = fallback_mode
 
         self._redis_backend: Optional[RedisFleetBudgetBackend] = None
-        self._redis_ok      = False
-        self._local_spent   = 0.0
-        self._local_lock    = threading.Lock()
+        self._redis_ok = False
+        self._local_spent = 0.0
+        self._local_lock = threading.Lock()
 
         if redis_client is not None:
             try:
                 redis_client.ping()
                 self._redis_backend = RedisFleetBudgetBackend(
-                    redis_client, policy_id=policy_id, namespace=namespace,
+                    redis_client,
+                    policy_id=policy_id,
+                    namespace=namespace,
                 )
                 self._redis_ok = True
-                log.info(
-                    "DistributedFleetBudgetPolicy: Redis connected (policy=%s)", policy_id
-                )
+                log.info("DistributedFleetBudgetPolicy: Redis connected (policy=%s)", policy_id)
             except Exception as exc:
                 log.warning(
                     "DistributedFleetBudgetPolicy: Redis unavailable, using local fallback: %s", exc
@@ -914,12 +916,12 @@ class DistributedFleetBudgetPolicy:
             self._local_spent = 0.0
 
     def _rule(self, payload: dict, ctx) -> object:
-        amount     = float(
+        amount = float(
             payload.get("amount", payload.get("fleet_spend", payload.get("total_cost", 0))) or 0
         )
         # We preview projected spend WITHOUT committing (Redis read + local add).
-        current    = self._get_spent()
-        projected  = current + amount
+        current = self._get_spent()
+        projected = current + amount
 
         if projected > self.budget:
             return self._PolicyEvaluation(
@@ -962,11 +964,13 @@ class DistributedFleetBudgetPolicy:
     def as_policy(self):
         """Return a Policy object suitable for PolicyEngine.register()."""
         from glassbox.governance.policy_engine import Policy
+
         return Policy(
             policy_id=self.policy_id,
             policy_name="Fleet Budget Policy (Distributed)",
             decision_types=[
-                self._DecisionType.LOGISTICS, self._DecisionType.FINANCIAL,
+                self._DecisionType.LOGISTICS,
+                self._DecisionType.FINANCIAL,
             ],
             rule=self._rule,
         )
@@ -983,7 +987,7 @@ def create_velocity_breaker_distributed(
 ):
     """
     Factory function to create distributed velocity breaker.
-    
+
     Usage:
         breaker = create_velocity_breaker_distributed(
             redis_client=redis.Redis(),
@@ -991,12 +995,12 @@ def create_velocity_breaker_distributed(
             ecosystem_config=EcosystemBreakerConfig(enabled=True, max_decisions=10000),
         )
     """
-    eco = ecosystem_config or type('Config', (), {'enabled': False, 'max_decisions': None})()
-    
+    eco = ecosystem_config or type("Config", (), {"enabled": False, "max_decisions": None})()
+
     return DistributedVelocityBreaker(
         redis_client=redis_client,
         max_decisions=max_decisions,
         window_seconds=window_seconds,
-        ecosystem_max=(eco.max_decisions if hasattr(eco, 'enabled') and eco.enabled else None),
+        ecosystem_max=(eco.max_decisions if hasattr(eco, "enabled") and eco.enabled else None),
         fallback_mode=fallback_mode,
     )

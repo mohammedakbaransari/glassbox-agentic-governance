@@ -45,48 +45,60 @@ import concurrent.futures
 import copy
 import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from glassbox.security.sanitizer import validate_agent_id
 from glassbox.governance.models import (
-    AuditRecord, CircuitBreakerResult, DecisionContext, DecisionRequest, DecisionResponse,
-    DecisionType, Disposition, FinalStatus, PolicyEvaluation, PolicyResult,
-    RiskLevel, RiskResult,
+    AuditRecord,
+    CircuitBreakerResult,
+    DecisionContext,
+    DecisionRequest,
+    DecisionResponse,
+    DecisionType,
+    Disposition,
+    FinalStatus,
+    PolicyEvaluation,
+    PolicyResult,
+    RiskLevel,
+    RiskResult,
 )
+from glassbox.security.sanitizer import validate_agent_id
 
 
 @dataclass
 class SimulationOutcome:
     """Outcome of simulating one historical decision under a proposed policy."""
-    decision_id:       str
-    agent_id:          str
-    decision_type:     str
-    original_status:   str
-    simulated_status:  str
-    changed:           bool
-    direction:         str   # "newly_blocked" | "newly_unblocked" | "unchanged"
-    policy_fired:      bool
-    policy_message:    str   = ""
+
+    decision_id: str
+    agent_id: str
+    decision_type: str
+    original_status: str
+    simulated_status: str
+    changed: bool
+    direction: str  # "newly_blocked" | "newly_unblocked" | "unchanged"
+    policy_fired: bool
+    policy_message: str = ""
 
 
 @dataclass
 class SimulationResult:
     """Aggregate result of a full policy simulation run."""
-    policy_id:           str
-    policy_name:         str
-    total_decisions:     int
-    newly_blocked:       int
-    newly_unblocked:     int
-    unchanged:           int
-    block_rate_before:   float
-    block_rate_simulated:float
-    affected_agents:     Dict[str, int]   = field(default_factory=dict)
-    affected_types:      Dict[str, int]   = field(default_factory=dict)
-    outcomes:            List[SimulationOutcome] = field(default_factory=list)
-    simulation_ms:       float            = 0.0
+
+    policy_id: str
+    policy_name: str
+    total_decisions: int
+    newly_blocked: int
+    newly_unblocked: int
+    unchanged: int
+    block_rate_before: float
+    block_rate_simulated: float
+    affected_agents: Dict[str, int] = field(default_factory=dict)
+    affected_types: Dict[str, int] = field(default_factory=dict)
+    outcomes: List[SimulationOutcome] = field(default_factory=list)
+    simulation_ms: float = 0.0
 
     @property
     def summary_text(self) -> str:
@@ -102,28 +114,26 @@ class SimulationResult:
         ]
         if self.affected_agents:
             top = sorted(self.affected_agents.items(), key=lambda x: -x[1])[:5]
-            lines.append(f"  Most affected agents:  " +
-                         ", ".join(f"{a} ({n})" for a, n in top))
+            lines.append(f"  Most affected agents:  " + ", ".join(f"{a} ({n})" for a, n in top))
         if self.affected_types:
             top = sorted(self.affected_types.items(), key=lambda x: -x[1])[:4]
-            lines.append(f"  Affected by type:      " +
-                         ", ".join(f"{t} ({n})" for t, n in top))
+            lines.append(f"  Affected by type:      " + ", ".join(f"{t} ({n})" for t, n in top))
         lines.append(f"  Simulation time:       {self.simulation_ms:.0f}ms")
         return "\n".join(lines)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "policy_id":            self.policy_id,
-            "policy_name":          self.policy_name,
-            "total_decisions":      self.total_decisions,
-            "newly_blocked":        self.newly_blocked,
-            "newly_unblocked":      self.newly_unblocked,
-            "unchanged":            self.unchanged,
-            "block_rate_before":    round(self.block_rate_before, 4),
+            "policy_id": self.policy_id,
+            "policy_name": self.policy_name,
+            "total_decisions": self.total_decisions,
+            "newly_blocked": self.newly_blocked,
+            "newly_unblocked": self.newly_unblocked,
+            "unchanged": self.unchanged,
+            "block_rate_before": round(self.block_rate_before, 4),
             "block_rate_simulated": round(self.block_rate_simulated, 4),
-            "affected_agents":      self.affected_agents,
-            "affected_types":       self.affected_types,
-            "simulation_ms":        round(self.simulation_ms, 1),
+            "affected_agents": self.affected_agents,
+            "affected_types": self.affected_types,
+            "simulation_ms": round(self.simulation_ms, 1),
         }
 
 
@@ -145,7 +155,7 @@ class PolicySimulator:
                 Used to retrieve historical audit records.
         """
         self._source = pipeline_or_audit_logger
-        self._lock   = threading.Lock()
+        self._lock = threading.Lock()
 
     def simulate(
         self,
@@ -190,12 +200,17 @@ class PolicySimulator:
 
             sec_report = pipeline.sanitizer.check(prepared.payload, agent_id=prepared.agent_id)
             if sec_report.blocked:
-                detail = "; ".join(
-                    f"{finding.category}@{finding.field_path}"
-                    for finding in sec_report.findings
-                    if finding.severity in ("critical", "high")
-                ) or "Security violation"
-                return self._blocked_simulation(prepared, f"Security violation: {detail}", "SECURITY-001")
+                detail = (
+                    "; ".join(
+                        f"{finding.category}@{finding.field_path}"
+                        for finding in sec_report.findings
+                        if finding.severity in ("critical", "high")
+                    )
+                    or "Security violation"
+                )
+                return self._blocked_simulation(
+                    prepared, f"Security violation: {detail}", "SECURITY-001"
+                )
 
             clean_payload = copy.deepcopy(sec_report.clean_payload or prepared.payload)
 
@@ -226,7 +241,9 @@ class PolicySimulator:
                     clean_payload,
                 )
             if not schema_ok:
-                blocked = pipeline._blocked_early(record, schema_error or "Schema error", "SCHEMA-001")
+                blocked = pipeline._blocked_early(
+                    record, schema_error or "Schema error", "SCHEMA-001"
+                )
                 return self._response_to_dict(prepared, blocked)
 
             policy_result = PolicyResult(passed=True)
@@ -288,13 +305,13 @@ class PolicySimulator:
 
     def simulate_policy(
         self,
-        policy,                       # Policy object with .rule, .policy_id, .policy_name
-        lookback_hours:  int   = 168, # 7 days default
+        policy,  # Policy object with .rule, .policy_id, .policy_name
+        lookback_hours: int = 168,  # 7 days default
         agent_id_filter: Optional[str] = None,
         decision_type_filter: Optional[str] = None,
-        max_records:     int   = 10_000,
-        parallel:        bool  = True,
-        max_workers:     int   = 4,
+        max_records: int = 10_000,
+        parallel: bool = True,
+        max_workers: int = 4,
     ) -> SimulationResult:
         """
         Simulate a single proposed policy against historical decisions.
@@ -329,13 +346,13 @@ class PolicySimulator:
         self,
         policies: List,
         lookback_hours: int = 168,
-        max_records:    int = 10_000,
+        max_records: int = 10_000,
     ) -> List[SimulationResult]:
         """Simulate multiple proposed policies and return a result per policy."""
         records = self._fetch_records(lookback_hours, None, None, max_records)
         results = []
         for policy in policies:
-            t_start  = time.perf_counter()
+            t_start = time.perf_counter()
             outcomes = self._simulate_sequential(policy, records)
             results.append(self._aggregate(policy, outcomes, time.perf_counter() - t_start))
         return results
@@ -345,7 +362,7 @@ class PolicySimulator:
         policy_a,
         policy_b,
         lookback_hours: int = 168,
-        max_records:    int = 10_000,
+        max_records: int = 10_000,
     ) -> Dict[str, Any]:
         """
         Compare two policies head-to-head against the same historical records.
@@ -359,8 +376,9 @@ class PolicySimulator:
                 f"Policy '{results[0].policy_name}' blocks "
                 f"{results[0].newly_blocked} more decisions "
                 f"({results[0].newly_blocked - results[1].newly_blocked:+d} vs policy_b)"
-                if len(results) == 2 else "insufficient data"
-            )
+                if len(results) == 2
+                else "insufficient data"
+            ),
         }
 
     # ── Internal helpers ──────────────────────────────────────────────────────
@@ -368,9 +386,9 @@ class PolicySimulator:
     def _fetch_records(
         self,
         lookback_hours: int,
-        agent_filter:   Optional[str],
-        type_filter:    Optional[str],
-        max_records:    int,
+        agent_filter: Optional[str],
+        type_filter: Optional[str],
+        max_records: int,
     ) -> List[Any]:
         """Retrieve audit records from the source."""
         if self._source is None:
@@ -409,9 +427,11 @@ class PolicySimulator:
         if agent_filter:
             records = [r for r in records if r.agent_id == agent_filter]
         if type_filter:
-            records = [r for r in records
-                       if r.decision_type.value == type_filter
-                       or str(r.decision_type) == type_filter]
+            records = [
+                r
+                for r in records
+                if r.decision_type.value == type_filter or str(r.decision_type) == type_filter
+            ]
 
         return records[:max_records]
 
@@ -455,7 +475,7 @@ class PolicySimulator:
         if response.policy_violations:
             first_violation = response.policy_violations[0]
             if first_violation.startswith("[") and "]" in first_violation:
-                blocking_policy = first_violation[1:first_violation.index("]")]
+                blocking_policy = first_violation[1 : first_violation.index("]")]
 
         return {
             "simulation": True,
@@ -480,10 +500,9 @@ class PolicySimulator:
             return record
 
         decision_type = record.get("decision_type")
-        try:
+        # Fall through with the raw string if it isn't a valid enum member.
+        with suppress(Exception):
             decision_type = DecisionType(decision_type)
-        except Exception:
-            pass
 
         final_status = record.get("final_status")
         try:
@@ -510,7 +529,9 @@ class PolicySimulator:
         if not isinstance(context, dict):
             return DecisionContext()
         return DecisionContext(
-            session_id=context.get("session_id") or context.get("request_id") or DecisionContext().session_id,
+            session_id=context.get("session_id")
+            or context.get("request_id")
+            or DecisionContext().session_id,
             environment=context.get("environment", "production"),
             source_system=context.get("source_system", "unknown"),
             user_override=bool(context.get("user_override", False)),
@@ -526,36 +547,36 @@ class PolicySimulator:
     def _simulate_sequential(self, policy, records: List) -> List[SimulationOutcome]:
         return [self._evaluate_one(policy, r) for r in records]
 
-    def _simulate_parallel(self, policy, records: List, max_workers: int) -> List[SimulationOutcome]:
-        outcomes = [None] * len(records)
+    def _simulate_parallel(
+        self, policy, records: List, max_workers: int
+    ) -> List[SimulationOutcome]:
+        outcomes: List[Optional[SimulationOutcome]] = [None] * len(records)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = {ex.submit(self._evaluate_one, policy, r): i
-                       for i, r in enumerate(records)}
+            futures = {ex.submit(self._evaluate_one, policy, r): i for i, r in enumerate(records)}
             for fut in concurrent.futures.as_completed(futures):
                 idx = futures[fut]
-                try:
+                with suppress(Exception):
                     outcomes[idx] = fut.result()
-                except Exception:
-                    pass
         return [o for o in outcomes if o is not None]
 
     def _evaluate_one(self, policy, record) -> SimulationOutcome:
         """Evaluate one historical record under the proposed policy."""
-        original_status = (record.final_status.value
-                           if record.final_status else "unknown")
-        policy_fired    = False
-        policy_message  = ""
+        original_status = record.final_status.value if record.final_status else "unknown"
+        policy_fired = False
+        policy_message = ""
 
         # Check if policy applies to this decision type
-        applies = (DecisionType.CUSTOM in policy.decision_types or
-                   record.decision_type in policy.decision_types)
+        applies = (
+            DecisionType.CUSTOM in policy.decision_types
+            or record.decision_type in policy.decision_types
+        )
 
         if applies:
             try:
                 ctx = record.context or DecisionContext()
-                ev  = policy.rule(record.payload or {}, ctx)
+                ev = policy.rule(record.payload or {}, ctx)
                 if ev.result == "fail":
-                    policy_fired   = True
+                    policy_fired = True
                     policy_message = ev.message
             except Exception as e:
                 policy_message = f"Policy evaluation error: {e}"
@@ -565,67 +586,69 @@ class PolicySimulator:
         would_block = policy_fired
 
         if would_block and not was_blocked:
-            direction       = "newly_blocked"
+            direction = "newly_blocked"
             simulated_status = "blocked"
         elif not would_block and was_blocked:
-            direction        = "newly_unblocked"
+            direction = "newly_unblocked"
             simulated_status = "executed"
         else:
-            direction        = "unchanged"
+            direction = "unchanged"
             simulated_status = original_status
 
         dt = record.decision_type
-        dt_value = dt.value if hasattr(dt, 'value') else str(dt)
+        dt_value = dt.value if hasattr(dt, "value") else str(dt)
         return SimulationOutcome(
-            decision_id      = record.decision_id,
-            agent_id         = record.agent_id,
-            decision_type    = dt_value,
-            original_status  = original_status,
-            simulated_status = simulated_status,
-            changed          = direction != "unchanged",
-            direction        = direction,
-            policy_fired     = policy_fired,
-            policy_message   = policy_message,
+            decision_id=record.decision_id,
+            agent_id=record.agent_id,
+            decision_type=dt_value,
+            original_status=original_status,
+            simulated_status=simulated_status,
+            changed=direction != "unchanged",
+            direction=direction,
+            policy_fired=policy_fired,
+            policy_message=policy_message,
         )
 
-    def _aggregate(self, policy, outcomes: List[SimulationOutcome], elapsed_s: float) -> SimulationResult:
+    def _aggregate(
+        self, policy, outcomes: List[SimulationOutcome], elapsed_s: float
+    ) -> SimulationResult:
         """Aggregate individual outcomes into a SimulationResult."""
-        total          = len(outcomes)
-        newly_blocked  = sum(1 for o in outcomes if o.direction == "newly_blocked")
-        newly_unblocked= sum(1 for o in outcomes if o.direction == "newly_unblocked")
-        unchanged      = total - newly_blocked - newly_unblocked
+        total = len(outcomes)
+        newly_blocked = sum(1 for o in outcomes if o.direction == "newly_blocked")
+        newly_unblocked = sum(1 for o in outcomes if o.direction == "newly_unblocked")
+        unchanged = total - newly_blocked - newly_unblocked
 
         originally_blocked = sum(1 for o in outcomes if o.original_status == "blocked")
-        simulated_blocked  = sum(1 for o in outcomes
-                                 if o.simulated_status == "blocked")
+        simulated_blocked = sum(1 for o in outcomes if o.simulated_status == "blocked")
 
         # Count affected agents and types
         affected_agents: Dict[str, int] = {}
-        affected_types:  Dict[str, int] = {}
+        affected_types: Dict[str, int] = {}
         for o in outcomes:
             if o.changed:
                 affected_agents[o.agent_id] = affected_agents.get(o.agent_id, 0) + 1
                 affected_types[o.decision_type] = affected_types.get(o.decision_type, 0) + 1
 
         return SimulationResult(
-            policy_id            = policy.policy_id,
-            policy_name          = policy.policy_name,
-            total_decisions      = total,
-            newly_blocked        = newly_blocked,
-            newly_unblocked      = newly_unblocked,
-            unchanged            = unchanged,
-            block_rate_before    = originally_blocked / max(total, 1),
-            block_rate_simulated = simulated_blocked  / max(total, 1),
-            affected_agents      = dict(sorted(affected_agents.items(), key=lambda x: -x[1])[:20]),
-            affected_types       = affected_types,
-            outcomes             = outcomes,
-            simulation_ms        = elapsed_s * 1000,
+            policy_id=policy.policy_id,
+            policy_name=policy.policy_name,
+            total_decisions=total,
+            newly_blocked=newly_blocked,
+            newly_unblocked=newly_unblocked,
+            unchanged=unchanged,
+            block_rate_before=originally_blocked / max(total, 1),
+            block_rate_simulated=simulated_blocked / max(total, 1),
+            affected_agents=dict(sorted(affected_agents.items(), key=lambda x: -x[1])[:20]),
+            affected_types=affected_types,
+            outcomes=outcomes,
+            simulation_ms=elapsed_s * 1000,
         )
 
     @staticmethod
     def _parse_ts(ts_str: str):
         """Parse ISO timestamp string to datetime."""
         from datetime import datetime, timezone
+
         try:
             if ts_str.endswith("Z"):
                 ts_str = ts_str[:-1] + "+00:00"
@@ -634,5 +657,6 @@ class PolicySimulator:
             return datetime.min.replace(tzinfo=timezone.utc)
 
     # ── Convenience: DecisionContext for import ────────────────────────────────
+
 
 from glassbox.governance.models import DecisionContext  # noqa: E402

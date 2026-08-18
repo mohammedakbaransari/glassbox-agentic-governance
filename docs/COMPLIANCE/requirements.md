@@ -1,7 +1,5 @@
 # GlassBox — Compliance Framework Reference
 
-**v1.2.0 | Mohammed Akbar Ansari | Independent Researcher**
-
 This document maps every supported compliance standard to GlassBox components and controls. All 97 controls are stored as database records in `ComplianceCatalogue` — no hardcoding.
 
 ---
@@ -420,5 +418,5 @@ all_controls = cat.list_controls(framework="EU AI Act")
 
 ---
 
-*GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher*
+*GlassBox · Apache 2.0*
 

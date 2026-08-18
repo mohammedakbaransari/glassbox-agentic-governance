@@ -1,129 +1,124 @@
 # GlassBox: Runtime Decision Governance for Autonomous AI Systems
 
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.2.0-blue)](pyproject.toml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 
-GlassBox is a Python framework that evaluates AI-generated operational decisions before execution. It validates requests, enforces policy, scores risk, routes outcomes, and records audit evidence.
+GlassBox evaluates AI-generated operational decisions before they take
+effect. It verifies the caller's identity, resolves the action against a
+governed catalogue, scores risk, enforces policy and velocity limits,
+records tamper-evident evidence, and only then permits the effect to run.
+
+## Documentation integrity
+
+Every capability documented here is backed by a specific piece of code and a
+passing test — see [docs/CLAIMS.md](docs/CLAIMS.md) for the exact mapping,
+including what is explicitly not yet built. A CI check
+(`tests/test_claims_coverage.py`) fails the build if a citation stops
+resolving.
 
 ## What it provides
 
-- Runtime policy enforcement for agent decisions
-- Risk scoring and anomaly detection
-- Velocity/fleet breakers and contract checks
-- Immutable/tamper-evident audit support
-- Orchestration patterns (chain, DAG, saga)
-- Optional API, Spark, Redis, OPA, and MCP integrations
+- Identity-verified, tenant-scoped decision evaluation — no caller-asserted
+  tenant or user identity is ever trusted
+- A governed action catalogue with schema-validated parameters, server-derived
+  risk scoring, and policy enforcement
+- Distributed, fail-closed velocity limits and cold-start-resistant anomaly
+  detection
+- Append-only, keyed-MAC evidence with retention that never breaks
+  verifiability
+- At-most-once, idempotent dispatch with pure replay — replay never
+  re-executes a side effect
+- An HTTP surface, a PostgreSQL evidence/limits backend, Redis-backed
+  limits, KMS-backed signing, and OpenTelemetry tracing/metrics
+- 97 compliance controls mapped across 24 regulatory frameworks
+- Zero mandatory runtime dependencies
 
 ## Install
 
 ```bash
 pip install -e .
-# Optional extras:
-# pip install -e .[api,yaml,crypto,redis,spark,authoring]
+# Optional extras, install only what you need:
+# pip install -e .[api,postgres,redis,kms,otel,delta,spark,yaml,crypto,authoring]
 ```
 
-## Quick Start
+## Quick start
 
 ```python
-from glassbox.governance.pipeline import GovernancePipeline
-from glassbox.governance.models import DecisionRequest, DecisionType
+from glassbox.adapters.outbound.memory import memory_adapter_set
+from glassbox.app.composition import build_runtime
+from glassbox.app.config import GlassBoxConfig, RuntimeProfile
+from glassbox.app.decision_service import DecisionService
+from glassbox.domain.action import ResourceRef
+from glassbox.domain.identity import CredentialType, RawCredential
 
-pipeline = GovernancePipeline()
-result = pipeline.process(
-    DecisionRequest(
-        agent_id="procurement_agent",
-        decision_type=DecisionType.PROCUREMENT,
-        payload={"amount": 750000, "category": "semiconductors"},
-    )
+# The in-memory adapter set is for local development only: it provides no
+# durability or tamper-evidence guarantees. Production uses the PostgreSQL,
+# Redis and KMS adapters under glassbox/adapters/outbound instead.
+runtime = build_runtime(GlassBoxConfig(profile=RuntimeProfile.DEV), memory_adapter_set())
+decisions = DecisionService(runtime)
+
+credential = RawCredential(
+    credential_type=CredentialType.OIDC,
+    material="dev:acme:agent.procurement-bot:instance-01",
+)
+resource = ResourceRef(kind="purchase_order", id="po-4471", tenant_id="acme")
+
+outcome = decisions.decide_and_dispatch_for_request(
+    credential,
+    action_name="procurement.create_purchase_order",
+    resource=resource,
+    parameters={"amount": 750000, "category": "semiconductors"},
+    idempotency_key="po-4471-create",
 )
 
-print(result.final_status)
-print(result.risk_score)
-print(result.policy_violations)
+print(outcome.decision.effect)      # ALLOW / DENY / REQUIRE_APPROVAL
+print(outcome.decision.rationale)
+print(outcome.execution)
 ```
+
+`procurement.create_purchase_order` must first be registered in the action
+catalogue (consequence class, exposure rule, parameter schema) — see
+`tests/test_decision_service.py` for a complete, runnable setup and
+[docs/DEVELOPMENT/implementation_guide.md](docs/DEVELOPMENT/implementation_guide.md)
+for how to register your own actions.
 
 ## Run tests
 
 ```bash
-# Full suite
 python -m pytest tests -q
-
-# Coverage
 python -m pytest tests --cov=glassbox --cov-report=term-missing
-
-# Batch harness
-python scripts/run_test_batches.py
 ```
-
-## Validation and Reproducibility
-
-### Canonical Validation Run
-
-| Item | Value |
-|---|---|
-| Command | `python -m pytest -q` |
-| Execution date | April 29, 2026 |
-| Outcome | **883 passed, 1 skipped** |
-| Collected tests (`--collect-only`) | **884 total** |
-
-### Test Suite Composition (Collected Test Count by Module)
-
-| Module | Count |
-|---|---:|
-| `tests/test_core.py` | 211 |
-| `tests/test_governance.py` | 127 |
-| `tests/test_integrations.py` | 74 |
-| `tests/test_api.py` | 70 |
-| `tests/test_edge_cases.py` | 69 |
-| `tests/test_framework.py` | 68 |
-| `tests/test_security.py` | 60 |
-| `tests/test_comprehensive.py` | 49 |
-| `tests/test_enterprise.py` | 41 |
-| `tests/test_sqlite_repo.py` | 28 |
-| `tests/test_batch_runner.py` | 22 |
-| `tests/test_regression.py` | 22 |
-| `tests/test_velocity_breaker_invariants.py` | 17 |
-| `tests/test_hash_chain_tamper.py` | 11 |
-| `tests/test_performance.py` | 11 |
-| `tests/test_remediation.py` | 4 |
-
-## Run examples
-
-```bash
-python examples/industry_examples.py --list
-python examples/industry_examples.py
-python -m glassbox.scenarios.run_scenarios
-```
-
-## API
-
-```bash
-pip install -e .[api]
-python -m glassbox.api.app
-```
-
-Primary API documentation: [docs/API/endpoint_reference.md](docs/API/endpoint_reference.md)
 
 ## Project layout
 
-- `glassbox/governance/`: core governance pipeline and controls
-- `glassbox/api/`: Flask API app and middleware
-- `glassbox/orchestration/`: chain/DAG/saga orchestrator
-- `glassbox/compliance/`: compliance catalogue and reporting helpers
-- `glassbox/rules/`: declarative rules loading/hot reload
-- `glassbox/store/`: persistence abstractions and repositories
-- `tests/`: unit and integration tests
-- `docs/`: user, developer, API, security, deployment, and feature docs
+- `glassbox/domain/` — pure value objects and business rules; no I/O, no
+  third-party dependencies
+- `glassbox/ports/` — the interfaces (`Protocol`s) the domain and
+  application layer depend on
+- `glassbox/app/` — orchestration: `DecisionService`, the composition root,
+  configuration, and observability; depends only on `domain` and `ports`
+- `glassbox/adapters/outbound/` — concrete infrastructure implementations
+  (PostgreSQL, Redis, KMS, identity verification, OpenTelemetry, Delta Lake,
+  Spark, and an in-memory reference set for local development)
+- `glassbox/adapters/inbound/http/` — the HTTP entry point onto
+  `DecisionService`
+- `glassbox/compliance/` — the compliance control catalogue and reporting
+- `glassbox/governance/`, `glassbox/store/`, `glassbox/api/` — the original
+  synchronous implementation, retained for the components documented as
+  preserved in `docs/ARCHITECTURE.md`; new work targets the layers above
+- `tests/` — unit, contract/conformance, property-based, adversarial, and
+  multi-process integration tests
+- `docs/` — architecture, deployment, security, and API documentation
 
 ## Documentation map
 
-- [docs/README.md](docs/README.md)
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/USER/quick_start.md](docs/USER/quick_start.md)
-- [docs/DEVELOPMENT/implementation_guide.md](docs/DEVELOPMENT/implementation_guide.md)
-- [docs/DEPLOYMENT/README.md](docs/DEPLOYMENT/README.md)
-- [docs/SECURITY/README.md](docs/SECURITY/README.md)
+- [docs/README.md](docs/README.md) — documentation index
+- [docs/CLAIMS.md](docs/CLAIMS.md) — every claim, its code, and its test
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — system architecture
+- [docs/USER/quick_start.md](docs/USER/quick_start.md) — getting started
+- [docs/DEVELOPMENT/implementation_guide.md](docs/DEVELOPMENT/implementation_guide.md) — extending GlassBox
+- [docs/DEPLOYMENT/README.md](docs/DEPLOYMENT/README.md) — running it in production
+- [docs/SECURITY/README.md](docs/SECURITY/README.md) — security posture and hardening
 
 ## Contributing
 

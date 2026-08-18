@@ -30,8 +30,8 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 
 from __future__ import annotations
 
-import atexit
 import asyncio
+import atexit
 import concurrent.futures
 import contextlib
 import copy
@@ -42,29 +42,44 @@ import weakref
 from collections import deque
 from typing import Any, Callable, Dict, List, Optional
 
-from glassbox.governance.anomaly_detector  import AnomalyDetector
-from glassbox.governance.audit_logger      import AuditLogger
-from glassbox.governance.context_capture   import ContextCapture
-from glassbox.governance.event_dispatcher  import ResilientEventDispatcher
-from glassbox.governance.execution_trace   import ExecutionTrace, StageTimer
-from glassbox.governance.logging_manager   import get_logger, get_contextual_logger
+from glassbox.governance.anomaly_detector import AnomalyDetector
+from glassbox.governance.audit_logger import AuditLogger
+from glassbox.governance.context_capture import ContextCapture
+from glassbox.governance.event_dispatcher import ResilientEventDispatcher
+from glassbox.governance.execution_trace import ExecutionTrace, StageTimer
+from glassbox.governance.logging_manager import get_contextual_logger, get_logger
 from glassbox.governance.models import (
-    AgentContract, AuditRecord, CircuitBreakerResult,
-    DecisionContext, DecisionRequest, DecisionResponse,
-    DecisionType, Disposition, EcosystemBreakerConfig, ExecutionResult,
-    FinalStatus, LogConfig, PolicyEvaluation, PolicyResult, RiskLevel, RiskResult,
-    RetryConfig, RetryStrategy,
+    AgentContract,
+    AuditRecord,
+    CircuitBreakerResult,
+    DecisionContext,
+    DecisionRequest,
+    DecisionResponse,
+    DecisionType,
+    Disposition,
+    EcosystemBreakerConfig,
+    ExecutionResult,
+    FinalStatus,
+    LogConfig,
+    PolicyEvaluation,
+    PolicyResult,
+    RetryConfig,
+    RetryStrategy,
+    RiskLevel,
+    RiskResult,
 )
+from glassbox.governance.policy_engine import PolicyEngine
+from glassbox.governance.retry_policy import RetryExecutor
+from glassbox.governance.risk_evaluator import RiskEvaluator
+from glassbox.governance.schema_validator import SchemaValidator
 from glassbox.governance.stage_registry import PipelineStageConfig, StagePosition, StageRegistry
 from glassbox.governance.threadpool_config import default_async_workers
-from glassbox.governance.policy_engine     import PolicyEngine
-from glassbox.governance.retry_policy      import RetryExecutor
-from glassbox.governance.risk_evaluator    import RiskEvaluator
-from glassbox.governance.schema_validator  import SchemaValidator
-from glassbox.governance.velocity_breaker  import VelocityBreaker
-from glassbox.governance.write_ahead_log   import WriteAheadLog
-from glassbox.security.sanitizer           import (
-    PayloadSanitizer, SecurityReport, validate_agent_id,
+from glassbox.governance.velocity_breaker import VelocityBreaker
+from glassbox.governance.write_ahead_log import WriteAheadLog
+from glassbox.security.sanitizer import (
+    PayloadSanitizer,
+    SecurityReport,
+    validate_agent_id,
 )
 
 log = get_logger("pipeline")
@@ -75,23 +90,23 @@ _ctx_log = get_contextual_logger("pipeline")
 #          creating hundreds of handlers in tests causing slow process exit.
 # Solution: Track pipelines in a WeakSet, register single module-level handler.
 
-_active_pipelines = weakref.WeakSet()
+_active_pipelines: "weakref.WeakSet[GovernancePipeline]" = weakref.WeakSet()
 
 
 def _shutdown_all_pipelines() -> None:
     """
     Module-level atexit handler that shuts down all active pipelines.
-    
+
     Uses WeakSet so pipelines that are garbage-collected are automatically
     removed without manual cleanup. This prevents resource leaks and ensures
     graceful shutdown of remaining active pipelines.
     """
     # Create a snapshot of active pipelines (WeakSet may change during iteration)
     pipelines = list(_active_pipelines)
-    
+
     for pipeline in pipelines:
         try:
-            if hasattr(pipeline, 'shutdown'):
+            if hasattr(pipeline, "shutdown"):
                 pipeline.shutdown()
         except Exception as exc:
             log.error(
@@ -135,47 +150,45 @@ class GovernancePipeline:
     def __init__(
         self,
         # Core components (injectable)
-        policy_engine:    Optional[PolicyEngine]    = None,
-        risk_evaluator:   Optional[RiskEvaluator]   = None,
+        policy_engine: Optional[PolicyEngine] = None,
+        risk_evaluator: Optional[RiskEvaluator] = None,
         velocity_breaker: Optional[VelocityBreaker] = None,
         anomaly_detector: Optional[AnomalyDetector] = None,
         schema_validator: Optional[SchemaValidator] = None,
-        audit_logger:     Optional[AuditLogger]     = None,
-        executor:         Optional[Callable[[AuditRecord], Dict[str, Any]]] = None,
-        retry_config:     Optional[RetryConfig]     = None,
-        sanitizer:        Optional[PayloadSanitizer] = None,
+        audit_logger: Optional[AuditLogger] = None,
+        executor: Optional[Callable[[AuditRecord], Dict[str, Any]]] = None,
+        retry_config: Optional[RetryConfig] = None,
+        sanitizer: Optional[PayloadSanitizer] = None,
         ecosystem_config: Optional[EcosystemBreakerConfig] = None,
-
         # Framework integrations (opt-in)
-        event_bus:            Optional[Any] = None,
-        audit_repo:           Optional[Any] = None,
-        workflow_engine:      Optional[Any] = None,
+        event_bus: Optional[Any] = None,
+        audit_repo: Optional[Any] = None,
+        workflow_engine: Optional[Any] = None,
         compliance_catalogue: Optional[Any] = None,
-        access_control:       Optional[Any] = None,
-        hash_audit:           Optional[Any] = None,
-        wal:                  Optional[WriteAheadLog] = None,
-        stage_registry:       Optional[StageRegistry] = None,
-        trace_enabled:        bool          = False,
-        async_audit_writes:   bool          = False,
-        strict_audit_persistence: bool      = False,
-        side_effect_mode:     Optional[str] = None,
-
+        access_control: Optional[Any] = None,
+        hash_audit: Optional[Any] = None,
+        wal: Optional[WriteAheadLog] = None,
+        stage_registry: Optional[StageRegistry] = None,
+        trace_enabled: bool = False,
+        async_audit_writes: bool = False,
+        strict_audit_persistence: bool = False,
+        side_effect_mode: Optional[str] = None,
         # Config
-        environment:      str  = "production",
-        log_dir:          Optional[str] = None,
-        echo:             bool = False,
+        environment: str = "production",
+        log_dir: Optional[str] = None,
+        echo: bool = False,
         max_memory_records: int = 100_000,
-        async_workers:    Optional[int] = None,
+        async_workers: Optional[int] = None,
         recover_wal_on_startup: bool = False,
     ):
         eco = ecosystem_config or EcosystemBreakerConfig()
 
-        self.context_capture  = ContextCapture(environment=environment)
-        self.policy_engine    = policy_engine   or PolicyEngine()
-        self.risk_evaluator   = risk_evaluator  or RiskEvaluator()
+        self.context_capture = ContextCapture(environment=environment)
+        self.policy_engine = policy_engine or PolicyEngine()
+        self.risk_evaluator = risk_evaluator or RiskEvaluator()
         self.anomaly_detector = anomaly_detector or AnomalyDetector()
         self.schema_validator = schema_validator or SchemaValidator()
-        self.sanitizer        = sanitizer or PayloadSanitizer()
+        self.sanitizer = sanitizer or PayloadSanitizer()
 
         if velocity_breaker is None:
             self.velocity_breaker = VelocityBreaker(
@@ -186,26 +199,32 @@ class GovernancePipeline:
             self.velocity_breaker = velocity_breaker
 
         self.audit_logger = audit_logger or AuditLogger(
-            log_dir=log_dir, echo=echo, max_memory_records=max_memory_records,
+            log_dir=log_dir,
+            echo=echo,
+            max_memory_records=max_memory_records,
         )
-        self.executor      = executor
-        self.retry_exec    = RetryExecutor(config=retry_config or RetryConfig())
-        self.environment   = environment
+        self.executor = executor
+        self.retry_exec = RetryExecutor(config=retry_config or RetryConfig())
+        self.environment = environment
 
         # Framework integrations
-        self.event_bus            = event_bus
-        self.audit_repo           = audit_repo
-        self.workflow_engine      = workflow_engine
+        self.event_bus = event_bus
+        self.audit_repo = audit_repo
+        self.workflow_engine = workflow_engine
         self.compliance_catalogue = compliance_catalogue
-        self.access_control       = access_control
-        self.hash_audit           = hash_audit
-        self.wal                  = wal
-        self.stage_registry       = stage_registry
-        self.trace_enabled        = trace_enabled
-        self.async_audit_writes   = async_audit_writes
+        self.access_control = access_control
+        self.hash_audit = hash_audit
+        self.wal = wal
+        self.stage_registry = stage_registry
+        self.trace_enabled = trace_enabled
+        self.async_audit_writes = async_audit_writes
         self.strict_audit_persistence = strict_audit_persistence
         self.recover_wal_on_startup = recover_wal_on_startup
-        if self.async_audit_writes and self.audit_repo and getattr(self.audit_logger, "repository", None) is None:
+        if (
+            self.async_audit_writes
+            and self.audit_repo
+            and getattr(self.audit_logger, "repository", None) is None
+        ):
             self.audit_logger.repository = self.audit_repo
         resolved_side_effect_mode = (side_effect_mode or "").strip().lower()
         if not resolved_side_effect_mode:
@@ -214,20 +233,22 @@ class GovernancePipeline:
             )
         self.side_effect_mode = resolved_side_effect_mode
         if self.side_effect_mode not in {"best_effort", "strict"}:
-            raise ValueError(
-                "side_effect_mode must be either 'best_effort' or 'strict'"
-            )
+            raise ValueError("side_effect_mode must be either 'best_effort' or 'strict'")
         if self.strict_audit_persistence:
             self.side_effect_mode = "strict"
         self._ensure_stage_registry_defaults()
 
         # Resilient event dispatcher (v1.0.1 - CRITICAL-1 fix)
-        self._event_dispatcher = ResilientEventDispatcher(
-            event_bus=event_bus,
-            fallback_log_fn=lambda msg: log.warning(msg),
-            max_failures=10,
-            failure_timeout_sec=60,
-        ) if event_bus else None
+        self._event_dispatcher = (
+            ResilientEventDispatcher(
+                event_bus=event_bus,
+                fallback_log_fn=lambda msg: log.warning(msg),
+                max_failures=10,
+                failure_timeout_sec=60,
+            )
+            if event_bus
+            else None
+        )
 
         # O2: Aggregate per-stage latency tracker for built-in stages.
         # Maps stage_name -> list[float ms], capped at _STAGE_LATENCY_WINDOW.
@@ -240,12 +261,16 @@ class GovernancePipeline:
         self._contracts_lock = threading.RLock()
 
         # Thread pool for async dispatch
-        resolved_async_workers = async_workers if async_workers is not None else default_async_workers()
-        self.shared_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=resolved_async_workers,
-            thread_name_prefix="glassbox-async",
+        resolved_async_workers = (
+            async_workers if async_workers is not None else default_async_workers()
         )
-        self._thread_pool = self.shared_executor
+        self.shared_executor: Optional[concurrent.futures.ThreadPoolExecutor] = (
+            concurrent.futures.ThreadPoolExecutor(
+                max_workers=resolved_async_workers,
+                thread_name_prefix="glassbox-async",
+            )
+        )
+        self._thread_pool: Optional[concurrent.futures.ThreadPoolExecutor] = self.shared_executor
         self._shutdown_lock = threading.Lock()
         self._shutdown_complete = False
 
@@ -257,23 +282,26 @@ class GovernancePipeline:
         # add to WeakSet and let module-level handler manage cleanup.
         _active_pipelines.add(self)
 
-        log.info("GovernancePipeline initialised", extra={
-            "component":      "pipeline",
-            "event":          "init",
-            "environment":    environment,
-            "policies":       len(self.policy_engine.policies),
-            "event_bus":      event_bus is not None,
-            "audit_repo":     audit_repo is not None,
-            "workflow_engine":workflow_engine is not None,
-            "access_control": access_control is not None,
-            "hash_audit":    hash_audit is not None,
-            "trace_enabled":  trace_enabled,
-            "strict_audit_persistence": strict_audit_persistence,
-            "side_effect_mode": self.side_effect_mode,
-            "stage_registry": stage_registry is not None,
-            "async_workers": resolved_async_workers,
-            "recover_wal_on_startup": recover_wal_on_startup,
-        })
+        log.info(
+            "GovernancePipeline initialised",
+            extra={
+                "component": "pipeline",
+                "event": "init",
+                "environment": environment,
+                "policies": len(self.policy_engine.policies),
+                "event_bus": event_bus is not None,
+                "audit_repo": audit_repo is not None,
+                "workflow_engine": workflow_engine is not None,
+                "access_control": access_control is not None,
+                "hash_audit": hash_audit is not None,
+                "trace_enabled": trace_enabled,
+                "strict_audit_persistence": strict_audit_persistence,
+                "side_effect_mode": self.side_effect_mode,
+                "stage_registry": stage_registry is not None,
+                "async_workers": resolved_async_workers,
+                "recover_wal_on_startup": recover_wal_on_startup,
+            },
+        )
 
     # ── Contract Registry ──────────────────────────────────────────────────
 
@@ -365,9 +393,7 @@ class GovernancePipeline:
 
         missing_dependencies = [dep for dep in config.depends_on if dep not in completed_stages]
         if missing_dependencies:
-            reason = (
-                f"Stage '{config.name}' dependencies not satisfied: {', '.join(missing_dependencies)}"
-            )
+            reason = f"Stage '{config.name}' dependencies not satisfied: {', '.join(missing_dependencies)}"
             if config.fallback_on_failure:
                 return StageExecutionResult(
                     config.name,
@@ -390,6 +416,8 @@ class GovernancePipeline:
             # Reuse the pipeline's shared executor rather than spawning a new
             # ThreadPoolExecutor per stage call (which created/destroyed a thread
             # pool on every request — severe overhead at production throughput).
+            if self.shared_executor is None:
+                raise RuntimeError("pipeline shared executor is unavailable (shut down?)")
             future = self.shared_executor.submit(stage_impl.execute, runtime_context)
             passed, blocked_reason = future.result(timeout=max(config.timeout_ms, 1) / 1000.0)
             return StageExecutionResult(
@@ -437,7 +465,11 @@ class GovernancePipeline:
                 payload=runtime_context.get("payload") or request.payload,
             )
             runtime_context["audit_record"] = record
-        message = result.blocked_reason or result.error or f"Stage '{result.stage_name}' blocked execution"
+        message = (
+            result.blocked_reason
+            or result.error
+            or f"Stage '{result.stage_name}' blocked execution"
+        )
         policy_id = f"STAGE-{result.stage_name.upper().replace('-', '_')}"
         response = self._blocked_early(record, message, policy_id)
         return self._finalize(record, t_start, response, trace)
@@ -451,7 +483,10 @@ class GovernancePipeline:
 
             context_data = payload.get("context") or {}
             context = DecisionContext(
-                session_id=context_data.get("session_id") or context_data.get("request_id") or context_data.get("correlation_id") or "wal-recovery",
+                session_id=context_data.get("session_id")
+                or context_data.get("request_id")
+                or context_data.get("correlation_id")
+                or "wal-recovery",
                 environment=context_data.get("environment", "production"),
                 source_system=context_data.get("source_system", "unknown"),
                 user_override=bool(context_data.get("user_override", False)),
@@ -493,7 +528,9 @@ class GovernancePipeline:
                 record.risk_result = RiskResult(
                     risk_score=float(risk_result.get("risk_score") or 0.0),
                     risk_level=RiskLevel(str(risk_result.get("risk_level") or RiskLevel.LOW.value)),
-                    disposition=Disposition(str(risk_result.get("disposition") or Disposition.AUTO_EXECUTE.value)),
+                    disposition=Disposition(
+                        str(risk_result.get("disposition") or Disposition.AUTO_EXECUTE.value)
+                    ),
                     factors=[],
                 )
 
@@ -563,7 +600,9 @@ class GovernancePipeline:
                     risk_level=record.risk_result.risk_level if record.risk_result else None,
                     risk_score=record.risk_result.risk_score if record.risk_result else None,
                     disposition=record.risk_result.disposition if record.risk_result else None,
-                    policy_violations=record.policy_result.violations if record.policy_result else [],
+                    policy_violations=(
+                        record.policy_result.violations if record.policy_result else []
+                    ),
                     policy_warnings=record.policy_result.warnings if record.policy_result else [],
                     audit_record=record,
                 )
@@ -574,7 +613,9 @@ class GovernancePipeline:
             recovered += 1
 
         if recovered:
-            log.info("Recovered %d WAL entr%s on startup", recovered, "y" if recovered == 1 else "ies")
+            log.info(
+                "Recovered %d WAL entr%s on startup", recovered, "y" if recovered == 1 else "ies"
+            )
         return recovered
 
     def _tenant_id_from_request(
@@ -610,7 +651,7 @@ class GovernancePipeline:
 
     def process(
         self,
-        request:          DecisionRequest,
+        request: DecisionRequest,
         request_metadata: Optional[Dict[str, Any]] = None,
     ) -> DecisionResponse:
         """
@@ -620,7 +661,7 @@ class GovernancePipeline:
 
     async def process_async(
         self,
-        request:          DecisionRequest,
+        request: DecisionRequest,
         request_metadata: Optional[Dict[str, Any]] = None,
     ) -> DecisionResponse:
         """
@@ -639,7 +680,7 @@ class GovernancePipeline:
 
     def _run_pipeline(
         self,
-        request:          DecisionRequest,
+        request: DecisionRequest,
         request_metadata: Optional[Dict[str, Any]],
     ) -> DecisionResponse:
         request = self._prepare_request(request)
@@ -647,11 +688,9 @@ class GovernancePipeline:
             try:
                 request.decision_type = DecisionType(request.decision_type.lower())
             except ValueError as exc:
-                raise ValueError(
-                    f"Invalid decision_type '{request.decision_type}'"
-                ) from exc
+                raise ValueError(f"Invalid decision_type '{request.decision_type}'") from exc
         t_start = time.perf_counter()
-        trace   = ExecutionTrace(request.request_id) if self.trace_enabled else None
+        trace = ExecutionTrace(request.request_id) if self.trace_enabled else None
 
         # Bind correlation context for this call's duration so all log lines emitted
         # during policy/risk/anomaly stages carry agent_id and decision_type.
@@ -667,13 +706,15 @@ class GovernancePipeline:
 
     def _execute_pipeline(
         self,
-        request:          DecisionRequest,
+        request: DecisionRequest,
         request_metadata: Optional[Dict[str, Any]],
-        t_start:          float,
+        t_start: float,
         trace,
     ) -> DecisionResponse:
         runtime_stage_plan = self._resolve_runtime_stage_plan(request.agent_id, request_metadata)
-        active_stages = {config.name for config, _ in runtime_stage_plan} if runtime_stage_plan else None
+        active_stages = (
+            {config.name for config, _ in runtime_stage_plan} if runtime_stage_plan else None
+        )
         pending_custom_stages = deque(
             (config, stage_impl)
             for config, stage_impl in runtime_stage_plan
@@ -757,7 +798,9 @@ class GovernancePipeline:
                 payload={},
                 context=dummy_ctx,
             )
-            with self._timed_call(trace, 0, "AgentIDValidation", {"agent_id": request.agent_id}) as t:
+            with self._timed_call(
+                trace, 0, "AgentIDValidation", {"agent_id": request.agent_id}
+            ) as t:
                 t.outcome = "blocked"
                 t.detail = id_err or "Invalid agent_id"
             log.warning(f"Agent ID validation failed for '{request.agent_id}': {id_err}")
@@ -765,7 +808,8 @@ class GovernancePipeline:
             return self._finalize(record, t_start, resp, trace)
 
         sec_report: SecurityReport = self.sanitizer.check(
-            request.payload, agent_id=request.agent_id,
+            request.payload,
+            agent_id=request.agent_id,
         )
         if sec_report.blocked:
             ctx = request.context or DecisionContext()
@@ -776,7 +820,8 @@ class GovernancePipeline:
                 context=ctx,
             )
             detail = "; ".join(
-                f"{f.category}@{f.field_path}" for f in sec_report.findings
+                f"{f.category}@{f.field_path}"
+                for f in sec_report.findings
                 if f.severity in ("critical", "high")
             )
             with self._timed_call(trace, 0, "SecuritySanitizer") as t:
@@ -809,7 +854,9 @@ class GovernancePipeline:
             if viol:
                 record = self._init_record(request, request_metadata, clean_payload)
                 record.contract_validated = True
-                with self._timed_call(trace, 0, "AgentContract", {"agent_id": request.agent_id}) as t:
+                with self._timed_call(
+                    trace, 0, "AgentContract", {"agent_id": request.agent_id}
+                ) as t:
                     t.outcome = "blocked"
                     t.detail = viol
                 log.warning(f"Agent contract violation for agent '{request.agent_id}': {viol}")
@@ -846,7 +893,9 @@ class GovernancePipeline:
         record.payload = clean_payload
 
         if _stage_enabled("schema_validation"):
-            with self._timed_call(trace, 3, "SchemaValidation", {"decision_type": request.decision_type.value}) as t:
+            with self._timed_call(
+                trace, 3, "SchemaValidation", {"decision_type": request.decision_type.value}
+            ) as t:
                 schema_ok, schema_error = self.schema_validator.validate(
                     request.decision_type,
                     clean_payload,
@@ -868,7 +917,12 @@ class GovernancePipeline:
         # ── Stages 4 + 5: Circuit Breakers (Velocity + Anomaly) ──────────────
         cb_triggered, cb_name, cb_reason, is_eco, vel_count, anom_score, anom_fields = (
             self._stage_circuit_breakers(
-                scoped_agent_id, request, record, clean_payload, trace, active_stages,
+                scoped_agent_id,
+                request,
+                record,
+                clean_payload,
+                trace,
+                active_stages,
             )
         )
         completed_stage_names.add("velocity_breaker")
@@ -888,8 +942,11 @@ class GovernancePipeline:
             record.final_status = FinalStatus.BLOCKED
             if cb_name == "anomaly_detector" and self._event_dispatcher:
                 self._emit_anomaly_event(
-                    record.decision_id, request.agent_id,
-                    request.decision_type.value, anom_fields, anom_score,
+                    record.decision_id,
+                    request.agent_id,
+                    request.decision_type.value,
+                    anom_fields,
+                    anom_score,
                 )
             elif self._event_dispatcher:
                 self._emit_breaker_event(request.agent_id, cb_name or "", cb_reason or "", is_eco)
@@ -910,7 +967,12 @@ class GovernancePipeline:
 
         # ── Stages 6 + 7: Policy Enforcement + Risk Evaluation ───────────────
         policy_result, risk_result = self._stage_policy_and_risk(
-            request, record, clean_payload, context, trace, active_stages,
+            request,
+            record,
+            clean_payload,
+            context,
+            trace,
+            active_stages,
         )
         record.policy_result = policy_result
         record.risk_result = risk_result
@@ -920,7 +982,12 @@ class GovernancePipeline:
         completed_stage_names.add("risk_evaluation")
 
         if not policy_result.passed and self._event_dispatcher:
-            self._emit_policy_event(record.decision_id, request.agent_id, policy_result.violations, policy_result.warnings)
+            self._emit_policy_event(
+                record.decision_id,
+                request.agent_id,
+                policy_result.violations,
+                policy_result.warnings,
+            )
 
         staged_response = _run_registered_stages(StagePosition.STAGE_DISPOSITION_ROUTING.value)
         if staged_response is not None:
@@ -935,7 +1002,8 @@ class GovernancePipeline:
             FinalStatus.EXECUTED: "Decision approved and executed.",
             FinalStatus.PENDING_REVIEW: f"Queued for human review (risk={risk_result.risk_score}).",
             FinalStatus.BLOCKED: (
-                "Blocked. " + (
+                "Blocked. "
+                + (
                     f"Violations: {policy_result.violations}"
                     if policy_result.violations
                     else f"Risk score {risk_result.risk_score} exceeds block threshold."
@@ -948,7 +1016,8 @@ class GovernancePipeline:
             top = sorted(risk_result.factors, key=lambda f: f.score * f.weight, reverse=True)[:3]
             parts = [
                 f"{f.factor.replace('_',' ')} ({int(f.score * f.weight)}pts)"
-                for f in top if f.score * f.weight > 0
+                for f in top
+                if f.score * f.weight > 0
             ]
             if parts:
                 _risk_expl = f"Risk {risk_result.risk_score:.0f}/100: {', '.join(parts)}"
@@ -1002,6 +1071,7 @@ class GovernancePipeline:
         Returns (cb_triggered, cb_name, cb_reason, is_eco, vel_count,
                  anom_score, anom_fields, optional_early_response)
         """
+
         def _stage_enabled(name):
             return active_stages is None or name in active_stages
 
@@ -1013,9 +1083,16 @@ class GovernancePipeline:
                 t.detail = vel_reason or ""
                 t.output_summary = {"count": vel_count, "triggered": vel_triggered}
 
-        anom_triggered, anom_score, anom_fields = False, 0.0, []
+        anom_triggered: bool = False
+        anom_score: float = 0.0
+        anom_fields: List[Any] = []
         if _stage_enabled("anomaly_detection"):
-            with self._timed_call(trace, 5, "AnomalyDetection", {"agent_id": request.agent_id, "decision_type": request.decision_type.value}) as t:
+            with self._timed_call(
+                trace,
+                5,
+                "AnomalyDetection",
+                {"agent_id": request.agent_id, "decision_type": request.decision_type.value},
+            ) as t:
                 anom_triggered, anom_score, anom_fields = self.anomaly_detector.check(
                     agent_id=scoped_agent_id,
                     decision_type=request.decision_type.value,
@@ -1052,11 +1129,14 @@ class GovernancePipeline:
 
         Returns (policy_result, risk_result).
         """
+
         def _stage_enabled(name):
             return active_stages is None or name in active_stages
 
         if _stage_enabled("policy_enforcement"):
-            with self._timed_call(trace, 6, "PolicyEnforcement", {"decision_type": request.decision_type.value}) as t:
+            with self._timed_call(
+                trace, 6, "PolicyEnforcement", {"decision_type": request.decision_type.value}
+            ) as t:
                 policy_result = self.policy_engine.evaluate(
                     decision_type=request.decision_type,
                     payload=clean_payload,
@@ -1123,8 +1203,11 @@ class GovernancePipeline:
                         "Executor failed after %d attempts: %s",
                         exec_result.attempts,
                         exec_result.error,
-                        extra={"component": "pipeline", "event": "executor_failed",
-                               "decision_id": record.decision_id},
+                        extra={
+                            "component": "pipeline",
+                            "event": "executor_failed",
+                            "decision_id": record.decision_id,
+                        },
                     )
 
         with self._timed_call(trace, 8, "Disposition") as t:
@@ -1140,9 +1223,9 @@ class GovernancePipeline:
 
     def _init_record(
         self,
-        request:  DecisionRequest,
+        request: DecisionRequest,
         metadata: Optional[Dict] = None,
-        payload:  Optional[Dict] = None,
+        payload: Optional[Dict] = None,
     ) -> AuditRecord:
         context = self.context_capture.enrich(request, metadata)
         return AuditRecord(
@@ -1209,33 +1292,41 @@ class GovernancePipeline:
 
     def _check_contract(
         self,
-        request:  DecisionRequest,
+        request: DecisionRequest,
         contract: AgentContract,
     ) -> Optional[str]:
         if request.decision_type not in contract.permitted_types:
-            return (f"Agent '{request.agent_id}' not authorised for "
-                    f"'{request.decision_type.value}'. "
-                    f"Permitted: {[t.value for t in contract.permitted_types]}.")
+            return (
+                f"Agent '{request.agent_id}' not authorised for "
+                f"'{request.decision_type.value}'. "
+                f"Permitted: {[t.value for t in contract.permitted_types]}."
+            )
         amount = float(request.payload.get("amount") or 0)
         if amount > contract.max_amount:
-            return (f"Amount ${amount:,.2f} exceeds agent contract limit "
-                    f"${contract.max_amount:,.2f}.")
+            return (
+                f"Amount ${amount:,.2f} exceeds agent contract limit "
+                f"${contract.max_amount:,.2f}."
+            )
         chain_depth = len(request.context.agent_chain) if request.context else 0
         if chain_depth > contract.max_delegation_depth:
-            return (f"Agent chain depth {chain_depth} exceeds contract "
-                    f"limit {contract.max_delegation_depth}.")
+            return (
+                f"Agent chain depth {chain_depth} exceeds contract "
+                f"limit {contract.max_delegation_depth}."
+            )
         if not contract.delegation_allowed and chain_depth > 0:
-            return (f"Agent '{request.agent_id}' contract prohibits delegation "
-                    f"(chain depth {chain_depth}).")
+            return (
+                f"Agent '{request.agent_id}' contract prohibits delegation "
+                f"(chain depth {chain_depth})."
+            )
         return None
 
     @contextlib.contextmanager
     def _timed_call(
         self,
-        trace:      Optional[Any],
-        stage_num:  int,
+        trace: Optional[Any],
+        stage_num: int,
         stage_name: str,
-        metadata:   Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         """
         Context manager that wraps StageTimer when trace is active; no-op otherwise.
@@ -1255,6 +1346,7 @@ class GovernancePipeline:
             with StageTimer(trace, stage_num, stage_name, metadata or {}) as t:
                 yield t
         else:
+
             class _NoopTimer:
                 # Instance attributes — NOT class-level mutables — so concurrent
                 # callers each get their own dict and cannot cross-contaminate.
@@ -1262,6 +1354,7 @@ class GovernancePipeline:
                     self.outcome: str = ""
                     self.detail: str = ""
                     self.output_summary: Dict[str, Any] = {}
+
             yield _NoopTimer()
         # O2: Record elapsed time for this stage in the aggregate tracker.
         _elapsed_ms = (time.perf_counter() - _t0) * 1000
@@ -1269,25 +1362,29 @@ class GovernancePipeline:
             samples = self._stage_latencies.setdefault(stage_name, [])
             samples.append(_elapsed_ms)
             if len(samples) > self._STAGE_LATENCY_WINDOW:
-                self._stage_latencies[stage_name] = samples[self._STAGE_LATENCY_WINDOW // 2:]
+                self._stage_latencies[stage_name] = samples[self._STAGE_LATENCY_WINDOW // 2 :]
 
     def _blocked_early(
         self,
-        record:    AuditRecord,
-        message:   str,
+        record: AuditRecord,
+        message: str,
         policy_id: str,
     ) -> DecisionResponse:
         policy_result = PolicyResult(
             passed=False,
             violations=[f"[{policy_id}] {message}"],
-            evaluated_policies=[PolicyEvaluation(
-                policy_id=policy_id, policy_name="Pre-pipeline Validation",
-                result="fail", message=message,
-            )],
+            evaluated_policies=[
+                PolicyEvaluation(
+                    policy_id=policy_id,
+                    policy_name="Pre-pipeline Validation",
+                    result="fail",
+                    message=message,
+                )
+            ],
         )
-        record.policy_result          = policy_result
+        record.policy_result = policy_result
         record.circuit_breaker_result = CircuitBreakerResult(triggered=False)
-        record.final_status           = FinalStatus.BLOCKED
+        record.final_status = FinalStatus.BLOCKED
         return DecisionResponse(
             decision_id=record.decision_id,
             final_status=FinalStatus.BLOCKED,
@@ -1299,13 +1396,13 @@ class GovernancePipeline:
 
     def _finalize(
         self,
-        record:   AuditRecord,
-        t_start:  float,
+        record: AuditRecord,
+        t_start: float,
         response: DecisionResponse,
-        trace:    Optional[ExecutionTrace] = None,
+        trace: Optional[ExecutionTrace] = None,
     ) -> DecisionResponse:
         latency_ms = round((time.perf_counter() - t_start) * 1000, 3)
-        record.pipeline_latency_ms   = latency_ms
+        record.pipeline_latency_ms = latency_ms
         response.pipeline_latency_ms = latency_ms
 
         # Attach execution trace
@@ -1321,6 +1418,10 @@ class GovernancePipeline:
             except Exception as exc:
                 log.warning("WAL begin_transaction failed (non-fatal): %s", exc)
 
+        def _wal_mark_side_effect(event: str, **kwargs: Any) -> None:
+            if _wal_entry is not None and self.wal is not None:
+                self.wal.mark_side_effect(_wal_entry.entry_id, event, **kwargs)
+
         # In-memory audit log — sync or async.
         # Errors always raise in strict mode; in best_effort mode a failed
         # in-memory write still raises because there is no backup persistence
@@ -1330,14 +1431,13 @@ class GovernancePipeline:
                 self.audit_logger.log_async(record)
             else:
                 self.audit_logger.log(record)
-            if _wal_entry:
-                self.wal.mark_side_effect(_wal_entry.entry_id, "audit_saved", success=True)
+            _wal_mark_side_effect("audit_saved", success=True)
         except Exception as exc:
-            if _wal_entry:
-                self.wal.mark_side_effect(_wal_entry.entry_id, "audit_saved",
-                                          success=False, error_msg=str(exc))
+            _wal_mark_side_effect("audit_saved", success=False, error_msg=str(exc))
             self._handle_side_effect_failure(
-                side_effect="audit_logger.log_async" if self.async_audit_writes else "audit_logger.log",
+                side_effect=(
+                    "audit_logger.log_async" if self.async_audit_writes else "audit_logger.log"
+                ),
                 exc=exc,
                 decision_id=record.decision_id,
                 force_raise=self.strict_audit_persistence or self.side_effect_mode == "strict",
@@ -1347,12 +1447,9 @@ class GovernancePipeline:
         if self.audit_repo and not self.async_audit_writes:
             try:
                 self.audit_repo.save(record)
-                if _wal_entry:
-                    self.wal.mark_side_effect(_wal_entry.entry_id, "repo_saved", success=True)
+                _wal_mark_side_effect("repo_saved", success=True)
             except Exception as exc:
-                if _wal_entry:
-                    self.wal.mark_side_effect(_wal_entry.entry_id, "repo_saved",
-                                              success=False, error_msg=str(exc))
+                _wal_mark_side_effect("repo_saved", success=False, error_msg=str(exc))
                 self._handle_side_effect_failure(
                     side_effect="audit_repo.save",
                     exc=exc,
@@ -1370,16 +1467,9 @@ class GovernancePipeline:
                     violations=record.policy_result.violations if record.policy_result else [],
                     warnings=record.policy_result.warnings if record.policy_result else [],
                 )
-                if _wal_entry:
-                    self.wal.mark_side_effect(_wal_entry.entry_id, "workflow_created", success=True)
+                _wal_mark_side_effect("workflow_created", success=True)
             except Exception as exc:
-                if _wal_entry:
-                    self.wal.mark_side_effect(
-                        _wal_entry.entry_id,
-                        "workflow_created",
-                        success=False,
-                        error_msg=str(exc),
-                    )
+                _wal_mark_side_effect("workflow_created", success=False, error_msg=str(exc))
                 self._handle_side_effect_failure(
                     side_effect="workflow_engine.create_from_decision",
                     exc=exc,
@@ -1412,12 +1502,9 @@ class GovernancePipeline:
         if self.event_bus and record.final_status:
             try:
                 self._emit_decision_event(record, response)
-                if _wal_entry:
-                    self.wal.mark_side_effect(_wal_entry.entry_id, "events_emitted", success=True)
+                _wal_mark_side_effect("events_emitted", success=True)
             except Exception as exc:
-                if _wal_entry:
-                    self.wal.mark_side_effect(_wal_entry.entry_id, "events_emitted",
-                                              success=False, error_msg=str(exc))
+                _wal_mark_side_effect("events_emitted", success=False, error_msg=str(exc))
                 self._handle_side_effect_failure(
                     side_effect="event_bus.publish",
                     exc=exc,
@@ -1425,7 +1512,7 @@ class GovernancePipeline:
                 )
 
         # WAL commit — all side effects completed successfully
-        if _wal_entry:
+        if _wal_entry is not None and self.wal is not None:
             try:
                 self.wal.commit(_wal_entry.entry_id)
             except Exception as exc:
@@ -1438,6 +1525,8 @@ class GovernancePipeline:
         record: AuditRecord,
         response: DecisionResponse,
     ) -> None:
+        if self.hash_audit is None:
+            return
         metadata = self._context_metadata(record.context)
         user_id = metadata.get("user_id") or "unknown"
         self.hash_audit.log_action(
@@ -1448,9 +1537,11 @@ class GovernancePipeline:
             result=response.final_status.value,
             context={
                 "agent_id": record.agent_id,
-                "decision_type": record.decision_type.value
-                if hasattr(record.decision_type, "value")
-                else str(record.decision_type),
+                "decision_type": (
+                    record.decision_type.value
+                    if hasattr(record.decision_type, "value")
+                    else str(record.decision_type)
+                ),
                 "risk_score": getattr(response, "risk_score", None),
                 "tenant_id": metadata.get("tenant_id"),
                 "request_id": record.context.session_id if record.context else None,
@@ -1495,140 +1586,147 @@ class GovernancePipeline:
                 # Every governed decision evidences audit, logging, monitoring, ZTA verification
                 # controls and general AI risk management regardless of type or outcome.
                 "all": [
-                    "AIRM.MG.02",      # NIST AI RMF — AI decision audit trail
-                    "EUAI.A12",        # EU AI Act — Record-keeping
-                    "EUAI.A13",        # EU AI Act — Transparency (ExecutionTrace present)
-                    "EUAI.A15",        # EU AI Act — Accuracy/Robustness (AI-001 confidence guard)
-                    "CSF2.DE.CM-01",   # NIST CSF 2.0 — Continuous monitoring
-                    "E8.ML2.03",       # ASD E8 — Audit logging
+                    "AIRM.MG.02",  # NIST AI RMF — AI decision audit trail
+                    "EUAI.A12",  # EU AI Act — Record-keeping
+                    "EUAI.A13",  # EU AI Act — Transparency (ExecutionTrace present)
+                    "EUAI.A15",  # EU AI Act — Accuracy/Robustness (AI-001 confidence guard)
+                    "CSF2.DE.CM-01",  # NIST CSF 2.0 — Continuous monitoring
+                    "E8.ML2.03",  # ASD E8 — Audit logging
                     "IEC62443.SR6.1",  # IEC 62443 — Audit log accessibility
-                    "ZTA.TE-01",       # ZTA — Never trust, always verify (per-decision governance)
-                    "ZTA.PE-01",       # ZTA — Dynamic policy evaluation
-                    "ISO27K.A8.15",    # ISO 27001 — Logging
-                    "ISO27K.A8.16",    # ISO 27001 — Monitoring activities
-                    "ISO42K.9.1",      # ISO/IEC 42001 — Monitoring, measurement, analysis
-                    "SOC2.CC7.2",      # SOC 2 — System monitoring
-                    "800-53.AU-2",     # NIST 800-53 — Event logging
-                    "800-53.AU-9",     # NIST 800-53 — Protection of audit information
-                    "FDA11.11.10e",    # FDA 21 CFR Part 11 — Audit trails (electronic records)
-                    "FFIEC.D1.CC",     # FFIEC CAT — Cyber risk identification
-                    "DORA.Art6",       # DORA — ICT risk management framework
+                    "ZTA.TE-01",  # ZTA — Never trust, always verify (per-decision governance)
+                    "ZTA.PE-01",  # ZTA — Dynamic policy evaluation
+                    "ISO27K.A8.15",  # ISO 27001 — Logging
+                    "ISO27K.A8.16",  # ISO 27001 — Monitoring activities
+                    "ISO42K.9.1",  # ISO/IEC 42001 — Monitoring, measurement, analysis
+                    "SOC2.CC7.2",  # SOC 2 — System monitoring
+                    "800-53.AU-2",  # NIST 800-53 — Event logging
+                    "800-53.AU-9",  # NIST 800-53 — Protection of audit information
+                    "FDA11.11.10e",  # FDA 21 CFR Part 11 — Audit trails (electronic records)
+                    "FFIEC.D1.CC",  # FFIEC CAT — Cyber risk identification
+                    "DORA.Art6",  # DORA — ICT risk management framework
                 ],
                 # Auto-execute decisions: risk treatment, ZTA least-privilege, human oversight
                 "executed": [
-                    "AIRM.MG.01",      # NIST AI RMF — AI risk treatment
-                    "EUAI.A14",        # EU AI Act — Human oversight (decision auto-approved)
-                    "ZTA.TE-02",       # ZTA — Least privilege (within AgentContract limits)
-                    "COL.SB205.8",     # Colorado AI Act — Risk management policy
-                    "HIPAA.164.308a1", # HIPAA — Security management process
-                    "DORA.Art24",      # DORA — Resilience testing evidence (successful execution)
-                    "ISO42K.10.1",     # ISO/IEC 42001 — Continual improvement
+                    "AIRM.MG.01",  # NIST AI RMF — AI risk treatment
+                    "EUAI.A14",  # EU AI Act — Human oversight (decision auto-approved)
+                    "ZTA.TE-02",  # ZTA — Least privilege (within AgentContract limits)
+                    "COL.SB205.8",  # Colorado AI Act — Risk management policy
+                    "HIPAA.164.308a1",  # HIPAA — Security management process
+                    "DORA.Art24",  # DORA — Resilience testing evidence (successful execution)
+                    "ISO42K.10.1",  # ISO/IEC 42001 — Continual improvement
                 ],
                 # Blocked decisions: access control, anomaly detection, security posture
                 "blocked": [
-                    "CSF2.PR.AA-01",   # NIST CSF 2.0 — Identity management (agent blocked)
-                    "OWASP.A03",       # OWASP — Excessive agency prevention
-                    "OWASP.A08",       # OWASP — Weak authentication / authorisation
-                    "EUAI.A9",         # EU AI Act — Risk management system (risk enforcement)
-                    "AIRM.ME.01",      # NIST AI RMF — AI risk measurement
-                    "ZTA.TE-03",       # ZTA — Assume breach posture
-                    "SOC2.CC6.1",      # SOC 2 — Logical access security
-                    "PCI4.6.3",        # PCI DSS — Security event detection
-                    "800-53.RA-3",     # NIST 800-53 — Risk assessment
-                    "FFIEC.D3.CY",     # FFIEC CAT — Cybersecurity controls
+                    "CSF2.PR.AA-01",  # NIST CSF 2.0 — Identity management (agent blocked)
+                    "OWASP.A03",  # OWASP — Excessive agency prevention
+                    "OWASP.A08",  # OWASP — Weak authentication / authorisation
+                    "EUAI.A9",  # EU AI Act — Risk management system (risk enforcement)
+                    "AIRM.ME.01",  # NIST AI RMF — AI risk measurement
+                    "ZTA.TE-03",  # ZTA — Assume breach posture
+                    "SOC2.CC6.1",  # SOC 2 — Logical access security
+                    "PCI4.6.3",  # PCI DSS — Security event detection
+                    "800-53.RA-3",  # NIST 800-53 — Risk assessment
+                    "FFIEC.D3.CY",  # FFIEC CAT — Cybersecurity controls
                 ],
                 # Pending-review decisions: human oversight and workflow controls
                 "pending_review": [
-                    "EUAI.A14",        # EU AI Act — Human oversight
-                    "COL.SB205.9",     # Colorado AI Act — Human review mechanism
-                    "COL.SB205.10",    # Colorado AI Act — Disclosure of AI use
-                    "FDA11.11.50",     # FDA — Signature manifestations (reviewer identity)
-                    "MASTRM.5",        # MAS TRM — Access control (reviewer authority)
-                    "CPS234.15",       # APRA CPS 234 — Information security controls
-                    "FFIEC.D2.TI",     # FFIEC CAT — Threat intelligence (human-in-loop)
-                    "GDPR.A22",        # GDPR — Automated decision-making (human review path)
+                    "EUAI.A14",  # EU AI Act — Human oversight
+                    "COL.SB205.9",  # Colorado AI Act — Human review mechanism
+                    "COL.SB205.10",  # Colorado AI Act — Disclosure of AI use
+                    "FDA11.11.50",  # FDA — Signature manifestations (reviewer identity)
+                    "MASTRM.5",  # MAS TRM — Access control (reviewer authority)
+                    "CPS234.15",  # APRA CPS 234 — Information security controls
+                    "FFIEC.D2.TI",  # FFIEC CAT — Threat intelligence (human-in-loop)
+                    "GDPR.A22",  # GDPR — Automated decision-making (human review path)
                 ],
                 # Procurement decisions: supplier controls, sanctions, supply chain
                 "procurement": [
-                    "OWASP.A09",       # OWASP — Supply chain risk
-                    "CSF2.ID.AM-01",   # NIST CSF 2.0 — Asset management
-                    "DORA.Art28",      # DORA — Third-party ICT risk management
-                    "FFIEC.D4.EX",     # FFIEC CAT — External dependency management
-                    "MASTRM.13",       # MAS TRM — Outsourcing risk
-                    "SOC2.CC8.1",      # SOC 2 — Change management controls
+                    "OWASP.A09",  # OWASP — Supply chain risk
+                    "CSF2.ID.AM-01",  # NIST CSF 2.0 — Asset management
+                    "DORA.Art28",  # DORA — Third-party ICT risk management
+                    "FFIEC.D4.EX",  # FFIEC CAT — External dependency management
+                    "MASTRM.13",  # MAS TRM — Outsourcing risk
+                    "SOC2.CC8.1",  # SOC 2 — Change management controls
                 ],
                 # Financial decisions: AML, wire limits, transaction controls
                 "financial": [
-                    "AIRM.ME.01",      # NIST AI RMF — AI risk measurement
-                    "DORA.Art6",       # DORA — ICT risk management
-                    "FFIEC.D3.CY",     # FFIEC CAT — Cybersecurity controls
-                    "PCI4.10.3",       # PCI DSS — Audit log protection
-                    "SOC2.CC9.1",      # SOC 2 — Risk mitigation activities
+                    "AIRM.ME.01",  # NIST AI RMF — AI risk measurement
+                    "DORA.Art6",  # DORA — ICT risk management
+                    "FFIEC.D3.CY",  # FFIEC CAT — Cybersecurity controls
+                    "PCI4.10.3",  # PCI DSS — Audit log protection
+                    "SOC2.CC9.1",  # SOC 2 — Risk mitigation activities
                 ],
                 # IT operations decisions: change management, maintenance windows
                 "it_ops": [
-                    "NERC.CIP007",     # NERC CIP — Systems security management
-                    "NERC.CIP010",     # NERC CIP — Configuration change management
+                    "NERC.CIP007",  # NERC CIP — Systems security management
+                    "NERC.CIP010",  # NERC CIP — Configuration change management
                     "IEC62443.SR2.1",  # IEC 62443 — Authorisation enforcement
-                    "PURDUE.L3-L4",    # Purdue Model 2.0 — Zone separation
-                    "SOC2.CC8.1",      # SOC 2 — Change management controls
-                    "800-53.CM-3",     # NIST 800-53 — Configuration change control
-                    "ISO27K.A5.36",    # ISO 27001 — Compliance with policies
+                    "PURDUE.L3-L4",  # Purdue Model 2.0 — Zone separation
+                    "SOC2.CC8.1",  # SOC 2 — Change management controls
+                    "800-53.CM-3",  # NIST 800-53 — Configuration change control
+                    "ISO27K.A5.36",  # ISO 27001 — Compliance with policies
                 ],
                 # Clinical decisions: healthcare AI, dosage safety, PHI controls
                 "clinical": [
-                    "HIPAA.164.308a1", # HIPAA — Security management process
-                    "HIPAA.164.308a3", # HIPAA — Workforce security
+                    "HIPAA.164.308a1",  # HIPAA — Security management process
+                    "HIPAA.164.308a3",  # HIPAA — Workforce security
                     "HIPAA.164.312b",  # HIPAA — Audit controls
-                    "FDA11.11.10d",    # FDA — System access limited to authorised individuals
-                    "FDA11.11.10e",    # FDA — Audit trails
+                    "FDA11.11.10d",  # FDA — System access limited to authorised individuals
+                    "FDA11.11.10e",  # FDA — Audit trails
                 ],
                 # Trading decisions: position limits, fat-finger, market risk
                 "trading": [
-                    "AIRM.ME.01",      # NIST AI RMF — Risk measurement
-                    "DORA.Art6",       # DORA — ICT risk management
-                    "FFIEC.D3.CY",     # FFIEC CAT — Cybersecurity controls
-                    "SOC2.CC9.1",      # SOC 2 — Risk mitigation
+                    "AIRM.ME.01",  # NIST AI RMF — Risk measurement
+                    "DORA.Art6",  # DORA — ICT risk management
+                    "FFIEC.D3.CY",  # FFIEC CAT — Cybersecurity controls
+                    "SOC2.CC9.1",  # SOC 2 — Risk mitigation
                 ],
                 # Content decisions: generative AI output, GDPR Art.22
                 "content": [
-                    "GDPR.A5",         # GDPR — Data minimisation / PII
-                    "GDPR.A22",        # GDPR — Automated decision-making
-                    "EUAI.A13",        # EU AI Act — Transparency
-                    "OWASP.A02",       # OWASP — Insecure output handling
-                    "OWASP.A06",       # OWASP — Sensitive data exposure
-                    "COL.SB205.10",    # Colorado AI Act — Disclosure of AI use
+                    "GDPR.A5",  # GDPR — Data minimisation / PII
+                    "GDPR.A22",  # GDPR — Automated decision-making
+                    "EUAI.A13",  # EU AI Act — Transparency
+                    "OWASP.A02",  # OWASP — Insecure output handling
+                    "OWASP.A06",  # OWASP — Sensitive data exposure
+                    "COL.SB205.10",  # Colorado AI Act — Disclosure of AI use
                 ],
                 # Legal decisions: contract authority, legal hold, e-discovery
                 "legal": [
-                    "ISO27K.A5.1",     # ISO 27001 — Policies for information security
-                    "ISO27K.A5.2",     # ISO 27001 — Roles and responsibilities
-                    "SOC2.CC8.1",      # SOC 2 — Change management controls
-                    "800-53.CM-3",     # NIST 800-53 — Configuration change control
+                    "ISO27K.A5.1",  # ISO 27001 — Policies for information security
+                    "ISO27K.A5.2",  # ISO 27001 — Roles and responsibilities
+                    "SOC2.CC8.1",  # SOC 2 — Change management controls
+                    "800-53.CM-3",  # NIST 800-53 — Configuration change control
                 ],
                 # HR decisions: workforce, access provisioning, salary
                 "hr": [
-                    "HIPAA.164.308a3", # HIPAA — Workforce security
-                    "ISO27K.A5.2",     # ISO 27001 — Roles and responsibilities
-                    "FDA11.11.10d",    # FDA — Access controls
-                    "MASTRM.5",        # MAS TRM — Access control
-                    "CPS234.15",       # APRA CPS 234 — Information security controls
+                    "HIPAA.164.308a3",  # HIPAA — Workforce security
+                    "ISO27K.A5.2",  # ISO 27001 — Roles and responsibilities
+                    "FDA11.11.10d",  # FDA — Access controls
+                    "MASTRM.5",  # MAS TRM — Access control
+                    "CPS234.15",  # APRA CPS 234 — Information security controls
                 ],
                 # Custom decisions: general compliance posture
                 "custom": [
-                    "ISO42K.6.1",      # ISO/IEC 42001 — Actions to address AI risks
-                    "AIRM.GV.01",      # NIST AI RMF — AI risk management policies
+                    "ISO42K.6.1",  # ISO/IEC 42001 — Actions to address AI risks
+                    "AIRM.GV.01",  # NIST AI RMF — AI risk management policies
                 ],
             }
             status = record.final_status.value if record.final_status else "unknown"
-            dtype  = record.decision_type.value
-            ev     = {"decision_id": record.decision_id, "final_status": status,
-                      "decision_type": dtype,
-                      "risk_score": record.risk_result.risk_score if record.risk_result else None}
-            for ctrl in set(_MAP.get("all",[]) + _MAP.get(status,[]) + _MAP.get(dtype,[])):
+            dtype = record.decision_type.value
+            ev = {
+                "decision_id": record.decision_id,
+                "final_status": status,
+                "decision_type": dtype,
+                "risk_score": record.risk_result.risk_score if record.risk_result else None,
+            }
+            for ctrl in set(_MAP.get("all", []) + _MAP.get(status, []) + _MAP.get(dtype, [])):
                 self.compliance_catalogue.record_evidence(
-                    ctrl, "decision", decision_id=record.decision_id,
-                    agent_id=record.agent_id, evidence_data=ev)
+                    ctrl,
+                    "decision",
+                    decision_id=record.decision_id,
+                    agent_id=record.agent_id,
+                    evidence_data=ev,
+                )
         except Exception as exc:
             log.error(
                 f"Compliance evidence collection failed: {exc}",
@@ -1646,13 +1744,16 @@ class GovernancePipeline:
             return
 
         from glassbox.events.event_bus import (
-            DecisionExecuted, DecisionBlocked, DecisionPendingReview,
+            DecisionBlocked,
+            DecisionExecuted,
+            DecisionPendingReview,
         )
 
         status = record.final_status
         if status == FinalStatus.EXECUTED:
             event = DecisionExecuted(
-                decision_id=record.decision_id, agent_id=record.agent_id,
+                decision_id=record.decision_id,
+                agent_id=record.agent_id,
                 decision_type=record.decision_type.value,
                 risk_score=record.risk_result.risk_score if record.risk_result else 0.0,
                 latency_ms=record.pipeline_latency_ms or 0.0,
@@ -1660,7 +1761,8 @@ class GovernancePipeline:
             self._event_dispatcher.publish(event, event_type="DecisionExecuted")
         elif status == FinalStatus.BLOCKED:
             event = DecisionBlocked(
-                decision_id=record.decision_id, agent_id=record.agent_id,
+                decision_id=record.decision_id,
+                agent_id=record.agent_id,
                 decision_type=record.decision_type.value,
                 violations=response.policy_violations,
                 risk_score=response.risk_score,
@@ -1668,7 +1770,8 @@ class GovernancePipeline:
             self._event_dispatcher.publish(event, event_type="DecisionBlocked")
         elif status == FinalStatus.PENDING_REVIEW:
             event = DecisionPendingReview(
-                decision_id=record.decision_id, agent_id=record.agent_id,
+                decision_id=record.decision_id,
+                agent_id=record.agent_id,
                 decision_type=record.decision_type.value,
                 risk_score=response.risk_score or 0.0,
             )
@@ -1678,6 +1781,7 @@ class GovernancePipeline:
         if not self._event_dispatcher:
             return
         from glassbox.events.event_bus import SecurityViolation
+
         event = SecurityViolation(agent_id, dtype, findings)
         self._event_dispatcher.publish(event, event_type="SecurityViolation")
 
@@ -1685,6 +1789,7 @@ class GovernancePipeline:
         if not self._event_dispatcher:
             return
         from glassbox.events.event_bus import AnomalyDetected
+
         event = AnomalyDetected(decision_id, agent_id, dtype, fields, z)
         self._event_dispatcher.publish(event, event_type="AnomalyDetected")
 
@@ -1692,6 +1797,7 @@ class GovernancePipeline:
         if not self._event_dispatcher:
             return
         from glassbox.events.event_bus import CircuitBreakerTripped
+
         event = CircuitBreakerTripped(agent_id, name, reason, is_eco)
         self._event_dispatcher.publish(event, event_type="CircuitBreakerTripped")
 
@@ -1699,6 +1805,7 @@ class GovernancePipeline:
         if not self._event_dispatcher:
             return
         from glassbox.events.event_bus import PolicyViolated
+
         event = PolicyViolated(decision_id, agent_id, violations, warnings)
         self._event_dispatcher.publish(event, event_type="PolicyViolated")
 
@@ -1714,6 +1821,7 @@ class GovernancePipeline:
         Merges built-in pipeline stage timings with any custom-stage timings
         recorded by the StageRegistry (if one is attached).
         """
+
         def _pct(sorted_s: list, p: float) -> float:
             if not sorted_s:
                 return 0.0
@@ -1731,8 +1839,8 @@ class GovernancePipeline:
             if samples:
                 s = sorted(samples)
                 result[stage_name] = {
-                    "p50_ms":  round(_pct(s, 50), 3),
-                    "p99_ms":  round(_pct(s, 99), 3),
+                    "p50_ms": round(_pct(s, 50), 3),
+                    "p99_ms": round(_pct(s, 99), 3),
                     "samples": len(s),
                 }
 
@@ -1765,39 +1873,39 @@ class GovernancePipeline:
     def health(self) -> Dict[str, Any]:
         stats = self.stats
         return {
-            "status":           "healthy",
-            "service":          "GlassBox",
-            "version":          __import__("glassbox").__version__,
-            "environment":      self.environment,
-            "total_decisions":  stats.get("total", 0),
-            "block_rate_pct":   stats.get("block_rate_pct", 0),
-            "avg_latency_ms":   stats.get("avg_latency_ms"),
-            "p99_latency_ms":   stats.get("p99_latency_ms"),
-            "audit_persisted":  stats.get("persisted", 0),
-            "audit_failed":     stats.get("failed", 0),
+            "status": "healthy",
+            "service": "GlassBox",
+            "version": __import__("glassbox").__version__,
+            "environment": self.environment,
+            "total_decisions": stats.get("total", 0),
+            "block_rate_pct": stats.get("block_rate_pct", 0),
+            "avg_latency_ms": stats.get("avg_latency_ms"),
+            "p99_latency_ms": stats.get("p99_latency_ms"),
+            "audit_persisted": stats.get("persisted", 0),
+            "audit_failed": stats.get("failed", 0),
             "audit_async_queue_depth": stats.get("async_queue_depth", 0),
             "audit_async_queue_capacity": stats.get("async_queue_capacity", 0),
             "audit_async_worker_alive": stats.get("async_worker_alive", False),
-            "policies":         len(self.policy_engine.policies),
-            "contracts":        len(self.list_contracts()),
+            "policies": len(self.policy_engine.policies),
+            "contracts": len(self.list_contracts()),
             # O2: Per-stage latency breakdown for production debugging.
             "stage_latency_p50_ms": {k: v["p50_ms"] for k, v in self.stage_latency_stats().items()},
             "stage_latency_p99_ms": {k: v["p99_ms"] for k, v in self.stage_latency_stats().items()},
-            "event_bus":             self.event_bus is not None,
-            "audit_repo":            self.audit_repo is not None,
-            "workflow_engine":       self.workflow_engine is not None,
-            "compliance_catalogue":  self.compliance_catalogue is not None,
-            "access_control":        self.access_control is not None,
-            "hash_audit":            self.hash_audit is not None,
-            "stage_registry":        self.stage_registry is not None,
-            "trace_enabled":         self.trace_enabled,
-            "async_audit_writes":    self.async_audit_writes,
-            "side_effect_mode":      self.side_effect_mode,
+            "event_bus": self.event_bus is not None,
+            "audit_repo": self.audit_repo is not None,
+            "workflow_engine": self.workflow_engine is not None,
+            "compliance_catalogue": self.compliance_catalogue is not None,
+            "access_control": self.access_control is not None,
+            "hash_audit": self.hash_audit is not None,
+            "stage_registry": self.stage_registry is not None,
+            "trace_enabled": self.trace_enabled,
+            "async_audit_writes": self.async_audit_writes,
+            "side_effect_mode": self.side_effect_mode,
         }
 
-    def shutdown(self, timeout: float = None) -> None:
+    def shutdown(self, timeout: Optional[float] = None) -> None:
         """Gracefully shutdown pipeline (v1.0.1 - CRITICAL-5: lifecycle management).
-        
+
         Args:
             timeout: Retained for compatibility with callers that pass an atexit budget.
         """

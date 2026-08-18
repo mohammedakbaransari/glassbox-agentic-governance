@@ -1,8 +1,44 @@
 # GlassBox — Architecture Overview
 
-**v1.2.0 | Mohammed Akbar Ansari | Independent Researcher**
-
 > Full component reference: [DEVELOPMENT/architecture.md](DEVELOPMENT/architecture.md)
+
+---
+
+## 0. Current Architecture
+
+GlassBox is a layered (hexagonal) application:
+
+- **`glassbox/domain/`** — pure value objects and business rules
+  (`ProposedAction`, `ResourceRef`, `AuthorizationDecision`, `Mandate`, ...).
+  No I/O, no third-party imports.
+- **`glassbox/ports/`** — the `Protocol` interfaces the domain and
+  application layer depend on (identity verification, evidence storage,
+  limits, dispatch, signing, ...).
+- **`glassbox/app/`** — orchestration. `DecisionService` runs one governed
+  decision end to end: verify identity, resolve the action against the
+  catalogue, check mandate and policy, score risk, enforce limits, write
+  evidence, then dispatch. `composition.py` is the single place a
+  `GovernanceRuntime` is assembled from a chosen adapter set.
+- **`glassbox/adapters/outbound/`** — concrete infrastructure: PostgreSQL
+  evidence and limits, Redis-backed limits, KMS-backed signing, identity
+  verification (OIDC), OpenTelemetry, Delta Lake, Spark (batch
+  pre-authorisation only), and an in-memory reference set for local
+  development.
+- **`glassbox/adapters/inbound/http/`** — the HTTP entry point onto
+  `DecisionService`.
+
+Every decision is evidenced *before* any side effect runs, tenant identity
+is never optional, and nothing is permitted until an action is explicitly
+registered in the catalogue and allowed by policy — governance is
+deny-by-default throughout this layer.
+
+`glassbox/governance/`, `glassbox/store/` and `glassbox/api/` hold an
+earlier, synchronous implementation of the same problem
+(`GovernancePipeline`, described in the sections below). It remains
+importable and several of its components — the compliance catalogue, the
+workflow engine, the stage registry, the explainer, the bounded queue — are
+still in active use by the layers above. New governance logic is added to
+`glassbox/app`/`glassbox/domain`, not to `GovernancePipeline`.
 
 ---
 
@@ -122,9 +158,12 @@ flowchart TB
 
 ---
 
-## 3. The 9-Stage Pipeline (+ 2 Security Pre-checks)
+## 3. The Earlier Pipeline: 9 Stages (+ 2 Security Pre-checks)
 
-Every `DecisionRequest` passes through these steps. Any step can **block** execution — all later steps are skipped.
+The sections below document `glassbox/governance/pipeline.py`'s
+`GovernancePipeline` — the earlier synchronous implementation described in
+[§0](#0-current-architecture). Every `DecisionRequest` passes through these
+steps; any step can **block** execution and skip all later steps.
 
 | Step | Name | Module | Blocks On |
 |---|---|---|---|
@@ -361,9 +400,8 @@ flowchart LR
     end
 
     subgraph PERSIST["Persistence Outputs"]
-        JSONL["JSONL File\naudit-YYYY-MM-DD.jsonl\n(rotates at max_size_mb)"]:::storage
         DB["SQLite / PostgreSQL\nAuditRepository"]:::storage
-        TA["TamperEvidentAudit\nSHA-256 hash chain\nHMAC verification"]:::storage
+        TA["TamperEvidentAudit\nSHA-256 hash chain"]:::storage
     end
 
     FULL(["⚠ RuntimeError\nQueue Full\n→ Priority 1 fix: sync fallback"]):::alert
@@ -372,7 +410,7 @@ flowchart LR
     BQ -->|"queue not full"| BA
     BQ -->|"queue.Full"| FULL
     BA --> RING
-    RING --> JSONL & DB & TA
+    RING --> DB & TA
 ```
 
 ---
@@ -740,6 +778,6 @@ See [README.md](../README.md#known-limitations--roadmap) for the full prioritise
 
 ---
 
-*GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari*
+*GlassBox · Apache 2.0*
 
 

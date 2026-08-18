@@ -7,6 +7,7 @@ real SQLite database (stdlib only, no mocks).
 
 Run: python -m pytest tests/test_sqlite_repo.py -v
 """
+
 from __future__ import annotations
 
 import os
@@ -20,15 +21,22 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from glassbox.store.repository import RepositoryFactory, SQLiteRepository
 from glassbox.governance.models import (
-    AuditRecord, DecisionContext, DecisionRequest, DecisionType,
-    FinalStatus, RiskLevel, RiskResult, PolicyResult, Disposition,
+    AuditRecord,
+    DecisionContext,
+    DecisionRequest,
+    DecisionType,
+    Disposition,
+    FinalStatus,
+    PolicyResult,
+    RiskLevel,
+    RiskResult,
 )
 from glassbox.governance.pipeline import GovernancePipeline
-
+from glassbox.store.repository import RepositoryFactory, SQLiteRepository
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _make_record(
     agent_id: str = "test-agent",
@@ -71,6 +79,7 @@ def _ns() -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. BASIC SAVE / RETRIEVE
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestSQLiteBasicOperations(unittest.TestCase):
     def setUp(self):
@@ -135,6 +144,7 @@ class TestSQLiteBasicOperations(unittest.TestCase):
 # 2. QUERY FILTERING
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSQLiteQueryFiltering(unittest.TestCase):
     def setUp(self):
         self.db_dir = _tmp_db_dir()
@@ -142,15 +152,21 @@ class TestSQLiteQueryFiltering(unittest.TestCase):
         self.audit = self.repo["audit"]
         # Seed data: 3 executed procurement, 2 blocked financial
         for i in range(3):
-            self.audit.save(_make_record(
-                agent_id="agent-proc", dtype=DecisionType.PROCUREMENT,
-                final_status=FinalStatus.EXECUTED,
-            ))
+            self.audit.save(
+                _make_record(
+                    agent_id="agent-proc",
+                    dtype=DecisionType.PROCUREMENT,
+                    final_status=FinalStatus.EXECUTED,
+                )
+            )
         for i in range(2):
-            self.audit.save(_make_record(
-                agent_id="agent-fin", dtype=DecisionType.FINANCIAL,
-                final_status=FinalStatus.BLOCKED,
-            ))
+            self.audit.save(
+                _make_record(
+                    agent_id="agent-fin",
+                    dtype=DecisionType.FINANCIAL,
+                    final_status=FinalStatus.BLOCKED,
+                )
+            )
 
     def tearDown(self):
         try:
@@ -196,6 +212,7 @@ class TestSQLiteQueryFiltering(unittest.TestCase):
 # 3. PAGINATION
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSQLitePagination(unittest.TestCase):
     def setUp(self):
         self.db_dir = _tmp_db_dir()
@@ -219,9 +236,9 @@ class TestSQLitePagination(unittest.TestCase):
         self.assertLessEqual(len(results), 3)
 
     def test_offset_skips_records(self):
-        first  = self.audit.query(limit=5, offset=0)
+        first = self.audit.query(limit=5, offset=0)
         second = self.audit.query(limit=5, offset=5)
-        first_ids  = {r.decision_id for r in first}
+        first_ids = {r.decision_id for r in first}
         second_ids = {r.decision_id for r in second}
         self.assertEqual(len(first_ids & second_ids), 0, "Pages must not overlap")
 
@@ -239,6 +256,7 @@ class TestSQLitePagination(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. TENANT ISOLATION
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestSQLiteTenantIsolation(unittest.TestCase):
     def setUp(self):
@@ -294,6 +312,7 @@ class TestSQLiteTenantIsolation(unittest.TestCase):
 # 5. THREAD SAFETY
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSQLiteThreadSafety(unittest.TestCase):
     def setUp(self):
         self.db_dir = _tmp_db_dir()
@@ -312,7 +331,7 @@ class TestSQLiteThreadSafety(unittest.TestCase):
 
     def test_concurrent_saves_do_not_corrupt(self):
         errors = []
-        n      = 30
+        n = 30
 
         def _write():
             try:
@@ -321,8 +340,10 @@ class TestSQLiteThreadSafety(unittest.TestCase):
                 errors.append(str(exc))
 
         threads = [threading.Thread(target=_write) for _ in range(n)]
-        for t in threads: t.start()
-        for t in threads: t.join()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
         self.assertEqual(errors, [], f"Concurrent save errors: {errors}")
         count = self.audit.count()
@@ -332,6 +353,7 @@ class TestSQLiteThreadSafety(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. PIPELINE END-TO-END WITH SQLITE
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestPipelineWithSQLite(unittest.TestCase):
     """Verify the pipeline persists decisions to SQLite and they are queryable."""
@@ -365,7 +387,7 @@ class TestPipelineWithSQLite(unittest.TestCase):
         )
 
     def test_pipeline_persists_to_sqlite(self):
-        req  = self._proc_request()
+        req = self._proc_request()
         resp = self.pipeline.process(req)
         # Give SQLite writer a moment (it's synchronous in default mode)
         fetched = self.audit.get_by_id(resp.decision_id)
@@ -373,7 +395,7 @@ class TestPipelineWithSQLite(unittest.TestCase):
         self.assertEqual(fetched.decision_id, resp.decision_id)
 
     def test_pipeline_persisted_status_matches_response(self):
-        req  = self._proc_request()
+        req = self._proc_request()
         resp = self.pipeline.process(req)
         fetched = self.audit.get_by_id(resp.decision_id)
         self.assertEqual(fetched.final_status, resp.final_status)
@@ -390,7 +412,7 @@ class TestPipelineWithSQLite(unittest.TestCase):
             agent_id="blocked-agent",
             decision_type=DecisionType.FINANCIAL,
             payload={
-                "amount": 2_000_000,          # Exceeds FIN-001 ($1M limit)
+                "amount": 2_000_000,  # Exceeds FIN-001 ($1M limit)
                 "destination_account": "ACC-123",
             },
         )

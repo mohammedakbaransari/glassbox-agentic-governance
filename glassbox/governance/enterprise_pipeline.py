@@ -18,7 +18,7 @@ class EnterpriseGovernancePipeline(GovernancePipeline):
     def __init__(
         self,
         access_control=None,  # AccessControl | None
-        hash_audit=None,      # TamperEvidentAuditLogger | None
+        hash_audit=None,  # TamperEvidentAuditLogger | None
         **kwargs,
     ) -> None:
         super().__init__(

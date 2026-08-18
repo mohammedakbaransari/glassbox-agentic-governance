@@ -17,7 +17,7 @@ Design:
 
 Usage:
     from glassbox.governance.request_context import RequestContext, Config
-    
+
     # Set request context
     ctx = RequestContext(
         request_id="req-123",
@@ -26,26 +26,27 @@ Usage:
         correlation_id="corr-123"
     )
     RequestContext.set_current(ctx)
-    
+
     # Access in any thread context
     current_ctx = RequestContext.get_current()
     print(current_ctx.user_id, current_ctx.tenant_id)
-    
+
     # Load configuration
     config = Config.load("/etc/glassbox/config.yaml")
     db_url = config.get("database.url", default="sqlite:///:memory:")
-    
+
     # Get secrets from environment
     api_key = config.get_secret("api_key", env_var="GLASSBOX_API_KEY")
 
 Author: Mohammed Akbar Ansari
 """
 
-import os
 import json
+import os
 import tempfile
 import threading
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -53,6 +54,10 @@ from typing import Any, Dict, Optional
 from glassbox.governance.logging_manager import get_logger
 
 log = get_logger("request_context")
+
+_current_context: ContextVar[Optional["RequestContext"]] = ContextVar(
+    "_current_context", default=None
+)
 
 
 @dataclass
@@ -68,27 +73,29 @@ class RequestContext:
     session_id: Optional[str] = None
     impersonated_by: Optional[str] = None
 
-    _local = threading.local()
-
     @classmethod
     def set_current(cls, ctx: "RequestContext") -> None:
-        """Set current request context (thread-local)."""
-        cls._local.context = ctx
+        """Set current request context."""
+        _current_context.set(ctx)
 
     @classmethod
     def get_current(cls) -> "RequestContext":
-        """Get current request context (thread-local)."""
-        if not hasattr(cls._local, "context"):
-            # Auto-create default context for new threads
-            cls._local.context = RequestContext()
+        """Get current request context, auto-creating a default if unset."""
+        ctx = _current_context.get()
+        if ctx is None:
+            ctx = RequestContext()
+            _current_context.set(ctx)
+        return ctx
 
-        return cls._local.context
+    @classmethod
+    def has_current(cls) -> bool:
+        """Whether a context has been explicitly set (vs. never set)."""
+        return _current_context.get() is not None
 
     @classmethod
     def clear_current(cls) -> None:
         """Clear current request context."""
-        if hasattr(cls._local, "context"):
-            delattr(cls._local, "context")
+        _current_context.set(None)
 
     def get_trace_id(self) -> str:
         """Get trace ID for distributed tracing (X-Trace-ID header)."""
@@ -122,6 +129,7 @@ class RequestContext:
         DecisionContext so that policy evaluation can access them.
         """
         from glassbox.governance.models import DecisionContext
+
         return DecisionContext(
             session_id=self.request_id,
             environment=self.metadata.get("environment", "production"),
@@ -143,8 +151,9 @@ class RequestContext:
             user_id=meta.get("user_id"),
             tenant_id=meta.get("tenant_id"),
             correlation_id=meta.get("correlation_id") or ctx.session_id,
-            metadata={k: v for k, v in meta.items()
-                      if k not in ("user_id", "tenant_id", "correlation_id")},
+            metadata={
+                k: v for k, v in meta.items() if k not in ("user_id", "tenant_id", "correlation_id")
+            },
         )
 
     def __repr__(self) -> str:
@@ -178,11 +187,7 @@ class Config:
         config = Config()
 
         # Determine config path
-        path = (
-            os.getenv("GLASSBOX_CONFIG_PATH")
-            or config_path
-            or "/etc/glassbox/config.yaml"
-        )
+        path = os.getenv("GLASSBOX_CONFIG_PATH") or config_path or "/etc/glassbox/config.yaml"
         path = Config._validate_config_path(path)
 
         # Try to load
@@ -196,13 +201,12 @@ class Config:
                 elif path.endswith((".yaml", ".yml")):
                     try:
                         import yaml
+
                         with open(path, "r") as f:
                             config.data = yaml.safe_load(f) or {}
                         log.info("Loaded config from YAML: %s", path)
                     except ImportError:
-                        log.warning(
-                            "YAML support requires: pip install pyyaml"
-                        )
+                        log.warning("YAML support requires: pip install pyyaml")
 
                 else:
                     log.warning("Unknown config file type: %s", path)
@@ -225,12 +229,9 @@ class Config:
             os.path.realpath(os.path.join(os.sep, "etc", "glassbox")),
         }
         if not any(
-            normalized == root or normalized.startswith(root + os.sep)
-            for root in allowed_roots
+            normalized == root or normalized.startswith(root + os.sep) for root in allowed_roots
         ):
-            raise ValueError(
-                f"Config path is outside approved roots: {normalized}"
-            )
+            raise ValueError(f"Config path is outside approved roots: {normalized}")
         return normalized
 
     @classmethod
@@ -294,7 +295,7 @@ class Config:
             log.warning(
                 "WARNING: Secret loaded from config file (not env var): %s. "
                 "Use environment variables for better security.",
-                key
+                key,
             )
             return value
 
@@ -346,9 +347,7 @@ class ContextManager:
         """Enter context manager."""
         # Save previous context
         self.previous_context = (
-            RequestContext.get_current()
-            if hasattr(RequestContext._local, "context")
-            else None
+            RequestContext.get_current() if RequestContext.has_current() else None
         )
 
         # Create and set new context

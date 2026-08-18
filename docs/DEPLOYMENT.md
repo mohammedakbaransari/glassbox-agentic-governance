@@ -22,8 +22,6 @@ Top-level deployment guidance points to detailed runbooks in `docs/DEPLOYMENT/`.
 
 ```bash
 python -m pytest tests -q
-python scripts/run_test_batches.py
-python -m glassbox.api.app
 ```
 
 ## Related References

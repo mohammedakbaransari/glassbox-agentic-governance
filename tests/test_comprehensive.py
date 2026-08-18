@@ -31,15 +31,20 @@ def _safe_unlink(path: str) -> None:
     except OSError:
         pass  # Windows may hold the lock briefly; let the OS clean it up
 
+
 # ── WAL persistence and recovery ──────────────────────────────────────────────
+
 
 class TestWALPersistenceAndRecovery(unittest.TestCase):
     """Write-Ahead Log: SQLite backend, crash recovery, checkpoint."""
 
     def _make_audit_record(self):
         from glassbox.governance.models import (
-            AuditRecord, DecisionType, DecisionContext,
+            AuditRecord,
+            DecisionContext,
+            DecisionType,
         )
+
         ctx = DecisionContext()
         return AuditRecord(
             agent_id="test-agent",
@@ -50,7 +55,8 @@ class TestWALPersistenceAndRecovery(unittest.TestCase):
 
     def test_wal_persists_to_sqlite(self):
         """WAL with db_path writes entries to SQLite on begin_transaction."""
-        from glassbox.governance.write_ahead_log import WriteAheadLog, WALEntryState
+        from glassbox.governance.write_ahead_log import WALEntryState, WriteAheadLog
+
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -71,7 +77,8 @@ class TestWALPersistenceAndRecovery(unittest.TestCase):
 
     def test_wal_commit_updates_sqlite(self):
         """WAL commit transitions SQLite row to COMMITTED."""
-        from glassbox.governance.write_ahead_log import WriteAheadLog, WALEntryState
+        from glassbox.governance.write_ahead_log import WALEntryState, WriteAheadLog
+
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -93,6 +100,7 @@ class TestWALPersistenceAndRecovery(unittest.TestCase):
     def test_wal_get_pending_entries_returns_uncommitted(self):
         """get_pending_entries() returns PENDING and IN_PROGRESS but not COMMITTED."""
         from glassbox.governance.write_ahead_log import WriteAheadLog
+
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -112,7 +120,8 @@ class TestWALPersistenceAndRecovery(unittest.TestCase):
 
     def test_wal_crash_recovery_simulation(self):
         """Simulate crash: open fresh WAL on same DB and verify pending entry survives."""
-        from glassbox.governance.write_ahead_log import WriteAheadLog, WALEntryState
+        from glassbox.governance.write_ahead_log import WALEntryState, WriteAheadLog
+
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -128,7 +137,8 @@ class TestWALPersistenceAndRecovery(unittest.TestCase):
             pending = wal_b.get_pending_entries()
             decision_ids = [p.decision_id for p in pending]
             self.assertIn(
-                "decision-crash", decision_ids,
+                "decision-crash",
+                decision_ids,
                 "Crashed in-progress entry must survive and be recoverable after restart",
             )
         finally:
@@ -137,6 +147,7 @@ class TestWALPersistenceAndRecovery(unittest.TestCase):
     def test_wal_side_effects_tracked_in_sqlite(self):
         """mark_side_effect persists side-effect state to SQLite."""
         from glassbox.governance.write_ahead_log import WriteAheadLog
+
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -154,6 +165,7 @@ class TestWALPersistenceAndRecovery(unittest.TestCase):
             conn.close()
 
             import json
+
             se = json.loads(row[0])
             self.assertTrue(se["audit_saved"]["success"])
             self.assertFalse(se["repo_saved"]["success"])
@@ -164,6 +176,7 @@ class TestWALPersistenceAndRecovery(unittest.TestCase):
     def test_wal_rollback_persisted(self):
         """Rolled-back entries are not returned by get_pending_entries."""
         from glassbox.governance.write_ahead_log import WriteAheadLog
+
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -179,7 +192,8 @@ class TestWALPersistenceAndRecovery(unittest.TestCase):
 
     def test_wal_memory_mode_still_works(self):
         """WAL without db_path operates in-memory correctly."""
-        from glassbox.governance.write_ahead_log import WriteAheadLog, WALEntryState
+        from glassbox.governance.write_ahead_log import WALEntryState, WriteAheadLog
+
         wal = WriteAheadLog(db_path=None)
         record = self._make_audit_record()
         e = wal.begin_transaction("mem-001", record)
@@ -191,11 +205,13 @@ class TestWALPersistenceAndRecovery(unittest.TestCase):
 
 # ── Audit timestamp monotonicity ──────────────────────────────────────────────
 
+
 class TestAuditTimestampMonotonicity(unittest.TestCase):
     """TamperEvidentAuditLogger: verify_hash_chain detects out-of-order timestamps."""
 
     def _logger(self):
         from glassbox.governance.advanced_audit import TamperEvidentAuditLogger
+
         return TamperEvidentAuditLogger(db_path=":memory:", enable_hash_chain=True)
 
     def test_valid_chain_passes(self):
@@ -207,13 +223,16 @@ class TestAuditTimestampMonotonicity(unittest.TestCase):
     def test_backdated_timestamp_rejected(self):
         """Manually inserting a backdated record must fail verification."""
         import json
+
         logger = self._logger()
         logger.log_action("user1", "action_1", "resource", "id_1")
         logger.log_action("user1", "action_2", "resource", "id_2")
 
         # Inject a backdated record directly into SQLite (simulating out-of-order injection)
-        from glassbox.governance.advanced_audit import GENESIS_SENTINEL
         import hashlib
+
+        from glassbox.governance.advanced_audit import GENESIS_SENTINEL
+
         with logger._get_connection() as conn:
             # Get last record's hash
             last = conn.execute(
@@ -221,18 +240,27 @@ class TestAuditTimestampMonotonicity(unittest.TestCase):
             ).fetchone()
             backdated_ts = "2000-01-01T00:00:00+00:00"  # Far in the past
             # Insert with a crafted hash to pass content check but fail timestamp check
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO audit_records
                   (timestamp, user_id, action, resource_type, resource_id,
                    result, context, error_message, previous_hash, record_hash, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                backdated_ts, "attacker", "backdated_action", "resource", "id_99",
-                "success", "{}", None,
-                last["record_hash"],
-                "a" * 64,  # fake hash — will fail content check too
-                datetime.now(timezone.utc).isoformat(),
-            ))
+            """,
+                (
+                    backdated_ts,
+                    "attacker",
+                    "backdated_action",
+                    "resource",
+                    "id_99",
+                    "success",
+                    "{}",
+                    None,
+                    last["record_hash"],
+                    "a" * 64,  # fake hash — will fail content check too
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
             conn.commit()
 
         # Chain verification must detect either content hash mismatch or timestamp violation
@@ -242,11 +270,13 @@ class TestAuditTimestampMonotonicity(unittest.TestCase):
 
 # ── VelocityBreaker deque correctness ─────────────────────────────────────────
 
+
 class TestVelocityBreakerDeque(unittest.TestCase):
     """VelocityBreaker: deque-based window cleanup is functionally correct."""
 
     def _make_breaker(self, max_decisions=5, window_seconds=2):
         from glassbox.governance.velocity_breaker import VelocityBreaker
+
         return VelocityBreaker(max_decisions=max_decisions, window_seconds=window_seconds)
 
     def test_window_type_is_deque(self):
@@ -261,6 +291,7 @@ class TestVelocityBreakerDeque(unittest.TestCase):
 
     def test_ecosystem_window_type_is_deque(self):
         from glassbox.governance.velocity_breaker import VelocityBreaker
+
         breaker = VelocityBreaker(max_decisions=5, ecosystem_max=10)
         breaker.check("agent-1")
         self.assertIsInstance(
@@ -304,6 +335,7 @@ class TestVelocityBreakerDeque(unittest.TestCase):
     def test_concurrent_checks_no_race(self):
         """Concurrent checks from multiple threads must not corrupt deque state."""
         from glassbox.governance.velocity_breaker import VelocityBreaker
+
         breaker = VelocityBreaker(max_decisions=1000, window_seconds=60)
         errors = []
 
@@ -325,18 +357,21 @@ class TestVelocityBreakerDeque(unittest.TestCase):
 
 # ── ReadOnlySnapshot frozenset immutability ───────────────────────────────────
 
+
 class TestReadOnlySnapshotFrozenFields(unittest.TestCase):
     """ReadOnlySnapshot._frozen_fields must be a frozenset (immutable)."""
 
     def _make_snapshot(self, data=None):
         from glassbox.governance.policy_engine import ReadOnlySnapshot
+
         return ReadOnlySnapshot(data or {"amount": 100, "supplier": "ACME"})
 
     def test_frozen_fields_is_frozenset(self):
         snap = self._make_snapshot()
         frozen = object.__getattribute__(snap, "_frozen_fields")
         self.assertIsInstance(
-            frozen, frozenset,
+            frozen,
+            frozenset,
             "_frozen_fields must be a frozenset to prevent post-construction mutation",
         )
 
@@ -358,6 +393,7 @@ class TestReadOnlySnapshotFrozenFields(unittest.TestCase):
 
     def test_nested_dict_is_read_only(self):
         from glassbox.governance.policy_engine import ReadOnlySnapshot
+
         snap = ReadOnlySnapshot({"meta": {"key": "value"}})
         inner = snap["meta"]
         with self.assertRaises((TypeError, KeyError)):
@@ -371,6 +407,7 @@ class TestReadOnlySnapshotFrozenFields(unittest.TestCase):
 
     def test_snapshot_pattern_helper(self):
         from glassbox.governance.policy_engine import SnapshotPattern
+
         data = {"price": 200, "quantity": 5}
         snap = SnapshotPattern.readonly_view(data, fields={"price"})
         frozen = object.__getattribute__(snap, "_frozen_fields")
@@ -379,16 +416,19 @@ class TestReadOnlySnapshotFrozenFields(unittest.TestCase):
 
 # ── Policy conflict detection ─────────────────────────────────────────────────
 
+
 class TestPolicyConflictDetection(unittest.TestCase):
     """PolicyEngine.register() emits UserWarning on intent conflicts."""
 
     def _engine(self):
         from glassbox.governance.policy_engine import PolicyEngine
+
         return PolicyEngine(policies=[])
 
     def _policy(self, pid, name, decision_types=None):
-        from glassbox.governance.policy_engine import Policy
         from glassbox.governance.models import DecisionType
+        from glassbox.governance.policy_engine import Policy
+
         dt = decision_types or [DecisionType.PROCUREMENT]
         return Policy(policy_id=pid, policy_name=name, decision_types=dt, rule=lambda p, c: None)
 
@@ -400,7 +440,11 @@ class TestPolicyConflictDetection(unittest.TestCase):
             warnings.simplefilter("always")
             engine.register(p1)
             engine.register(p2)
-        conflict_warnings = [x for x in w if issubclass(x.category, UserWarning) and "conflict" in str(x.message).lower()]
+        conflict_warnings = [
+            x
+            for x in w
+            if issubclass(x.category, UserWarning) and "conflict" in str(x.message).lower()
+        ]
         self.assertEqual(len(conflict_warnings), 0)
 
     def test_warning_emitted_for_block_allow_conflict(self):
@@ -418,6 +462,7 @@ class TestPolicyConflictDetection(unittest.TestCase):
     def test_no_warning_different_decision_types(self):
         """Conflicts are only flagged when decision_types overlap."""
         from glassbox.governance.models import DecisionType
+
         engine = self._engine()
         p1 = self._policy("P-001", "Block Procurement", [DecisionType.PROCUREMENT])
         p2 = self._policy("P-002", "Allow Financial", [DecisionType.FINANCIAL])
@@ -442,11 +487,13 @@ class TestPolicyConflictDetection(unittest.TestCase):
 
 # ── PayloadSanitizer enhancements ─────────────────────────────────────────────
 
+
 class TestPayloadSanitizerEnhancements(unittest.TestCase):
     """New blocked keywords, encoding bypass detection, NFKD homoglyph detection."""
 
     def _sanitizer(self):
         from glassbox.security.sanitizer import PayloadSanitizer
+
         return PayloadSanitizer()
 
     def test_pickle_loads_blocked(self):
@@ -480,7 +527,8 @@ class TestPayloadSanitizerEnhancements(unittest.TestCase):
         # blocked_keyword must fire.
         report = san.check({"cmd": "сmd.exe /c whoami"})
         self.assertGreater(
-            len(report.findings), 0,
+            len(report.findings),
+            0,
             "Payload with look-alike Cyrillic chars must produce at least one security finding",
         )
 
@@ -492,19 +540,22 @@ class TestPayloadSanitizerEnhancements(unittest.TestCase):
         report = san.check({"identifier": fullwidth})
         categories = {f.category for f in report.findings}
         self.assertIn(
-            "unicode_anomaly", categories,
+            "unicode_anomaly",
+            categories,
             f"Fullwidth Unicode chars must trigger unicode_anomaly. Got: {categories}",
         )
 
     def test_long_base64_flagged_as_encoding_bypass(self):
         """A long base64 blob triggers encoding_bypass finding."""
         import base64
+
         san = self._sanitizer()
         payload_b64 = base64.b64encode(b"A" * 80).decode()
         report = san.check({"data": payload_b64})
         categories = {f.category for f in report.findings}
         self.assertIn(
-            "encoding_bypass", categories,
+            "encoding_bypass",
+            categories,
             f"Long base64 blob should trigger encoding_bypass. Got: {categories}",
         )
 
@@ -518,11 +569,13 @@ class TestPayloadSanitizerEnhancements(unittest.TestCase):
 
     def test_safe_payload_has_no_findings(self):
         san = self._sanitizer()
-        report = san.check({
-            "supplier": "ACME Corp",
-            "amount": 1500,
-            "category": "office_supplies",
-        })
+        report = san.check(
+            {
+                "supplier": "ACME Corp",
+                "amount": 1500,
+                "category": "office_supplies",
+            }
+        )
         high_or_critical = [f for f in report.findings if f.severity in ("critical", "high")]
         self.assertEqual(high_or_critical, [])
         self.assertFalse(report.blocked)
@@ -540,18 +593,44 @@ class TestPayloadSanitizerEnhancements(unittest.TestCase):
         self.assertIn("critical", severities)
         self.assertTrue(report.blocked)
 
+    def test_ordinary_business_text_with_sql_verbs_not_blocked(self):
+        """GB-040 regression: the review measured this exact sentence being
+        blocked by a bare `\\b(select|insert|update|...)\\b` keyword match with
+        no SQL syntax context. That pattern was removed; legitimate business
+        text using these words as ordinary English verbs must pass."""
+        san = self._sanitizer()
+        report = san.check({"note": "Create purchase order for Q3 and update the supplier record"})
+        self.assertFalse(report.blocked)
+        self.assertNotIn("sql_injection", {f.category for f in report.findings})
+
+        report2 = san.check({"note": "Delete stale cache entries after deploy"})
+        self.assertFalse(report2.blocked)
+        self.assertNotIn("sql_injection", {f.category for f in report2.findings})
+
+    def test_hex_formatted_identifier_not_blocked(self):
+        """GB-040 regression: the review measured a bare `0x[0-9a-fA-F]{4,}`
+        pattern blocking an ordinary hex-formatted business identifier. That
+        pattern was removed."""
+        san = self._sanitizer()
+        report = san.check({"contract_id": "0xA1B2C3D4E5F6"})
+        self.assertFalse(report.blocked)
+        self.assertNotIn("sql_injection", {f.category for f in report.findings})
+
 
 # ── Pipeline named stage helpers ──────────────────────────────────────────────
+
 
 class TestPipelineNamedStageHelpers(unittest.TestCase):
     """_stage_circuit_breakers, _stage_policy_and_risk, _stage_disposition exist and work."""
 
     def _make_pipeline(self):
         from glassbox.governance.pipeline import GovernancePipeline
+
         return GovernancePipeline(environment="testing")
 
     def _make_request(self, amount=500):
-        from glassbox.governance.models import DecisionRequest, DecisionType, DecisionContext
+        from glassbox.governance.models import DecisionContext, DecisionRequest, DecisionType
+
         return DecisionRequest(
             agent_id="test-agent",
             decision_type=DecisionType.PROCUREMENT,
@@ -583,12 +662,18 @@ class TestPipelineNamedStageHelpers(unittest.TestCase):
         self.assertFalse(cb_triggered, "Normal request should not trigger circuit breaker")
 
     def test_policy_and_risk_stage_returns_results(self):
-        from glassbox.governance.models import PolicyResult, RiskResult, DecisionContext
+        from glassbox.governance.models import DecisionContext, PolicyResult, RiskResult
+
         pipeline = self._make_pipeline()
         req = self._make_request(amount=100)
         ctx = DecisionContext()
         policy_result, risk_result = pipeline._stage_policy_and_risk(
-            req, None, req.payload, ctx, None, None,
+            req,
+            None,
+            req.payload,
+            ctx,
+            None,
+            None,
         )
         self.assertIsInstance(policy_result, PolicyResult)
         self.assertIsInstance(risk_result, RiskResult)
@@ -596,6 +681,7 @@ class TestPipelineNamedStageHelpers(unittest.TestCase):
     def test_full_pipeline_process_still_works(self):
         """End-to-end: refactored pipeline still produces a valid response."""
         from glassbox.governance.models import FinalStatus
+
         pipeline = self._make_pipeline()
         req = self._make_request(amount=100)
         response = pipeline.process(req)
@@ -603,7 +689,13 @@ class TestPipelineNamedStageHelpers(unittest.TestCase):
         self.assertIsNotNone(response.decision_id)
 
     def test_pipeline_blocks_on_policy_violation(self):
-        from glassbox.governance.models import FinalStatus, DecisionRequest, DecisionType, DecisionContext
+        from glassbox.governance.models import (
+            DecisionContext,
+            DecisionRequest,
+            DecisionType,
+            FinalStatus,
+        )
+
         pipeline = self._make_pipeline()
         req = DecisionRequest(
             agent_id="test-agent",
@@ -617,11 +709,13 @@ class TestPipelineNamedStageHelpers(unittest.TestCase):
 
 # ── Chaos scenarios ───────────────────────────────────────────────────────────
 
+
 class TestChaosScenarios(unittest.TestCase):
     """Fault injection: simulate mid-flight failures in side effects."""
 
     def _make_request(self, amount=200):
-        from glassbox.governance.models import DecisionRequest, DecisionType, DecisionContext
+        from glassbox.governance.models import DecisionContext, DecisionRequest, DecisionType
+
         return DecisionRequest(
             agent_id="chaos-agent",
             decision_type=DecisionType.PROCUREMENT,
@@ -631,8 +725,8 @@ class TestChaosScenarios(unittest.TestCase):
 
     def test_pipeline_continues_when_event_bus_raises(self):
         """A crashing event_bus must not propagate to caller — pipeline stays resilient."""
-        from glassbox.governance.pipeline import GovernancePipeline
         from glassbox.governance.models import FinalStatus
+        from glassbox.governance.pipeline import GovernancePipeline
 
         class _BrokenBus:
             def publish(self, *a, **kw):
@@ -652,8 +746,8 @@ class TestChaosScenarios(unittest.TestCase):
 
     def test_pipeline_continues_when_audit_repo_raises(self):
         """A crashing audit_repo in best_effort mode must not abort the pipeline."""
-        from glassbox.governance.pipeline import GovernancePipeline
         from glassbox.governance.models import FinalStatus
+        from glassbox.governance.pipeline import GovernancePipeline
 
         class _BrokenRepo:
             def save(self, *a, **kw):
@@ -674,6 +768,7 @@ class TestChaosScenarios(unittest.TestCase):
     def test_velocity_breaker_with_many_concurrent_agents(self):
         """50 agents × 20 concurrent decisions must not deadlock or corrupt state."""
         from glassbox.governance.velocity_breaker import VelocityBreaker
+
         breaker = VelocityBreaker(max_decisions=1000, window_seconds=60)
         errors = []
         results = []
@@ -697,8 +792,8 @@ class TestChaosScenarios(unittest.TestCase):
 
     def test_wal_concurrent_transactions(self):
         """Multiple threads begin/commit WAL transactions without corruption."""
-        from glassbox.governance.write_ahead_log import WriteAheadLog, WALEntryState
-        from glassbox.governance.models import AuditRecord, DecisionType, DecisionContext
+        from glassbox.governance.models import AuditRecord, DecisionContext, DecisionType
+        from glassbox.governance.write_ahead_log import WALEntryState, WriteAheadLog
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
@@ -738,6 +833,7 @@ class TestChaosScenarios(unittest.TestCase):
 
 # ── Property-based tests (no hypothesis required — manual fuzzing) ─────────────
 
+
 class TestSanitizerPropertyInvariants(unittest.TestCase):
     """
     Invariant tests that simulate property-based testing without the
@@ -747,6 +843,7 @@ class TestSanitizerPropertyInvariants(unittest.TestCase):
 
     def _sanitizer(self):
         from glassbox.security.sanitizer import PayloadSanitizer
+
         return PayloadSanitizer()
 
     def test_check_never_raises_for_arbitrary_string_payloads(self):
@@ -780,7 +877,8 @@ class TestSanitizerPropertyInvariants(unittest.TestCase):
         ]:
             report = san.check(payload)
             self.assertIn(
-                type(report.clean_payload), (dict, type(None)),
+                type(report.clean_payload),
+                (dict, type(None)),
                 f"clean_payload type wrong for payload {payload}",
             )
 
@@ -803,6 +901,7 @@ class TestSanitizerPropertyInvariants(unittest.TestCase):
     def test_velocity_breaker_count_monotonically_increases(self):
         """window_count must be non-decreasing until the window is exceeded."""
         from glassbox.governance.velocity_breaker import VelocityBreaker
+
         breaker = VelocityBreaker(max_decisions=100, window_seconds=60)
         prev_count = 0
         for i in range(10):

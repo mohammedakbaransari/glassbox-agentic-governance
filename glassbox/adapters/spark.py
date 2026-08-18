@@ -4,19 +4,20 @@ GlassBox — PySpark / Spark Integration Adapter  (v1.0.0)
 Integrates GlassBox governance with Apache Spark, PySpark,
 Databricks Runtime, and Microsoft Fabric Spark.
 
-Three integration patterns are provided:
+Two integration patterns are provided:
 
-Pattern 1 — Row-level UDF (simplest, driver-side governance)
-    Apply GlassBox to every row of a Spark DataFrame via a Python UDF.
-    Best for: decision validation on streaming micro-batches or small
-    DataFrames where governance latency is acceptable.
-
-Pattern 2 — mapPartitions (scalable, partition-local pipeline)
+Pattern 1 — mapPartitions (scalable, partition-local pipeline)
     Each Spark partition creates its own GovernancePipeline instance.
     Decisions are governed in parallel across the cluster.
     Best for: large batch governance jobs in Databricks / Fabric.
+    (GB-040: this is now the only DataFrame governance path. The prior
+    driver-side-UDF pattern closed over a GovernancePipeline inside a
+    ``pyspark.sql.functions.udf``, which cloudpickle cannot serialise --
+    that code path could never run on a real cluster and has been removed
+    rather than fixed in place. See ``glassbox.adapters.outbound.spark.batch_preauth``
+    for the v2 replacement.)
 
-Pattern 3 — Structured Streaming (real-time, micro-batch governance)
+Pattern 2 — Structured Streaming (real-time, micro-batch governance)
     Govern a Spark Structured Streaming source in each micro-batch via
     foreachBatch(). Each batch runs the pipeline synchronously.
     Best for: real-time AI agent decision streams (Kafka, Delta, EventHub).
@@ -39,26 +40,31 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional
 
 try:
     import pyspark as _pyspark  # noqa: F401
 except ImportError:
     _pyspark = None
 
+if TYPE_CHECKING:
+    import pyspark
+
+    from glassbox.governance.models import DecisionRequest
 
 # ── Lazy PySpark imports (only required at runtime, not import time) ─────────
+
 
 def _require_spark():
     """Raise a clear error if PySpark is not available."""
     try:
         import pyspark  # noqa: F401
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "PySpark is required for GlassBoxSparkAdapter. "
             "Install with: pip install pyspark  "
             "(already available on Databricks and Microsoft Fabric)"
-        )
+        ) from exc
 
 
 # ── Schema for governance result columns ─────────────────────────────────────
@@ -82,11 +88,13 @@ _RESULT_SCHEMA_STR = """
 def _build_pipeline(log_dir: Optional[str] = None, echo: bool = False):
     """Build a GovernancePipeline instance — safe to call inside executors."""
     import sys
+
+    from glassbox.adapters.platforms import auto_detect_adapter
+
     # Ensure glassbox is importable inside the executor
     # On Databricks/Fabric this is handled automatically if the package is
     # installed on the cluster; on standalone Spark add it to sys.path if needed.
     from glassbox.governance.pipeline import GovernancePipeline
-    from glassbox.adapters.platforms import auto_detect_adapter
 
     adapter = auto_detect_adapter()
     cfg = adapter.get_config()
@@ -96,7 +104,7 @@ def _build_pipeline(log_dir: Optional[str] = None, echo: bool = False):
     return GovernancePipeline(**cfg)
 
 
-def _row_to_response(row_dict: Dict[str, Any]) -> Dict[str, Any]:
+def _row_to_response(row_dict: Dict[str, Any]) -> DecisionRequest:
     """
     Convert a Spark Row dict to a DecisionRequest and run governance.
     Returns a flat dict of governance results suitable for Spark schema.
@@ -113,12 +121,12 @@ def _row_to_response(row_dict: Dict[str, Any]) -> Dict[str, Any]:
     from glassbox.governance.pipeline import GovernancePipeline
 
     # Parse inputs
-    agent_id      = str(row_dict.get("agent_id", "unknown"))
-    dtype_raw     = str(row_dict.get("decision_type", "custom")).lower()
-    payload_json  = row_dict.get("payload_json", "{}")
-    confidence    = row_dict.get("confidence", 1.0)
-    environment   = str(row_dict.get("environment", "production"))
-    chain_json    = row_dict.get("agent_chain_json", "[]")
+    agent_id = str(row_dict.get("agent_id", "unknown"))
+    dtype_raw = str(row_dict.get("decision_type", "custom")).lower()
+    payload_json = row_dict.get("payload_json", "{}")
+    confidence = row_dict.get("confidence", 1.0)
+    environment = str(row_dict.get("environment", "production"))
+    chain_json = row_dict.get("agent_chain_json", "[]")
 
     try:
         payload = json.loads(payload_json) if isinstance(payload_json, str) else payload_json
@@ -162,6 +170,7 @@ def _row_to_response(row_dict: Dict[str, Any]) -> Dict[str, Any]:
 
 def _spark_row_factory(**kwargs):
     from pyspark.sql.types import Row
+
     return Row(**kwargs)
 
 
@@ -185,27 +194,31 @@ def _process_partition_rows(
             try:
                 request = _row_to_response(row_dict)
                 resp = pipeline.process(request)
-                yield row_factory(**{
-                    **row_dict,
-                    "decision_id": resp.decision_id,
-                    "final_status": resp.final_status.value,
-                    "risk_score": resp.risk_score,
-                    "risk_level": resp.risk_level.value if resp.risk_level else None,
-                    "policy_violations": resp.policy_violations,
-                    "blocked": resp.final_status.value == "blocked",
-                    "latency_ms": resp.pipeline_latency_ms,
-                })
+                yield row_factory(
+                    **{
+                        **row_dict,
+                        "decision_id": resp.decision_id,
+                        "final_status": resp.final_status.value,
+                        "risk_score": resp.risk_score,
+                        "risk_level": resp.risk_level.value if resp.risk_level else None,
+                        "policy_violations": resp.policy_violations,
+                        "blocked": resp.final_status.value == "blocked",
+                        "latency_ms": resp.pipeline_latency_ms,
+                    }
+                )
             except Exception as exc:
-                yield row_factory(**{
-                    **row_dict,
-                    "decision_id": None,
-                    "final_status": "error",
-                    "risk_score": None,
-                    "risk_level": None,
-                    "policy_violations": [str(exc)],
-                    "blocked": True,
-                    "latency_ms": None,
-                })
+                yield row_factory(
+                    **{
+                        **row_dict,
+                        "decision_id": None,
+                        "final_status": "error",
+                        "risk_score": None,
+                        "risk_level": None,
+                        "policy_violations": [str(exc)],
+                        "blocked": True,
+                        "latency_ms": None,
+                    }
+                )
     finally:
         pipeline.shutdown()
 
@@ -224,11 +237,12 @@ def _write_governed_stream_batch(adapter, batch_df, output_path: str, output_for
         return False
 
     governed = adapter.govern_dataframe(batch_df, partition_mode=True)
-    (governed.write
-        .format(output_format)
+    (
+        governed.write.format(output_format)
         .mode("append")
         .option("mergeSchema", "true")
-        .save(output_path))
+        .save(output_path)
+    )
     return True
 
 
@@ -249,152 +263,92 @@ class GlassBoxSparkAdapter:
     Thread-safety
     -------------
     Each Spark executor/partition creates its own GovernancePipeline. There
-    is no shared state across executors. The driver-side pipeline (used for
-    govern_dataframe small-mode and streaming) is one instance per adapter.
+    is no shared state across executors, and (GB-040) there is no driver-side
+    pipeline either: ``_govern_via_udf`` used to build one GovernancePipeline
+    in ``__init__`` and close over it inside a ``pyspark.sql.functions.udf``,
+    which cloudpickle cannot serialise (it holds an ``RLock``,
+    ``ThreadPoolExecutor``, ``Queue`` and ``WeakSet`` internally) -- that code
+    path could not run on a real cluster. It has been removed rather than
+    fixed in place; :meth:`govern_dataframe` now always uses the
+    ``mapPartitions`` pattern, where every executor builds its own pipeline
+    locally and nothing needs to be serialised across the wire. See
+    ``glassbox.adapters.outbound.spark.batch_preauth`` for the v2 replacement,
+    which is a set of pure, cloudpickle-safe functions (no pipeline object at
+    all) proven serialisable by ``tests/test_spark_serializable.py``.
     """
 
     def __init__(
         self,
         spark,
-        log_dir:  Optional[str] = None,
-        echo:     bool = False,
+        log_dir: Optional[str] = None,
+        echo: bool = False,
         policies: Optional[List] = None,
     ):
         _require_spark()
-        self.spark    = spark
-        self.log_dir  = log_dir or self._resolve_log_dir()
-        self.echo     = echo
+        self.spark = spark
+        self.log_dir = log_dir or self._resolve_log_dir()
+        self.echo = echo
         self.policies = policies or []
-        # Driver-side pipeline for small DataFrames and streaming
-        self._driver_pipeline = _build_pipeline(log_dir=self.log_dir, echo=self.echo)
-        for policy in self.policies:
-            self._driver_pipeline.policy_engine.register(policy)
 
     # ── Log path auto-resolution ──────────────────────────────────────────────
 
     def _resolve_log_dir(self) -> str:
         from glassbox.adapters.platforms import auto_detect_adapter
-        return auto_detect_adapter()._log_dir()
 
-    # ── Pattern 1: DataFrame UDF (driver-side, small DataFrames) ─────────────
+        return auto_detect_adapter()._log_dir() or "./glassbox_logs"
 
-    def govern_dataframe(self, df, partition_mode: bool = False) -> "pyspark.sql.DataFrame":
+    def govern_dataframe(self, df, partition_mode: bool = True) -> "pyspark.sql.DataFrame":
         """
-        Govern every row of a Spark DataFrame.
+        Govern every row of a Spark DataFrame via ``mapPartitions``: every
+        executor partition builds its own GovernancePipeline locally.
 
         Parameters
         ----------
         df              : Spark DataFrame with columns:
                           agent_id, decision_type, payload_json,
                           confidence (optional), environment (optional)
-        partition_mode  : bool — if True, use mapPartitions (scalable);
-                          if False, use driver-side UDF (simpler)
+        partition_mode  : Removed in GB-040 (accepted for backward
+                          compatibility; this method always uses
+                          mapPartitions now, since the driver-side UDF path
+                          it used to select could not run on a real cluster
+                          -- see the class docstring).
 
         Returns
         -------
         DataFrame with original columns + governance result columns
         """
-        if partition_mode:
-            return self._govern_via_map_partitions(df)
-        return self._govern_via_udf(df)
+        return self._govern_via_map_partitions(df)
 
-    def _govern_via_udf(self, df) -> "pyspark.sql.DataFrame":
-        """Driver-side UDF — simple, suitable for small DataFrames."""
-        from pyspark.sql import functions as F
-        from pyspark.sql.types import (
-            ArrayType, BooleanType, DoubleType, StringType, StructField, StructType
-        )
-
-        result_schema = StructType([
-            StructField("decision_id",       StringType(),           True),
-            StructField("final_status",       StringType(),           True),
-            StructField("risk_score",         DoubleType(),           True),
-            StructField("risk_level",         StringType(),           True),
-            StructField("policy_violations",  ArrayType(StringType()), True),
-            StructField("policy_warnings",    ArrayType(StringType()), True),
-            StructField("blocked",            BooleanType(),          True),
-            StructField("circuit_breaker",    BooleanType(),          True),
-            StructField("latency_ms",         DoubleType(),           True),
-            StructField("message",            StringType(),           True),
-        ])
-
-        pipeline_ref = self._driver_pipeline   # captured in closure
-
-        def _govern_row(agent_id, decision_type, payload_json,
-                        confidence, environment, agent_chain_json):
-            row_dict = {
-                "agent_id": agent_id, "decision_type": decision_type,
-                "payload_json": payload_json, "confidence": confidence or 1.0,
-                "environment": environment or "production",
-                "agent_chain_json": agent_chain_json or "[]",
-            }
-            try:
-                request = _row_to_response(row_dict)
-                resp    = pipeline_ref.process(request)
-                return (
-                    resp.decision_id,
-                    resp.final_status.value,
-                    resp.risk_score,
-                    resp.risk_level.value if resp.risk_level else None,
-                    resp.policy_violations,
-                    resp.policy_warnings,
-                    resp.final_status.value == "blocked",
-                    resp.circuit_breaker_triggered,
-                    resp.pipeline_latency_ms,
-                    resp.message,
-                )
-            except Exception as exc:
-                return (None, "error", None, None, [str(exc)], [], True, False, None, str(exc))
-
-        govern_udf = F.udf(_govern_row, result_schema)
-
-        # Add default columns if missing
-        if "confidence"       not in df.columns: df = df.withColumn("confidence",       F.lit(1.0))
-        if "environment"      not in df.columns: df = df.withColumn("environment",      F.lit("production"))
-        if "agent_chain_json" not in df.columns: df = df.withColumn("agent_chain_json", F.lit("[]"))
-
-        result_col = govern_udf(
-            F.col("agent_id"), F.col("decision_type"), F.col("payload_json"),
-            F.col("confidence"), F.col("environment"), F.col("agent_chain_json"),
-        )
-        return (
-            df
-            .withColumn("_gov", result_col)
-            .withColumn("decision_id",      F.col("_gov.decision_id"))
-            .withColumn("final_status",     F.col("_gov.final_status"))
-            .withColumn("risk_score",       F.col("_gov.risk_score"))
-            .withColumn("risk_level",       F.col("_gov.risk_level"))
-            .withColumn("policy_violations",F.col("_gov.policy_violations"))
-            .withColumn("policy_warnings",  F.col("_gov.policy_warnings"))
-            .withColumn("blocked",          F.col("_gov.blocked"))
-            .withColumn("circuit_breaker",  F.col("_gov.circuit_breaker"))
-            .withColumn("latency_ms",       F.col("_gov.latency_ms"))
-            .withColumn("message",          F.col("_gov.message"))
-            .drop("_gov")
-        )
-
-    # ── Pattern 2: mapPartitions (executor-local, scalable) ──────────────────
+    # ── mapPartitions (executor-local, scalable) ──────────────────────────────
 
     def _govern_via_map_partitions(self, df) -> "pyspark.sql.DataFrame":
         """
         Parallel governance via mapPartitions.
         Each executor partition creates its own GovernancePipeline instance.
         """
-        from pyspark.sql.types import ArrayType, BooleanType, DoubleType, StringType, StructField, StructType
+        from pyspark.sql.types import (
+            ArrayType,
+            BooleanType,
+            DoubleType,
+            StringType,
+            StructField,
+            StructType,
+        )
 
         out_schema = StructType(
-            df.schema.fields + [
-                StructField("decision_id",      StringType(),            True),
-                StructField("final_status",      StringType(),            True),
-                StructField("risk_score",        DoubleType(),            True),
-                StructField("risk_level",        StringType(),            True),
+            df.schema.fields
+            + [
+                StructField("decision_id", StringType(), True),
+                StructField("final_status", StringType(), True),
+                StructField("risk_score", DoubleType(), True),
+                StructField("risk_level", StringType(), True),
                 StructField("policy_violations", ArrayType(StringType()), True),
-                StructField("blocked",           BooleanType(),           True),
-                StructField("latency_ms",        DoubleType(),            True),
+                StructField("blocked", BooleanType(), True),
+                StructField("latency_ms", DoubleType(), True),
             ]
         )
 
-        log_dir  = self.log_dir
+        log_dir = self.log_dir
         policies = self.policies
 
         def process_partition(rows: Iterator):
@@ -407,10 +361,10 @@ class GlassBoxSparkAdapter:
     def govern_stream(
         self,
         stream_df,
-        output_path:   str,
-        checkpoint:    str,
+        output_path: str,
+        checkpoint: str,
         output_format: str = "delta",
-        trigger_secs:  int = 10,
+        trigger_secs: int = 10,
     ) -> "pyspark.sql.streaming.StreamingQuery":
         """
         Govern a Spark Structured Streaming DataFrame.
@@ -434,8 +388,7 @@ class GlassBoxSparkAdapter:
             _write_governed_stream_batch(adapter_ref, batch_df, output_path, output_format)
 
         return (
-            stream_df.writeStream
-            .foreachBatch(process_batch)
+            stream_df.writeStream.foreachBatch(process_batch)
             .option("checkpointLocation", checkpoint)
             .trigger(processingTime=f"{trigger_secs} seconds")
             .start()
@@ -449,32 +402,80 @@ class GlassBoxSparkAdapter:
         Each row represents one AI-generated operational decision.
         """
         import json as _json
-        records = [
+
+        records: List[Dict[str, Any]] = [
             # Procurement decisions
-            {"agent_id":"procurement_agent","decision_type":"procurement",
-             "payload_json":_json.dumps({"amount":5000,"supplier_id":"SUP-001","category":"hardware"})},
-            {"agent_id":"procurement_agent","decision_type":"procurement",
-             "payload_json":_json.dumps({"amount":750000,"supplier_id":"UNKNOWN","category":"semiconductors"})},
+            {
+                "agent_id": "procurement_agent",
+                "decision_type": "procurement",
+                "payload_json": _json.dumps(
+                    {"amount": 5000, "supplier_id": "SUP-001", "category": "hardware"}
+                ),
+            },
+            {
+                "agent_id": "procurement_agent",
+                "decision_type": "procurement",
+                "payload_json": _json.dumps(
+                    {"amount": 750000, "supplier_id": "UNKNOWN", "category": "semiconductors"}
+                ),
+            },
             # Pricing decisions
-            {"agent_id":"pricing_agent","decision_type":"pricing",
-             "payload_json":_json.dumps({"new_price":110.0,"previous_price":100.0,"product_id":"P1","reason":"demand"})},
-            {"agent_id":"pricing_agent","decision_type":"pricing",
-             "payload_json":_json.dumps({"new_price":500.0,"previous_price":100.0,"product_id":"P2"})},
+            {
+                "agent_id": "pricing_agent",
+                "decision_type": "pricing",
+                "payload_json": _json.dumps(
+                    {
+                        "new_price": 110.0,
+                        "previous_price": 100.0,
+                        "product_id": "P1",
+                        "reason": "demand",
+                    }
+                ),
+            },
+            {
+                "agent_id": "pricing_agent",
+                "decision_type": "pricing",
+                "payload_json": _json.dumps(
+                    {"new_price": 500.0, "previous_price": 100.0, "product_id": "P2"}
+                ),
+            },
             # Financial decisions
-            {"agent_id":"treasury_agent","decision_type":"financial",
-             "payload_json":_json.dumps({"amount":50000,"destination_account":"ACC-001","reference":"REF-001"})},
-            {"agent_id":"treasury_agent","decision_type":"financial",
-             "payload_json":_json.dumps({"amount":2000000,"destination_account":"ACC-002","reference":"REF-002"})},
+            {
+                "agent_id": "treasury_agent",
+                "decision_type": "financial",
+                "payload_json": _json.dumps(
+                    {"amount": 50000, "destination_account": "ACC-001", "reference": "REF-001"}
+                ),
+            },
+            {
+                "agent_id": "treasury_agent",
+                "decision_type": "financial",
+                "payload_json": _json.dumps(
+                    {"amount": 2000000, "destination_account": "ACC-002", "reference": "REF-002"}
+                ),
+            },
             # IT operations
-            {"agent_id":"devops_agent","decision_type":"it_ops",
-             "payload_json":_json.dumps({"action":"restart_service","target":"api-gateway"})},
-            {"agent_id":"devops_agent","decision_type":"it_ops",
-             "payload_json":_json.dumps({"action":"delete_database","target":"prod-db"})},
+            {
+                "agent_id": "devops_agent",
+                "decision_type": "it_ops",
+                "payload_json": _json.dumps({"action": "restart_service", "target": "api-gateway"}),
+            },
+            {
+                "agent_id": "devops_agent",
+                "decision_type": "it_ops",
+                "payload_json": _json.dumps({"action": "delete_database", "target": "prod-db"}),
+            },
             # Inventory decisions
-            {"agent_id":"inventory_agent","decision_type":"inventory",
-             "payload_json":_json.dumps({"quantity":500,"product_id":"SKU-001"})},
-            {"agent_id":"inventory_agent","decision_type":"inventory",
-             "payload_json":_json.dumps({"quantity":50000,"product_id":"SKU-002"})},
+            {
+                "agent_id": "inventory_agent",
+                "decision_type": "inventory",
+                "payload_json": _json.dumps({"quantity": 500, "product_id": "SKU-001"}),
+            },
+            {
+                "agent_id": "inventory_agent",
+                "decision_type": "inventory",
+                "payload_json": _json.dumps({"quantity": 50000, "product_id": "SKU-002"}),
+            },
         ]
         # Repeat to reach n rows
         while len(records) < n:
@@ -489,10 +490,24 @@ class GlassBoxSparkAdapter:
     # ── Governance stats as Spark DataFrame ──────────────────────────────────
 
     def stats_as_dataframe(self) -> "pyspark.sql.DataFrame":
-        """Return driver-side audit stats as a single-row Spark DataFrame."""
-        stats = self._driver_pipeline.stats
-        return self.spark.createDataFrame([stats])
+        """
+        Not implemented: there is no driver-side pipeline left to report on.
+        Each partition shuts down its own pipeline immediately after use
+        (see ``_process_partition_rows``), so there is no single "driver-side"
+        stats object left to report -- aggregate the ``latency_ms`` /
+        ``final_status`` output columns from :meth:`govern_dataframe` instead.
+        """
+        raise NotImplementedError(
+            "GlassBoxSparkAdapter.stats_as_dataframe() is not supported: there "
+            "is no driver-side pipeline. Aggregate the output "
+            "columns of govern_dataframe() instead."
+        )
 
     def shutdown(self) -> None:
-        """Release driver-side governance resources held by the adapter."""
-        self._driver_pipeline.shutdown()
+        """
+        No-op. There is no driver-side pipeline to release:
+        every partition builds and shuts down its own pipeline within
+        ``_process_partition_rows``. Kept for backward compatibility so
+        existing call sites do not need to change.
+        """
+        return None

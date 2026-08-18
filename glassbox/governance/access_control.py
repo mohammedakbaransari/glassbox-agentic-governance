@@ -1,13 +1,18 @@
 """
-GlassBox Framework — Advanced Access Control (v1.1.0)
+GlassBox Framework — Advanced Access Control
 ======================================================
 
-Enterprise-grade RBAC with:
+Legacy, in-process RBAC. Not persisted, not shared across replicas, and not
+wired to any identity provider -- see docs/CLAIMS.md for the measured
+reasons this must not be relied on as a production security boundary. For
+real identity and policy decisions, use ``glassbox.app``/``glassbox.ports``
+instead.
+
+Provides:
   - Role hierarchy (permissions inherited from parent roles)
   - Attribute-based access control (ABAC) via context matching
   - Resource-scoped permissions (per-resource, per-action)
-  - Delegation & impersonation for audit trails
-  - Dynamic permission evaluation at request time
+  - Dynamic permission evaluation at request time, with a bounded cache
 
 Design Patterns:
   - Permission model: <resource>:<action>:<scope>
@@ -17,21 +22,21 @@ Design Patterns:
 
 Usage:
     from glassbox.governance.access_control import AccessControl, Role
-    
+
     # Define roles
     admin_role = Role("admin", description="Super admin")
     admin_role.grant_permission("audit_log:read:any_tenant")
     admin_role.grant_permission("policy:write:any_tenant")
-    
+
     analyst_role = Role("analyst", description="Data analyst")
     analyst_role.grant_permission("audit_log:read:own_tenant")
     analyst_role.set_parent(admin_role)  # Inherit admin permissions
-    
+
     # Initialize access control
     ac = AccessControl()
     ac.register_role(admin_role)
     ac.register_role(analyst_role)
-    
+
     # Check permission
     can_read = ac.has_permission(
         user_id="user123",
@@ -40,21 +45,16 @@ Usage:
         action="read",
         context={"tenant_id": "tenant1", "record_tenant_id": "tenant1"}
     )
-    
-    # Impersonate for audit
-    with ac.impersonate("admin", "user456"):
-        # Operations logged as "admin by user456"
-        pass
 
 Author: Mohammed Akbar Ansari
 """
 
-import time
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple, Callable
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from glassbox.governance.logging_manager import get_logger
 
@@ -129,13 +129,11 @@ class Role:
     ) -> None:
         """Revoke a permission from this role."""
         self.permissions = {
-            p for p in self.permissions
+            p
+            for p in self.permissions
             if not (p.resource == resource and p.action == action and p.scope == scope)
         }
-        log.debug(
-            "Role %s revoked permission: %s:%s:%s",
-            self.name, resource, action, scope
-        )
+        log.debug("Role %s revoked permission: %s:%s:%s", self.name, resource, action, scope)
 
     def set_parent(self, parent_role: "Role") -> None:
         """Set parent role for inheritance."""
@@ -171,7 +169,7 @@ class Role:
     def _scope_matches(self, perm_scope: str, context_scope: str) -> bool:
         """Check if permission scope allows context scope."""
         # Scope hierarchy: ANY > CUSTOM > ANY_TENANT > OWN_TENANT > OWN_RECORD
-        hierarchy = [
+        hierarchy: List[str] = [
             PermissionScope.OWN_RECORD,
             PermissionScope.OWN_TENANT,
             PermissionScope.ANY_TENANT,
@@ -226,12 +224,27 @@ class AccessDecision:
 
 
 class AccessControl:
-    MAX_IMPERSONATION_SECONDS = 3600
+    """Main access control engine.
 
-    """Main access control engine."""
+    GB-040: this is legacy, in-process RBAC. It is not persisted, not shared
+    across replicas, and not wired to any real identity provider, so it must
+    not be relied on as a production security boundary -- see
+    docs/CLAIMS.md and the ``glassbox.app``/``glassbox.ports`` identity and
+    policy-decision-point layer for the real one. ``impersonate()`` (an
+    in-process, unaudited, unrevocable-from-outside privilege-escalation
+    mechanism) was removed entirely rather than hardened, since there is no
+    safe way to keep it. The permission cache is bounded (``MAX_CACHE_ENTRIES``)
+    to close the unbounded-memory-growth vector the review measured.
+    """
+
+    #: Hard cap on cached permission decisions. Without a cap, one cache entry
+    #: per unique (user, resource, action, context) combination accumulates
+    #: forever between `clear_cache()` calls -- an unbounded-memory vector.
+    MAX_CACHE_ENTRIES = 10_000
 
     def __init__(self, enable_caching: bool = True, cache_ttl_sec: float = 300.0):
         import os as _os
+
         self.roles: Dict[str, Role] = {}
         self.users: Dict[str, User] = {}
         self.enable_caching = enable_caching
@@ -334,8 +347,7 @@ class AccessControl:
             allowed, cached_at = self._cache[cache_key]
             if (time.time() - cached_at) < self.cache_ttl_sec:
                 log.debug(
-                    "Permission check CACHED: %s:%s:%s -> %s",
-                    user_id, resource, action, allowed
+                    "Permission check CACHED: %s:%s:%s -> %s", user_id, resource, action, allowed
                 )
                 return allowed
 
@@ -356,7 +368,7 @@ class AccessControl:
 
             # Check all assigned roles (impersonated role only if set)
             role_names = [user.delegated_role] if user.delegated_role else sorted(user.roles)
-            
+
             if not role_names:
                 self._record_decision(
                     AccessDecision(
@@ -373,13 +385,13 @@ class AccessControl:
             # Check if ANY role grants permission (standard RBAC semantics)
             context = context or {}
             scope = context.get("scope", PermissionScope.ANY)
-            
+
             allowed = False
             for role_name in role_names:
                 role = self.roles.get(role_name)
                 if not role:
                     continue
-                
+
                 if role.has_permission(resource, action, scope):
                     allowed = True
                     break
@@ -392,12 +404,13 @@ class AccessControl:
                         break
 
             # Check context-aware conditions
-            if allowed:
+            if allowed and role is not None:
                 allowed = self._evaluate_conditions(role, resource, action, context)
 
             # Cache result
             if self.enable_caching:
                 self._cache[cache_key] = (allowed, time.time())
+                self._evict_cache_if_needed()
 
             decision = AccessDecision(
                 allowed=allowed,
@@ -411,10 +424,36 @@ class AccessControl:
 
             log.info(
                 "Permission check: %s:%s:%s -> %s (%.2fms)",
-                user_id, resource, action, allowed, decision.duration_ms
+                user_id,
+                resource,
+                action,
+                allowed,
+                decision.duration_ms,
             )
 
             return allowed
+
+    def _evict_cache_if_needed(self) -> None:
+        """Bound ``_cache`` (GB-040): drop expired entries first, then the
+        oldest remaining entries, until the cache is back under
+        ``MAX_CACHE_ENTRIES``. Must be called with ``self._lock`` held."""
+        if len(self._cache) <= self.MAX_CACHE_ENTRIES:
+            return
+
+        now = time.time()
+        expired = [
+            k
+            for k, (_, cached_at) in self._cache.items()
+            if (now - cached_at) >= self.cache_ttl_sec
+        ]
+        for key in expired:
+            del self._cache[key]
+
+        if len(self._cache) > self.MAX_CACHE_ENTRIES:
+            oldest_first = sorted(self._cache.items(), key=lambda item: item[1][1])
+            overflow = len(self._cache) - self.MAX_CACHE_ENTRIES
+            for key, _ in oldest_first[:overflow]:
+                del self._cache[key]
 
     def _evaluate_conditions(
         self,
@@ -432,92 +471,27 @@ class AccessControl:
                         return False
         return True
 
-    def impersonate(self, role_name: str, requesting_user_id: str,
-                    max_seconds: int = 300):
+    def impersonate(self, role_name: str, requesting_user_id: str, max_seconds: int = 300):
         """
-        Context manager for role impersonation (admin testing, support access).
+        Removed (GB-040). This used to be a context manager that granted a
+        user a different role in-process for its duration, protected only by
+        a daemon watchdog thread with no external audit trail, no durable
+        record, and no way for anyone outside this process to revoke it early
+        -- a privilege-escalation mechanism with no real safety boundary. There
+        is no safe way to hedge this in place, so it is removed rather than
+        hardened.
 
-        A daemon watchdog thread forcibly restores the original role after
-        ``max_seconds`` to prevent privilege escalation on thread crash.
+        Raises:
+            NotImplementedError: always. See docs/CLAIMS.md's hardening
+                notes on this module.
         """
-        if max_seconds <= 0:
-            raise ValueError("max_seconds must be greater than zero")
-        if max_seconds > self.MAX_IMPERSONATION_SECONDS:
-            raise ValueError(
-                f"max_seconds exceeds the maximum allowed impersonation duration ({self.MAX_IMPERSONATION_SECONDS}s)"
-            )
-
-        class ImpersonationContext:
-            def __init__(ctx_self, ac, role_name, requesting_user_id, max_seconds):
-                ctx_self.ac = ac
-                ctx_self.role_name = role_name
-                ctx_self.requesting_user_id = requesting_user_id
-                ctx_self.original_role = None
-                ctx_self.max_seconds = max_seconds
-                ctx_self._restored = threading.Event()
-                ctx_self._watchdog = None
-
-            def _restore(ctx_self):
-                """Re-apply original role (idempotent)."""
-                if ctx_self._restored.is_set():
-                    return
-                with ctx_self.ac._lock:
-                    user = ctx_self.ac.get_user(ctx_self.requesting_user_id)
-                    if user:
-                        user.delegated_role = ctx_self.original_role
-                        user.delegated_by = None
-                    # Invalidate cached decisions for this user so the restored
-                    # role takes effect immediately on the next permission check.
-                    ctx_self.ac._cache = {
-                        k: v for k, v in ctx_self.ac._cache.items()
-                        if not k.startswith(ctx_self.requesting_user_id + ":")
-                    }
-                ctx_self._restored.set()
-
-            def __enter__(ctx_self):
-                import threading as _threading
-                with ctx_self.ac._lock:
-                    user = ctx_self.ac.get_user(ctx_self.requesting_user_id)
-                    if user:
-                        ctx_self.original_role = user.delegated_role
-                        user.delegated_role = ctx_self.role_name
-                        user.delegated_by = ctx_self.requesting_user_id
-                    # Invalidate cached decisions for this user so the new
-                    # delegated role takes effect immediately.
-                    ctx_self.ac._cache = {
-                        k: v for k, v in ctx_self.ac._cache.items()
-                        if not k.startswith(ctx_self.requesting_user_id + ":")
-                    }
-
-                log.info(
-                    "Impersonation started: %s as %s (max %ds)",
-                    ctx_self.requesting_user_id, ctx_self.role_name, ctx_self.max_seconds
-                )
-
-                def _watchdog():
-                    if not ctx_self._restored.wait(timeout=ctx_self.max_seconds):
-                        ctx_self._restore()
-                        log.warning(
-                            "Impersonation watchdog: restored role for %s after %ds timeout",
-                            ctx_self.requesting_user_id, ctx_self.max_seconds
-                        )
-
-                ctx_self._watchdog = _threading.Thread(
-                    target=_watchdog,
-                    daemon=True,
-                    name=f"impersonation-watchdog-{ctx_self.requesting_user_id}",
-                )
-                ctx_self._watchdog.start()
-                return ctx_self
-
-            def __exit__(ctx_self, exc_type, exc_val, exc_tb):
-                ctx_self._restore()
-                log.info(
-                    "Impersonation ended: %s",
-                    ctx_self.requesting_user_id
-                )
-
-        return ImpersonationContext(self, role_name, requesting_user_id, max_seconds)
+        raise NotImplementedError(
+            "AccessControl.impersonate() was removed: it granted "
+            "elevated roles in-process with no external audit trail or "
+            "revocation. There is no drop-in replacement -- model "
+            "impersonation as an explicit, durably-recorded decision through "
+            "glassbox.app.decision_service instead."
+        )
 
     def _record_decision(self, decision: AccessDecision) -> None:
         """Record access decision for audit."""

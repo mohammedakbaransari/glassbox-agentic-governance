@@ -40,7 +40,7 @@ python scripts/run_test_batches.py
 
 ## Code quality expectations
 
-- Keep Python 3.9+ compatibility.
+- Keep Python 3.10+ compatibility.
 - Add/maintain type hints for public interfaces.
 - Add tests for new behavior and bug fixes.
 - Avoid adding mandatory runtime dependencies to core.

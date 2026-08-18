@@ -38,7 +38,7 @@ import inspect
 import re
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple
 
 # Maximum bytes of a tool name/description that pattern-matching will inspect.
 # Truncating before regex prevents catastrophic backtracking on adversarial input
@@ -46,7 +46,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 _MAX_SCAN_CHARS = 4_000
 
 from glassbox.governance.models import (
-    DecisionContext, DecisionRequest, DecisionType, FinalStatus,
+    DecisionContext,
+    DecisionRequest,
+    DecisionType,
+    FinalStatus,
 )
 
 if TYPE_CHECKING:
@@ -56,50 +59,85 @@ if TYPE_CHECKING:
 # ── Suspicious patterns in MCP tool definitions ───────────────────────────────
 
 _TOOL_POISONING_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
-    (re.compile(r'ignore (previous|prior|above|all) instructions', re.I),
-     "Prompt injection in tool description",     "critical"),
-    (re.compile(r'(disregard|forget|bypass|override) (your |the )?(system |)?(prompt|instructions|guidelines)', re.I),
-     "System prompt override attempt",           "critical"),
-    (re.compile(r'you (are|must|should) (now|actually) (be|act as|pretend)', re.I),
-     "Role override in tool description",        "high"),
-    (re.compile(r'<(script|iframe|img|svg)[^>]*>', re.I),
-     "HTML/script injection in tool spec",       "high"),
-    (re.compile(r'\[\s*system\s*\]|\[INST\]|<\|system\|>', re.I),
-     "LLM instruction injection marker",         "critical"),
-    (re.compile(r'exfiltrate|exfil|send.{0,30}(password|secret|token|key).{0,30}to', re.I),
-     "Data exfiltration instruction",            "critical"),
-    (re.compile(r'call.{0,50}(admin|root|sudo|privileged)', re.I),
-     "Privilege escalation instruction",         "high"),
+    (
+        re.compile(r"ignore (previous|prior|above|all) instructions", re.I),
+        "Prompt injection in tool description",
+        "critical",
+    ),
+    (
+        re.compile(
+            r"(disregard|forget|bypass|override) (your |the )?(system |)?(prompt|instructions|guidelines)",
+            re.I,
+        ),
+        "System prompt override attempt",
+        "critical",
+    ),
+    (
+        re.compile(r"you (are|must|should) (now|actually) (be|act as|pretend)", re.I),
+        "Role override in tool description",
+        "high",
+    ),
+    (
+        re.compile(r"<(script|iframe|img|svg)[^>]*>", re.I),
+        "HTML/script injection in tool spec",
+        "high",
+    ),
+    (
+        re.compile(r"\[\s*system\s*\]|\[INST\]|<\|system\|>", re.I),
+        "LLM instruction injection marker",
+        "critical",
+    ),
+    (
+        re.compile(r"exfiltrate|exfil|send.{0,30}(password|secret|token|key).{0,30}to", re.I),
+        "Data exfiltration instruction",
+        "critical",
+    ),
+    (
+        re.compile(r"call.{0,50}(admin|root|sudo|privileged)", re.I),
+        "Privilege escalation instruction",
+        "high",
+    ),
 ]
 
 _TYPOSQUATTING_TRUSTED = [
-    "read_file","write_file","execute_code","search_web","create_file",
-    "delete_file","list_directory","bash","python","javascript",
-    "send_email","http_request","database_query","file_manager",
+    "read_file",
+    "write_file",
+    "execute_code",
+    "search_web",
+    "create_file",
+    "delete_file",
+    "list_directory",
+    "bash",
+    "python",
+    "javascript",
+    "send_email",
+    "http_request",
+    "database_query",
+    "file_manager",
 ]
 
 _SENSITIVE_TOOL_PATTERNS: List[Tuple[re.Pattern, str]] = [
-    (re.compile(r'\b(passw(or)?d|secret|token|api.key|private.key)\b', re.I), "Credential access"),
-    (re.compile(r'\b(shadow|passwd|sudoers|hosts|resolv)\b', re.I),           "System file access"),
-    (re.compile(r'\b(rm\s+-rf|rmdir|shred|wipe|format)\b', re.I),            "Destructive operation"),
-    (re.compile(r'\b(curl|wget)\b.{0,50}\|.{0,30}(bash|sh|python)', re.I),   "Pipe to shell"),
+    (re.compile(r"\b(passw(or)?d|secret|token|api.key|private.key)\b", re.I), "Credential access"),
+    (re.compile(r"\b(shadow|passwd|sudoers|hosts|resolv)\b", re.I), "System file access"),
+    (re.compile(r"\b(rm\s+-rf|rmdir|shred|wipe|format)\b", re.I), "Destructive operation"),
+    (re.compile(r"\b(curl|wget)\b.{0,50}\|.{0,30}(bash|sh|python)", re.I), "Pipe to shell"),
 ]
 
 
 @dataclass
 class MCPScanFinding:
-    severity:    str    # critical | high | medium | low
-    category:    str
+    severity: str  # critical | high | medium | low
+    category: str
     description: str
-    location:    str    # "name" | "description" | "parameters" | "capability"
+    location: str  # "name" | "description" | "parameters" | "capability"
 
 
 @dataclass
 class MCPScanReport:
-    tool_name:   str
-    risk_level:  str          # critical | high | medium | low | safe
-    findings:    List[MCPScanFinding] = field(default_factory=list)
-    approved:    bool         = True
+    tool_name: str
+    risk_level: str  # critical | high | medium | low | safe
+    findings: List[MCPScanFinding] = field(default_factory=list)
+    approved: bool = True
 
     @property
     def critical_count(self) -> int:
@@ -111,12 +149,18 @@ class MCPScanReport:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "tool_name":  self.tool_name,
+            "tool_name": self.tool_name,
             "risk_level": self.risk_level,
-            "approved":   self.approved,
-            "findings":   [{"severity": f.severity, "category": f.category,
-                            "description": f.description, "location": f.location}
-                           for f in self.findings],
+            "approved": self.approved,
+            "findings": [
+                {
+                    "severity": f.severity,
+                    "category": f.category,
+                    "description": f.description,
+                    "location": f.location,
+                }
+                for f in self.findings
+            ],
         }
 
 
@@ -157,12 +201,14 @@ class MCPToolScanner:
             if pattern.search(safe_text):
                 key = (severity, category, location)
                 if key not in seen:
-                    findings.append(MCPScanFinding(
-                        severity=severity,
-                        category=category,
-                        description=f"Pattern detected in tool spec: {pattern.pattern[:60]}",
-                        location=location,
-                    ))
+                    findings.append(
+                        MCPScanFinding(
+                            severity=severity,
+                            category=category,
+                            description=f"Pattern detected in tool spec: {pattern.pattern[:60]}",
+                            location=location,
+                        )
+                    )
                     seen.add(key)
 
         if poisoning_only:
@@ -172,12 +218,14 @@ class MCPToolScanner:
             if pattern.search(safe_text):
                 key = ("medium", category, location)
                 if key not in seen:
-                    findings.append(MCPScanFinding(
-                        severity="medium",
-                        category=category,
-                        description=f"Sensitive operation indicated: {category}",
-                        location=location,
-                    ))
+                    findings.append(
+                        MCPScanFinding(
+                            severity="medium",
+                            category=category,
+                            description=f"Sensitive operation indicated: {category}",
+                            location=location,
+                        )
+                    )
                     seen.add(key)
 
     @classmethod
@@ -230,7 +278,9 @@ class MCPToolScanner:
                 value = node.get(combiner)
                 if isinstance(value, list):
                     for index, item in enumerate(value):
-                        cls._scan_schema_node(item, f"{location}.{combiner}[{index}]", findings, seen)
+                        cls._scan_schema_node(
+                            item, f"{location}.{combiner}[{index}]", findings, seen
+                        )
 
         elif isinstance(node, list):
             for index, item in enumerate(node):
@@ -249,36 +299,42 @@ class MCPToolScanner:
         Returns:
             MCPScanReport with risk level and detailed findings.
         """
-        name        = str(tool_spec.get("name", ""))
+        name = str(tool_spec.get("name", ""))
         description = str(tool_spec.get("description", ""))
-        params      = tool_spec.get("inputSchema", tool_spec.get("parameters", {}))
-        findings    = []
-        seen        = set()
+        params = tool_spec.get("inputSchema", tool_spec.get("parameters", {}))
+        findings: List[Any] = []
+        seen: Set[Tuple[str, str, str]] = set()
 
         # 1. Scan description for tool poisoning
         self._append_findings(findings, seen, text=description, location="description")
 
         # 2. Typosquatting detection
-        name_lower = name.lower().replace("_","").replace("-","")
+        name_lower = name.lower().replace("_", "").replace("-", "")
         for trusted in self._trusted:
-            trusted_norm = trusted.lower().replace("_","").replace("-","")
+            trusted_norm = trusted.lower().replace("_", "").replace("-", "")
             if name_lower != trusted_norm and self._levenshtein(name_lower, trusted_norm) <= 2:
                 key = ("high", "Typosquatting", f"name:{trusted}")
                 if key not in seen:
-                    findings.append(MCPScanFinding(
-                        severity="high", category="Typosquatting",
-                        description=f"Tool name '{name}' is similar to trusted tool '{trusted}'",
-                        location="name"
-                    ))
+                    findings.append(
+                        MCPScanFinding(
+                            severity="high",
+                            category="Typosquatting",
+                            description=f"Tool name '{name}' is similar to trusted tool '{trusted}'",
+                            location="name",
+                        )
+                    )
                     seen.add(key)
 
         # 3. Scan tool name for hidden instructions
         if len(name) > 100:
-            findings.append(MCPScanFinding(
-                severity="medium", category="Anomalous tool name",
-                description=f"Tool name is unusually long ({len(name)} chars)",
-                location="name"
-            ))
+            findings.append(
+                MCPScanFinding(
+                    severity="medium",
+                    category="Anomalous tool name",
+                    description=f"Tool name is unusually long ({len(name)} chars)",
+                    location="name",
+                )
+            )
 
         # 4. Scan parameter schema recursively for suspicious field names and text
         self._scan_schema_node(params, "parameters", findings, seen)
@@ -286,23 +342,22 @@ class MCPToolScanner:
         # Determine overall risk level
         if any(f.severity == "critical" for f in findings):
             risk_level = "critical"
-            approved   = False
+            approved = False
         elif any(f.severity == "high" for f in findings):
             risk_level = "high"
-            approved   = False
+            approved = False
         elif any(f.severity == "medium" for f in findings):
             risk_level = "medium"
-            approved   = True  # warn but allow
+            approved = True  # warn but allow
         elif findings:
             risk_level = "low"
-            approved   = True
+            approved = True
         else:
             risk_level = "safe"
-            approved   = True
+            approved = True
 
         return MCPScanReport(
-            tool_name=name, risk_level=risk_level,
-            findings=findings, approved=approved
+            tool_name=name, risk_level=risk_level, findings=findings, approved=approved
         )
 
     def scan_tool_registry(self, tools: List[Dict[str, Any]]) -> List[MCPScanReport]:
@@ -320,12 +375,12 @@ class MCPToolScanner:
             return MCPToolScanner._levenshtein(s2, s1)
         if len(s2) == 0:
             return len(s1)
-        prev_row = range(len(s2) + 1)
+        prev_row: List[int] = list(range(len(s2) + 1))
         for i, c1 in enumerate(s1):
             curr_row = [i + 1]
             for j, c2 in enumerate(s2):
-                insertions  = prev_row[j + 1] + 1
-                deletions   = curr_row[j] + 1
+                insertions = prev_row[j + 1] + 1
+                deletions = curr_row[j] + 1
                 substitutions = prev_row[j] + (c1 != c2)
                 curr_row.append(min(insertions, deletions, substitutions))
             prev_row = curr_row
@@ -334,11 +389,14 @@ class MCPToolScanner:
 
 class GovernanceBlockedError(Exception):
     """Raised when an MCP tool call is blocked by governance."""
+
     def __init__(self, tool_name: str, violations: List[str], decision_id: str = ""):
-        self.tool_name   = tool_name
-        self.violations  = violations
+        self.tool_name = tool_name
+        self.violations = violations
         self.decision_id = decision_id
-        super().__init__(f"Tool '{tool_name}' blocked by GlassBox governance: {'; '.join(violations)}")
+        super().__init__(
+            f"Tool '{tool_name}' blocked by GlassBox governance: {'; '.join(violations)}"
+        )
 
 
 class MCPGovernanceGateway:
@@ -363,41 +421,41 @@ class MCPGovernanceGateway:
     """
 
     _TOOL_TYPE_MAP: Dict[str, DecisionType] = {
-        "database_query":    DecisionType.CUSTOM,
-        "http_request":      DecisionType.CUSTOM,
-        "file_read":         DecisionType.CUSTOM,
-        "file_write":        DecisionType.IT_OPS,
-        "execute_code":      DecisionType.IT_OPS,
-        "bash":              DecisionType.IT_OPS,
-        "send_payment":      DecisionType.FINANCIAL,
-        "create_order":      DecisionType.PROCUREMENT,
-        "update_price":      DecisionType.PRICING,
-        "prescribe":         DecisionType.CLINICAL,
-        "trade_order":       DecisionType.TRADING,
-        "generate_content":  DecisionType.CONTENT,
-        "draft_contract":    DecisionType.LEGAL,
+        "database_query": DecisionType.CUSTOM,
+        "http_request": DecisionType.CUSTOM,
+        "file_read": DecisionType.CUSTOM,
+        "file_write": DecisionType.IT_OPS,
+        "execute_code": DecisionType.IT_OPS,
+        "bash": DecisionType.IT_OPS,
+        "send_payment": DecisionType.FINANCIAL,
+        "create_order": DecisionType.PROCUREMENT,
+        "update_price": DecisionType.PRICING,
+        "prescribe": DecisionType.CLINICAL,
+        "trade_order": DecisionType.TRADING,
+        "generate_content": DecisionType.CONTENT,
+        "draft_contract": DecisionType.LEGAL,
     }
 
     def __init__(
         self,
-        pipeline:          "GovernancePipeline",
-        agent_id:          str = "mcp_agent",
+        pipeline: "GovernancePipeline",
+        agent_id: str = "mcp_agent",
         decision_type_map: Optional[Dict[str, DecisionType]] = None,
-        auto_scan:         bool = True,
-        confidence:        float = 1.0,
+        auto_scan: bool = True,
+        confidence: float = 1.0,
     ):
-        self._pipeline   = pipeline
-        self._agent_id   = agent_id
-        self._type_map   = {**self._TOOL_TYPE_MAP, **(decision_type_map or {})}
-        self._scanner    = MCPToolScanner() if auto_scan else None
+        self._pipeline = pipeline
+        self._agent_id = agent_id
+        self._type_map = {**self._TOOL_TYPE_MAP, **(decision_type_map or {})}
+        self._scanner = MCPToolScanner() if auto_scan else None
         self._confidence = confidence
 
     def call_tool(
         self,
-        tool_name:  str,
-        arguments:  Dict[str, Any],
-        tool_fn:    Optional[Callable] = None,
-        confidence: Optional[float]    = None,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        tool_fn: Optional[Callable] = None,
+        confidence: Optional[float] = None,
     ) -> Any:
         """
         Govern a MCP tool call and optionally execute it.
@@ -415,21 +473,23 @@ class MCPGovernanceGateway:
         Raises:
             GovernanceBlockedError if blocked.
         """
-        dtype   = self._type_map.get(tool_name, DecisionType.CUSTOM)
+        dtype = self._type_map.get(tool_name, DecisionType.CUSTOM)
         payload = {"tool_name": tool_name, **arguments}
-        ctx     = DecisionContext(
-            confidence=confidence or self._confidence,
-            source_system="mcp_gateway"
+        ctx = DecisionContext(
+            confidence=confidence or self._confidence, source_system="mcp_gateway"
         )
-        request  = DecisionRequest(
-            agent_id=self._agent_id, decision_type=dtype,
-            payload=payload, context=ctx,
+        request = DecisionRequest(
+            agent_id=self._agent_id,
+            decision_type=dtype,
+            payload=payload,
+            context=ctx,
         )
         response = self._pipeline.process(request)
 
         if response.final_status == FinalStatus.BLOCKED:
             raise GovernanceBlockedError(
-                tool_name, response.policy_violations, response.decision_id)
+                tool_name, response.policy_violations, response.decision_id
+            )
 
         if tool_fn is not None:
             return tool_fn(**arguments)
@@ -437,22 +497,25 @@ class MCPGovernanceGateway:
 
     async def call_tool_async(
         self,
-        tool_name:  str,
-        arguments:  Dict[str, Any],
-        tool_fn:    Optional[Callable] = None,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        tool_fn: Optional[Callable] = None,
     ) -> Any:
         """Async variant of call_tool."""
-        dtype   = self._type_map.get(tool_name, DecisionType.CUSTOM)
+        dtype = self._type_map.get(tool_name, DecisionType.CUSTOM)
         payload = {"tool_name": tool_name, **arguments}
-        ctx     = DecisionContext(confidence=self._confidence, source_system="mcp_gateway_async")
+        ctx = DecisionContext(confidence=self._confidence, source_system="mcp_gateway_async")
         request = DecisionRequest(
-            agent_id=self._agent_id, decision_type=dtype,
-            payload=payload, context=ctx,
+            agent_id=self._agent_id,
+            decision_type=dtype,
+            payload=payload,
+            context=ctx,
         )
         response = await self._pipeline.process_async(request)
         if response.final_status == FinalStatus.BLOCKED:
             raise GovernanceBlockedError(
-                tool_name, response.policy_violations, response.decision_id)
+                tool_name, response.policy_violations, response.decision_id
+            )
         if tool_fn is not None:
             if inspect.iscoroutinefunction(tool_fn):
                 return await tool_fn(**arguments)
@@ -466,11 +529,12 @@ class MCPGovernanceGateway:
         """
         if self._scanner is None:
             return tools
-        reports   = self._scanner.scan_tool_registry(tools)
-        critical  = [r for r in reports if r.risk_level == "critical"]
+        reports = self._scanner.scan_tool_registry(tools)
+        critical = [r for r in reports if r.risk_level == "critical"]
         if critical:
             names = ", ".join(r.tool_name for r in critical)
             raise ValueError(
                 f"MCP tool registry contains critical-risk tools: {names}. "
-                "Load aborted. Review MCPScanReport findings.")
+                "Load aborted. Review MCPScanReport findings."
+            )
         return [t for t, r in zip(tools, reports) if r.approved]

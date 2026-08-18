@@ -1,4 +1,4 @@
-# Implementation Guide (v1.2.0)
+# Implementation Guide
 
 This guide explains how to extend GlassBox safely with production-oriented patterns.
 

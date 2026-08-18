@@ -7,42 +7,42 @@ Author: Mohammed Akbar Ansari
 """
 
 from typing import Any, Dict, List, Optional, Tuple
-from glassbox.governance.models import DecisionType
 
+from glassbox.governance.models import DecisionType
 
 # Required fields and their expected types per decision type
 SCHEMAS: Dict[str, List[Dict[str, Any]]] = {
     DecisionType.PROCUREMENT.value: [
-        {"field": "amount",      "type": (int, float), "required": True,  "min": 0},
-        {"field": "supplier_id", "type": str,           "required": False},
-        {"field": "category",    "type": str,           "required": False},
+        {"field": "amount", "type": (int, float), "required": True, "min": 0},
+        {"field": "supplier_id", "type": str, "required": False},
+        {"field": "category", "type": str, "required": False},
     ],
     DecisionType.PRICING.value: [
-        {"field": "new_price",      "type": (int, float), "required": True,  "min": 0},
+        {"field": "new_price", "type": (int, float), "required": True, "min": 0},
         {"field": "previous_price", "type": (int, float), "required": False, "min": 0},
-        {"field": "product_id",     "type": str,           "required": False},
+        {"field": "product_id", "type": str, "required": False},
     ],
     DecisionType.FINANCIAL.value: [
-        {"field": "amount",              "type": (int, float), "required": True, "min": 0},
-        {"field": "destination_account", "type": str,           "required": False},
-        {"field": "reference",           "type": str,           "required": False},
+        {"field": "amount", "type": (int, float), "required": True, "min": 0},
+        {"field": "destination_account", "type": str, "required": False},
+        {"field": "reference", "type": str, "required": False},
     ],
     DecisionType.INVENTORY.value: [
-        {"field": "quantity",    "type": (int, float), "required": True, "min": 0},
-        {"field": "product_id",  "type": str,           "required": False},
-        {"field": "warehouse_id","type": str,           "required": False},
+        {"field": "quantity", "type": (int, float), "required": True, "min": 0},
+        {"field": "product_id", "type": str, "required": False},
+        {"field": "warehouse_id", "type": str, "required": False},
     ],
     DecisionType.LOGISTICS.value: [
-        {"field": "origin",      "type": str, "required": True},
+        {"field": "origin", "type": str, "required": True},
         {"field": "destination", "type": str, "required": True},
     ],
     DecisionType.IT_OPS.value: [
-        {"field": "action",    "type": str, "required": True},
-        {"field": "target",    "type": str, "required": True},
-        {"field": "service_id","type": str, "required": False},
+        {"field": "action", "type": str, "required": True},
+        {"field": "target", "type": str, "required": True},
+        {"field": "service_id", "type": str, "required": False},
     ],
     DecisionType.HR.value: [
-        {"field": "action",      "type": str, "required": True},
+        {"field": "action", "type": str, "required": True},
         {"field": "employee_id", "type": str, "required": False},
     ],
     DecisionType.CLINICAL.value: [
@@ -51,7 +51,12 @@ SCHEMAS: Dict[str, List[Dict[str, Any]]] = {
     ],
     DecisionType.TRADING.value: [
         {"field": "symbol", "type": str, "required": True},
-        {"any_of": ["notional", "order_value", "quantity"], "type": (int, float), "required": True, "min": 0},
+        {
+            "any_of": ["notional", "order_value", "quantity"],
+            "type": (int, float),
+            "required": True,
+            "min": 0,
+        },
     ],
     DecisionType.CONTENT.value: [
         {"field": "content", "type": str, "required": True},

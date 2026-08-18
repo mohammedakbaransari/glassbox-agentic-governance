@@ -1,6 +1,6 @@
 # GlassBox — REST API Reference
 
-**v1.2.0 | Start:** `python3 -m glassbox.api.app` → `http://localhost:8000`
+**Start:** `python3 -m glassbox.api.app` → `http://localhost:8000`
 
 ---
 
@@ -349,7 +349,7 @@ Returns `{"ready": false}` if the pipeline is not healthy.
 
 ### GET /health — Health check
 
-Returns overall health status plus **per-stage P50/P99 latency breakdowns** (v1.2.0).
+Returns overall health status plus **per-stage P50/P99 latency breakdowns**.
 
 ```json
 {
@@ -465,4 +465,4 @@ For detailed troubleshooting, see [TROUBLESHOOTING.md](../USER/troubleshooting.m
 
 ---
 
-*GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari*
+*GlassBox · Apache 2.0*

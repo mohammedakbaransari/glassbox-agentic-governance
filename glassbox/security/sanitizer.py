@@ -42,37 +42,46 @@ log = get_logger("security")
 # ── SQL injection patterns ────────────────────────────────────────────────────
 # Matches common SQL injection vectors — not a full WAF, but catches the
 # most common patterns in enterprise contexts.
+#
+# GB-040: removed two patterns that matched ordinary business text rather
+# than SQL syntax (docs/CLAIMS.md; review's measured false positives):
+#   - a bare `\b(select|insert|update|...)\b` keyword match with no SQL
+#     syntax context, which blocked "Create purchase order for Q3 and update
+#     the supplier record" and "Delete stale cache entries after deploy";
+#   - a bare `0x[0-9a-fA-F]{4,}` hex match, which blocked an ordinary
+#     hex-formatted business identifier (`contract_id: "0xA1B2C3D4E5F6"`).
+# Every remaining pattern requires actual SQL syntax (a statement separator,
+# a function call, a multi-keyword combination such as UNION...SELECT, or a
+# boolean-tautology shape), not a single English word.
 
 _SQL_PATTERNS: List[re.Pattern] = [
-    re.compile(r"(?i)(\b(select|insert|update|delete|drop|truncate|alter|create"
-               r"|exec|execute|xp_|sp_)\b)"),
     re.compile(r"(?i)(--\s|;.*(select|insert|update|delete|drop)|/\*.*\*/)"),
-    re.compile(r"(?i)\b(or|and)\b\s+[\w'\"]+\s*=\s*[\w'\"]+"),   # OR 1=1
+    re.compile(r"(?i)\b(or|and)\b\s+[\w'\"]+\s*=\s*[\w'\"]+"),  # OR 1=1
     re.compile(r"(?i)\bunion\b.*\bselect\b"),
     re.compile(r"(?i)\bsleep\s*\(|benchmark\s*\(|waitfor\b"),
-    re.compile(r"(?i)\bchar\s*\(\s*\d+"),                          # CHAR(65)
+    re.compile(r"(?i)\bchar\s*\(\s*\d+"),  # CHAR(65)
     re.compile(r"(?i)\b(xp_cmdshell|openrowset|bulk\s+insert)\b"),
     # Extended patterns
-    re.compile(r"(?i)\binto\s+outfile\b"),                         # MySQL file write
-    re.compile(r"(?i)\bload_file\s*\("),                           # MySQL file read
-    re.compile(r"0x[0-9a-fA-F]{4,}"),                             # Hex-encoded payloads
-    re.compile(r"(?i)\bwaitfor\s+delay\b"),                        # MSSQL time-based blind
-    re.compile(r"(?i)\bpg_sleep\s*\("),                            # PostgreSQL time-based
-    re.compile(r"(?i)/\*[^*]*\*+(?:[^/*][^*]*\*+)*/"),           # Block comment bypass
-    re.compile(r"(?i)\bcast\s*\(.*\bas\b"),                        # CAST type confusion
-    re.compile(r"(?i)\bconvert\s*\(.*,\s*(int|varchar|char)\b"),   # CONVERT coercion
+    re.compile(r"(?i)\binto\s+outfile\b"),  # MySQL file write
+    re.compile(r"(?i)\bload_file\s*\("),  # MySQL file read
+    re.compile(r"(?i)\bwaitfor\s+delay\b"),  # MSSQL time-based blind
+    re.compile(r"(?i)\bpg_sleep\s*\("),  # PostgreSQL time-based
+    re.compile(r"(?i)/\*[^*]*\*+(?:[^/*][^*]*\*+)*/"),  # Block comment bypass
+    re.compile(r"(?i)\bcast\s*\(.*\bas\b"),  # CAST type confusion
+    re.compile(r"(?i)\bconvert\s*\(.*,\s*(int|varchar|char)\b"),  # CONVERT coercion
 ]
+
 
 # ── Script / template injection patterns ────────────────────────────────────
 _SCRIPT_PATTERNS: List[re.Pattern] = [
-    re.compile(r"(?i)<\s*script\b"),                               # XSS
-    re.compile(r"(?i)javascript\s*:"),                             # JS URL
-    re.compile(r"\{\{.*?\}\}"),                                    # Jinja/Twig SSTI
-    re.compile(r"\$\{.*?\}"),                                      # EL injection
-    re.compile(r"(?i)(eval|exec|compile|__import__)\s*\("),        # Python exec
-    re.compile(r"(?i)(system|popen|subprocess|os\.)\s*\("),        # Shell
-    re.compile(r"(?i)(\.\./|\.\.\\)"),                            # Path traversal
-    re.compile(r"\x00"),                                           # Null byte
+    re.compile(r"(?i)<\s*script\b"),  # XSS
+    re.compile(r"(?i)javascript\s*:"),  # JS URL
+    re.compile(r"\{\{.*?\}\}"),  # Jinja/Twig SSTI
+    re.compile(r"\$\{.*?\}"),  # EL injection
+    re.compile(r"(?i)(eval|exec|compile|__import__)\s*\("),  # Python exec
+    re.compile(r"(?i)(system|popen|subprocess|os\.)\s*\("),  # Shell
+    re.compile(r"(?i)(\.\./|\.\.\\)"),  # Path traversal
+    re.compile(r"\x00"),  # Null byte
 ]
 
 # ── Known malicious keywords ──────────────────────────────────────────────────
@@ -80,19 +89,41 @@ _SCRIPT_PATTERNS: List[re.Pattern] = [
 # _scan_string via s.lower(). Adding uppercase variants is NOT needed.
 _BLOCKED_KEYWORDS: List[str] = [
     # File system & credential targets
-    "passwd", "/etc/shadow", "/etc/hosts", "/proc/self",
+    "passwd",
+    "/etc/shadow",
+    "/etc/hosts",
+    "/proc/self",
     # Windows shell execution
-    "cmd.exe", "powershell", "net user", "net localgroup",
+    "cmd.exe",
+    "powershell",
+    "net user",
+    "net localgroup",
     # Recon tools
-    "whoami", "nmap", "netstat", "ifconfig", "ipconfig",
+    "whoami",
+    "nmap",
+    "netstat",
+    "ifconfig",
+    "ipconfig",
     # Encoding-based bypass helpers
-    "base64_decode", "base64_encode", "fromcharcode",
+    "base64_decode",
+    "base64_encode",
+    "fromcharcode",
     # Python dangerous builtins — not covered by regex (no parens required for presence check)
-    "__import__", "__builtins__", "__class__", "__subclasses__",
+    "__import__",
+    "__builtins__",
+    "__class__",
+    "__subclasses__",
     # Serialisation-based code execution
-    "pickle.loads", "marshal.loads", "yaml.load", "jsonpickle",
+    "pickle.loads",
+    "marshal.loads",
+    "yaml.load",
+    "jsonpickle",
     # Common reverse-shell tokens
-    "/dev/tcp", "/dev/udp", "bash -i", "sh -i", "nc -e",
+    "/dev/tcp",
+    "/dev/udp",
+    "bash -i",
+    "sh -i",
+    "nc -e",
 ]
 
 # ── Encoding bypass detection patterns ────────────────────────────────────────
@@ -111,10 +142,10 @@ _ENCODING_PATTERNS: List[re.Pattern] = [
 
 @dataclass
 class SecurityFinding:
-    severity:   str    # "critical", "high", "medium", "low"
-    category:   str    # "sql_injection", "script_injection", "size", etc.
-    field_path: str    # dot-notation path in payload
-    detail:     str
+    severity: str  # "critical", "high", "medium", "low"
+    category: str  # "sql_injection", "script_injection", "size", etc.
+    field_path: str  # dot-notation path in payload
+    detail: str
 
 
 @dataclass
@@ -126,8 +157,9 @@ class SecurityReport:
     findings: list of SecurityFinding with details.
     clean_payload: the sanitised payload (strings truncated, HTML-escaped).
     """
-    blocked:       bool
-    findings:      List[SecurityFinding] = field(default_factory=list)
+
+    blocked: bool
+    findings: List[SecurityFinding] = field(default_factory=list)
     clean_payload: Optional[Dict[str, Any]] = None
 
     @property
@@ -140,14 +172,18 @@ class SecurityReport:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "blocked":      self.blocked,
-            "findings":     [
-                {"severity": f.severity, "category": f.category,
-                 "field_path": f.field_path, "detail": f.detail}
+            "blocked": self.blocked,
+            "findings": [
+                {
+                    "severity": f.severity,
+                    "category": f.category,
+                    "field_path": f.field_path,
+                    "detail": f.detail,
+                }
                 for f in self.findings
             ],
-            "critical":     self.critical_count,
-            "high":         self.high_count,
+            "critical": self.critical_count,
+            "high": self.high_count,
         }
 
 
@@ -169,19 +205,19 @@ class PayloadSanitizer:
 
     def __init__(
         self,
-        max_string_length: int  = 4096,
-        max_payload_depth: int  = 5,
-        max_payload_keys:  int  = 50,
-        max_payload_size:  int  = 8_192,    # 8 KB — aligned with API _MAX_BODY_BYTES
-        block_on_sql:      bool = True,
-        block_on_script:   bool = True,
+        max_string_length: int = 4096,
+        max_payload_depth: int = 5,
+        max_payload_keys: int = 50,
+        max_payload_size: int = 8_192,  # 8 KB — aligned with API _MAX_BODY_BYTES
+        block_on_sql: bool = True,
+        block_on_script: bool = True,
     ):
         self.max_string_length = max_string_length
         self.max_payload_depth = max_payload_depth
-        self.max_payload_keys  = max_payload_keys
-        self.max_payload_size  = max_payload_size
-        self.block_on_sql      = block_on_sql
-        self.block_on_script   = block_on_script
+        self.max_payload_keys = max_payload_keys
+        self.max_payload_size = max_payload_size
+        self.block_on_sql = block_on_sql
+        self.block_on_script = block_on_script
 
     def check(self, payload: Any, agent_id: str = "") -> SecurityReport:
         """
@@ -194,22 +230,28 @@ class PayloadSanitizer:
         try:
             raw_size = len(json.dumps(payload, default=str).encode())
             if raw_size > self.max_payload_size:
-                findings.append(SecurityFinding(
-                    severity="high", category="size",
-                    field_path="<root>",
-                    detail=f"Payload size {raw_size} bytes exceeds limit {self.max_payload_size}"
-                ))
+                findings.append(
+                    SecurityFinding(
+                        severity="high",
+                        category="size",
+                        field_path="<root>",
+                        detail=f"Payload size {raw_size} bytes exceeds limit {self.max_payload_size}",
+                    )
+                )
         except Exception as exc:
             # [v1.0.1 CRITICAL] Fail-closed: payload cannot be serialized, treat as critical
             log.warning(
                 f"Sanitizer: payload serialization error (fail-closed): {exc}",
-                extra={"component": "security", "agent_id": agent_id}
+                extra={"component": "security", "agent_id": agent_id},
             )
-            findings.append(SecurityFinding(
-                severity="critical", category="serialization",
-                field_path="<root>",
-                detail=f"Payload cannot be serialized: {exc}"
-            ))
+            findings.append(
+                SecurityFinding(
+                    severity="critical",
+                    category="serialization",
+                    field_path="<root>",
+                    detail=f"Payload cannot be serialized: {exc}",
+                )
+            )
 
         # Structural checks + content scanning
         self._scan_value(payload, "<root>", 0, findings)
@@ -221,8 +263,8 @@ class PayloadSanitizer:
                 block = True
                 break
             if f.severity == "high" and (
-                (f.category == "sql_injection" and self.block_on_sql) or
-                (f.category == "script_injection" and self.block_on_script)
+                (f.category == "sql_injection" and self.block_on_sql)
+                or (f.category == "script_injection" and self.block_on_script)
             ):
                 block = True
                 break
@@ -232,33 +274,39 @@ class PayloadSanitizer:
 
     def _scan_value(
         self,
-        value:     Any,
-        path:      str,
-        depth:     int,
-        findings:  List[SecurityFinding],
+        value: Any,
+        path: str,
+        depth: int,
+        findings: List[SecurityFinding],
     ) -> None:
         if depth > self.max_payload_depth:
-            findings.append(SecurityFinding(
-                severity="high", category="depth",
-                field_path=path,
-                detail=f"Payload depth {depth} exceeds maximum {self.max_payload_depth}"
-            ))
+            findings.append(
+                SecurityFinding(
+                    severity="high",
+                    category="depth",
+                    field_path=path,
+                    detail=f"Payload depth {depth} exceeds maximum {self.max_payload_depth}",
+                )
+            )
             return
 
         if isinstance(value, dict):
             if len(value) > self.max_payload_keys:
-                findings.append(SecurityFinding(
-                    severity="medium", category="width",
-                    field_path=path,
-                    detail=f"Dict has {len(value)} keys, maximum is {self.max_payload_keys}"
-                ))
+                findings.append(
+                    SecurityFinding(
+                        severity="medium",
+                        category="width",
+                        field_path=path,
+                        detail=f"Dict has {len(value)} keys, maximum is {self.max_payload_keys}",
+                    )
+                )
             for k, v in value.items():
                 child_path = f"{path}.{k}"
                 self._scan_string(str(k), f"{path}.<key>", findings)
                 self._scan_value(v, child_path, depth + 1, findings)
 
         elif isinstance(value, list):
-            for i, item in enumerate(value[:100]):   # limit scan to first 100 items
+            for i, item in enumerate(value[:100]):  # limit scan to first 100 items
                 self._scan_value(item, f"{path}[{i}]", depth + 1, findings)
 
         elif isinstance(value, str):
@@ -266,43 +314,55 @@ class PayloadSanitizer:
 
     def _scan_string(
         self,
-        s:        str,
-        path:     str,
+        s: str,
+        path: str,
         findings: List[SecurityFinding],
     ) -> None:
         if len(s) > self.max_string_length:
-            findings.append(SecurityFinding(
-                severity="medium", category="string_length",
-                field_path=path,
-                detail=f"String length {len(s)} exceeds max {self.max_string_length}"
-            ))
+            findings.append(
+                SecurityFinding(
+                    severity="medium",
+                    category="string_length",
+                    field_path=path,
+                    detail=f"String length {len(s)} exceeds max {self.max_string_length}",
+                )
+            )
 
         # Null byte
         if "\x00" in s:
-            findings.append(SecurityFinding(
-                severity="critical", category="null_byte",
-                field_path=path,
-                detail="Null byte detected in string value"
-            ))
+            findings.append(
+                SecurityFinding(
+                    severity="critical",
+                    category="null_byte",
+                    field_path=path,
+                    detail="Null byte detected in string value",
+                )
+            )
 
         # SQL injection
         for pattern in _SQL_PATTERNS:
             if pattern.search(s):
-                findings.append(SecurityFinding(
-                    severity="high", category="sql_injection",
-                    field_path=path,
-                    detail=f"SQL injection pattern detected: {pattern.pattern[:60]}"
-                ))
+                findings.append(
+                    SecurityFinding(
+                        severity="high",
+                        category="sql_injection",
+                        field_path=path,
+                        detail=f"SQL injection pattern detected: {pattern.pattern[:60]}",
+                    )
+                )
                 break  # one finding per field per category
 
         # Script/command injection
         for pattern in _SCRIPT_PATTERNS:
             if pattern.search(s):
-                findings.append(SecurityFinding(
-                    severity="high", category="script_injection",
-                    field_path=path,
-                    detail=f"Script injection pattern detected: {pattern.pattern[:60]}"
-                ))
+                findings.append(
+                    SecurityFinding(
+                        severity="high",
+                        category="script_injection",
+                        field_path=path,
+                        detail=f"Script injection pattern detected: {pattern.pattern[:60]}",
+                    )
+                )
                 break
 
         # Blocked keywords — case-insensitive match via s.lower().
@@ -311,11 +371,14 @@ class PayloadSanitizer:
         for kw in _BLOCKED_KEYWORDS:
             # kw is already lowercase; s_lower ensures case-insensitive comparison.
             if kw in s_lower:
-                findings.append(SecurityFinding(
-                    severity="critical", category="blocked_keyword",
-                    field_path=path,
-                    detail=f"Blocked keyword detected: '{kw}'"
-                ))
+                findings.append(
+                    SecurityFinding(
+                        severity="critical",
+                        category="blocked_keyword",
+                        field_path=path,
+                        detail=f"Blocked keyword detected: '{kw}'",
+                    )
+                )
                 break  # one finding per string per category
 
         # Unicode normalisation check (homoglyph attack detection)
@@ -324,31 +387,40 @@ class PayloadSanitizer:
         nfkd = unicodedata.normalize("NFKD", s)
         nfkc = unicodedata.normalize("NFKC", s)
         if (nfkc != s or nfkd != s) and len(s) < 200:  # only check short strings (identifiers)
-            findings.append(SecurityFinding(
-                severity="medium", category="unicode_anomaly",
-                field_path=path,
-                detail="String contains Unicode characters that normalise differently (possible homoglyph)"
-            ))
+            findings.append(
+                SecurityFinding(
+                    severity="medium",
+                    category="unicode_anomaly",
+                    field_path=path,
+                    detail="String contains Unicode characters that normalise differently (possible homoglyph)",
+                )
+            )
             # Re-check blocked keywords on the NFKC-normalised form to catch homoglyph bypasses.
             nfkc_lower = nfkc.lower()
             for kw in _BLOCKED_KEYWORDS:
                 if kw in nfkc_lower:
-                    findings.append(SecurityFinding(
-                        severity="critical", category="blocked_keyword_homoglyph",
-                        field_path=path,
-                        detail=f"Blocked keyword '{kw}' detected after Unicode normalisation"
-                    ))
+                    findings.append(
+                        SecurityFinding(
+                            severity="critical",
+                            category="blocked_keyword_homoglyph",
+                            field_path=path,
+                            detail=f"Blocked keyword '{kw}' detected after Unicode normalisation",
+                        )
+                    )
                     break
 
         # Encoding bypass detection — flag suspicious encoded blobs
         # (long base64 strings, percent-encoded sequences, unicode escapes)
         for enc_pattern in _ENCODING_PATTERNS:
             if enc_pattern.search(s):
-                findings.append(SecurityFinding(
-                    severity="medium", category="encoding_bypass",
-                    field_path=path,
-                    detail=f"Possible encoding bypass detected: {enc_pattern.pattern[:60]}"
-                ))
+                findings.append(
+                    SecurityFinding(
+                        severity="medium",
+                        category="encoding_bypass",
+                        field_path=path,
+                        detail=f"Possible encoding bypass detected: {enc_pattern.pattern[:60]}",
+                    )
+                )
                 break  # one finding per field per category
 
     def _sanitise(self, value: Any) -> Any:
@@ -360,13 +432,14 @@ class PayloadSanitizer:
         if isinstance(value, str):
             # Truncate and normalise
             s = unicodedata.normalize("NFKC", value)
-            return s[:self.max_string_length]
+            return s[: self.max_string_length]
         return value
 
 
 # ── Identifier validator ──────────────────────────────────────────────────────
 
-_SAFE_ID_RE = re.compile(r'^[a-zA-Z0-9_\-\.@:]+$')
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@:]+$")
+
 
 def validate_agent_id(agent_id: str) -> Tuple[bool, Optional[str]]:
     """

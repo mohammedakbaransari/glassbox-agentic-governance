@@ -4,13 +4,8 @@ This directory contains documentation for processes, workflows, and procedures.
 
 ## 📖 Contents
 
-### Review & Improvements
-- **[review_and_improvements.md](review_and_improvements.md)**
-  - Code review process
-  - Quality assurance procedures
-  - Continuous improvement tracking
-  - Release management
-  - Versioning strategies
+### Documentation Style
+- **[style_guide.md](style_guide.md)** — how to write and maintain documentation in this repository
 
 ## 🔄 Development Processes
 
@@ -59,45 +54,13 @@ Describe tests added
 - [ ] Backward compatible
 ```
 
-## 📋 Quality Assurance
+## Quality Gates
 
-### Testing Requirements
-- **Unit Tests**: >90% coverage
-- **Integration Tests**: All workflows tested
-- **Performance Tests**: Benchmark provided
-- **Security Tests**: Input validation verified
-- **Regression Tests**: Previous issues checked
-
-### Code Quality Gates
-- Static analysis: SonarQube
-- Dependency check: Snyk
-- Security scan: OWASP
-- Performance baseline
-
-## 🚀 Release Management
-
-### Version Numbering (Semantic Versioning)
-- **MAJOR** (X.0.0) - Breaking changes
-- **MINOR** (X.Y.0) - New features
-- **PATCH** (X.Y.Z) - Bug fixes
-
-### Release Cycle
-- **Alpha** - Development build (internal)
-- **Beta** - Feature complete (limited external)
-- **Release Candidate** - Final testing
-- **Stable** - Production-ready
-
-### Release Checklist
-- [ ] Version bump
-- [ ] CHANGELOG updated
-- [ ] Release notes written
-- [ ] All tests pass
-- [ ] Documentation updated
-- [ ] Performance benchmarked
-- [ ] Security reviewed
-- [ ] Release tagged
-- [ ] Deployed to staging
-- [ ] Final testing
+- Static analysis: pylint, mypy
+- Formatting: black, isort
+- Architecture: import-linter + `tests/test_layering.py`
+- Security scan: bandit, pip-audit
+- Dependency review and secret scanning on every pull request
 - [ ] Deployed to production
 
 ## 📈 Continuous Improvement

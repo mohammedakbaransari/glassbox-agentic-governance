@@ -9,12 +9,13 @@ regardless of implementation details.
 Run with:
     pytest tests/test_velocity_breaker_invariants.py -v
 """
+
 import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from glassbox.governance.velocity_breaker import VelocityBreaker, DistributedVelocityBreaker
+from glassbox.governance.velocity_breaker import DistributedVelocityBreaker, VelocityBreaker
 
 
 class TestVelocityBreakerInvariants(unittest.TestCase):
@@ -177,7 +178,8 @@ class TestVelocityBreakerInvariants(unittest.TestCase):
             t.join(timeout=10)
 
         self.assertEqual(
-            errors, [],
+            errors,
+            [],
             f"Concurrent checks raised exceptions: {errors}",
         )
 
@@ -197,8 +199,7 @@ class TestVelocityBreakerInvariants(unittest.TestCase):
 
         # Each thread has a unique agent ID — none should trip (only 1 call each)
         threads = [
-            threading.Thread(target=_check_unique, args=(f"unique_agent_{i}",))
-            for i in range(200)
+            threading.Thread(target=_check_unique, args=(f"unique_agent_{i}",)) for i in range(200)
         ]
         for t in threads:
             t.start()
@@ -207,7 +208,8 @@ class TestVelocityBreakerInvariants(unittest.TestCase):
 
         tripped_unique = [aid for aid, t in results.items() if t]
         self.assertEqual(
-            tripped_unique, [],
+            tripped_unique,
+            [],
             f"Unique agents (1 call each) should never trip: {tripped_unique}",
         )
 
@@ -218,9 +220,9 @@ class TestVelocityBreakerEcosystem(unittest.TestCase):
     def test_ecosystem_limit_trips_after_fleet_exceeds_max(self):
         """Ecosystem check fires when combined agent traffic exceeds ecosystem_max."""
         vb = VelocityBreaker(
-            max_decisions=100,        # High per-agent limit — won't trigger
+            max_decisions=100,  # High per-agent limit — won't trigger
             window_seconds=60,
-            ecosystem_max=5,          # Low fleet limit — triggers after 5 total
+            ecosystem_max=5,  # Low fleet limit — triggers after 5 total
             ecosystem_window_seconds=60,
         )
         # First 5 calls (different agents) should pass

@@ -123,14 +123,15 @@ Example rules:
 @dataclass
 class PolicyGenerationResult:
     """Result of a natural-language policy generation request."""
-    description:   str
-    policy_id:     str
-    yaml_rule:     str
-    explanation:   str
+
+    description: str
+    policy_id: str
+    yaml_rule: str
+    explanation: str
     validation_ok: bool
     validation_error: Optional[str] = None
-    policies:      List[Any] = field(default_factory=list)  # Policy objects
-    raw_response:  Optional[str] = None
+    policies: List[Any] = field(default_factory=list)  # Policy objects
+    raw_response: Optional[str] = None
 
 
 class NLPolicyAuthor:
@@ -160,20 +161,20 @@ class NLPolicyAuthor:
 
     def __init__(
         self,
-        api_key:    Optional[str] = None,
-        model:      str           = "claude-sonnet-4-20250514",
-        max_tokens: int           = 1200,
+        api_key: Optional[str] = None,
+        model: str = "claude-sonnet-4-20250514",
+        max_tokens: int = 1200,
     ):
-        self.api_key    = api_key
-        self.model      = model
+        self.api_key = api_key
+        self.model = model
         self.max_tokens = max_tokens
-        self._client    = None   # lazy init
+        self._client = None  # lazy init
 
     def generate(
         self,
-        description:   str,
-        decision_type: str  = "custom",
-        policy_id:     Optional[str] = None,
+        description: str,
+        decision_type: str = "custom",
+        policy_id: Optional[str] = None,
     ) -> PolicyGenerationResult:
         """
         Generate a GlassBox YAML rule from a natural-language description.
@@ -197,7 +198,7 @@ class NLPolicyAuthor:
 
     def preview(
         self,
-        description:   str,
+        description: str,
         decision_type: str = "custom",
     ) -> str:
         """
@@ -236,12 +237,13 @@ class NLPolicyAuthor:
         if self._client is None:
             try:
                 import anthropic
+
                 self._client = anthropic.Anthropic(api_key=self.api_key)
-            except ImportError:
+            except ImportError as exc:
                 raise ImportError(
                     "anthropic package required for Claude-powered generation: "
                     "pip install anthropic"
-                )
+                ) from exc
         return self._client
 
     def _system_prompt(self) -> str:
@@ -280,19 +282,20 @@ class NLPolicyAuthor:
         else:
             # Try to find raw YAML (rules: ...)
             yaml_match = re.search(r"(rules:.*)", raw_text, re.DOTALL)
-            yaml_text  = yaml_match.group(1).strip() if yaml_match else raw_text
+            yaml_text = yaml_match.group(1).strip() if yaml_match else raw_text
 
         # Extract explanation
-        exp_match   = re.search(r"EXPLANATION:\s*(.+?)(?:\n|$)", raw_text, re.IGNORECASE)
+        exp_match = re.search(r"EXPLANATION:\s*(.+?)(?:\n|$)", raw_text, re.IGNORECASE)
         explanation = exp_match.group(1).strip() if exp_match else ""
 
         # Validate
-        validation_ok    = False
+        validation_ok = False
         validation_error = None
-        policies         = []
+        policies = []
         try:
             from glassbox.rules.rules_engine import RulesLoader
-            loader   = RulesLoader()
+
+            loader = RulesLoader()
             policies = loader.load_from_string(yaml_text)
             validation_ok = True
         except Exception as exc:
@@ -322,25 +325,34 @@ class NLPolicyAuthor:
 
         # Detect amount/threshold patterns
         amount_match = re.search(r"\$?([\d,]+(?:k|K|m|M)?)\b", description)
-        amount_val   = 0
+        amount_val = 0
         if amount_match:
             raw = amount_match.group(1).replace(",", "")
-            if raw.endswith(("k", "K")): amount_val = int(float(raw[:-1]) * 1000)
-            elif raw.endswith(("m", "M")): amount_val = int(float(raw[:-1]) * 1_000_000)
+            if raw.endswith(("k", "K")):
+                amount_val = int(float(raw[:-1]) * 1000)
+            elif raw.endswith(("m", "M")):
+                amount_val = int(float(raw[:-1]) * 1_000_000)
             else:
-                try: amount_val = int(raw)
-                except ValueError: amount_val = 0
+                try:
+                    amount_val = int(raw)
+                except ValueError:
+                    amount_val = 0
 
         # Detect result type
-        result = "fail" if any(w in desc_lower for w in
-                               ["block", "reject", "must not", "cannot", "require"]) else "warn"
+        result = (
+            "fail"
+            if any(w in desc_lower for w in ["block", "reject", "must not", "cannot", "require"])
+            else "warn"
+        )
 
         # Detect missing fields
         missing_fields = []
         for keyword, field_name in [
-            ("contract", "contract_id"), ("approval", "approval_ref"),
-            ("reference", "reference"), ("authorisation", "auth_code"),
-            ("supervisor", "supervisor_auth_code")
+            ("contract", "contract_id"),
+            ("approval", "approval_ref"),
+            ("reference", "reference"),
+            ("authorisation", "auth_code"),
+            ("supervisor", "supervisor_auth_code"),
         ]:
             if keyword in desc_lower:
                 missing_fields.append(field_name)
@@ -352,32 +364,37 @@ class NLPolicyAuthor:
         for mf in missing_fields[:2]:
             cond_lines += [f"    - field: {mf}", "      op: missing"]
         if not cond_lines:
-            cond_lines = ["    - field: REPLACE_FIELD", "      op: REPLACE_OP", "      value: REPLACE_VALUE"]
+            cond_lines = [
+                "    - field: REPLACE_FIELD",
+                "      op: REPLACE_OP",
+                "      value: REPLACE_VALUE",
+            ]
 
         conditions_block = "\n".join(cond_lines)
         yaml_text = (
             f"rules:\n"
             f"  - policy_id: {policy_id}\n"
-            f"    name: \"{description[:80]}\"\n"
+            f'    name: "{description[:80]}"\n'
             f"    applies_to: [{decision_type}]\n"
             f"    logic: and\n"
             f"    conditions:\n"
             f"{conditions_block}\n"
             f"    result: {result}\n"
-            f"    message: \"Policy {policy_id}: {description[:100]}\"\n"
+            f'    message: "Policy {policy_id}: {description[:100]}"\n'
         )
 
         # Try to validate
-        validation_ok    = False
+        validation_ok = False
         validation_error = None
-        policies         = []
+        policies = []
         try:
             # NOTE: This creates a soft dependency on the rules_engine module.
             # This is generally acceptable as it's for validation within the authoring
             # flow, but for larger systems, injecting a validator function/object
             # into NLPolicyAuthor would be a cleaner separation of concerns.
             from glassbox.rules.rules_engine import RulesLoader
-            loader   = RulesLoader()
+
+            loader = RulesLoader()
             policies = loader.load_from_string(yaml_text)
             validation_ok = True
         except Exception as exc:

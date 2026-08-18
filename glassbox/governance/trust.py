@@ -45,40 +45,49 @@ from __future__ import annotations
 import math
 import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from glassbox.governance.logging_manager import get_logger
+
+log = get_logger("trust")
 
 # ── Trust tier thresholds ─────────────────────────────────────────────────────
 
 TRUST_TIERS = [
-    (900, "TRUSTED",     "Agent consistently operates within policy. Eligible for elevated limits."),
-    (700, "RELIABLE",    "Agent operates within policy with standard governance controls."),
-    (500, "MONITORED",   "Agent shows elevated block/violation rate. Enhanced monitoring active."),
-    (200, "RESTRICTED",  "Agent requires human review for all decisions."),
-    (0,   "SUSPENDED",   "Agent has persistent governance failures. All decisions blocked pending review."),
+    (900, "TRUSTED", "Agent consistently operates within policy. Eligible for elevated limits."),
+    (700, "RELIABLE", "Agent operates within policy with standard governance controls."),
+    (500, "MONITORED", "Agent shows elevated block/violation rate. Enhanced monitoring active."),
+    (200, "RESTRICTED", "Agent requires human review for all decisions."),
+    (
+        0,
+        "SUSPENDED",
+        "Agent has persistent governance failures. All decisions blocked pending review.",
+    ),
 ]
 
 
 @dataclass
 class AgentTrustProfile:
     """Complete trust profile for one agent."""
-    agent_id:           str
-    score:              float        # 0–1000
-    tier:               str          # TRUSTED | RELIABLE | MONITORED | RESTRICTED | SUSPENDED
-    tier_description:   str
-    total_decisions:    int          = 0
-    executed_count:     int          = 0
-    blocked_count:      int          = 0
-    review_count:       int          = 0
-    violation_count:    int          = 0
-    anomaly_count:      int          = 0
-    circuit_trips:      int          = 0
-    reviewer_approvals: int          = 0
-    reviewer_rejections:int          = 0
-    last_activity:      Optional[str]= None
-    score_history:      List[float]  = field(default_factory=list)
+
+    agent_id: str
+    score: float  # 0–1000
+    tier: str  # TRUSTED | RELIABLE | MONITORED | RESTRICTED | SUSPENDED
+    tier_description: str
+    total_decisions: int = 0
+    executed_count: int = 0
+    blocked_count: int = 0
+    review_count: int = 0
+    violation_count: int = 0
+    anomaly_count: int = 0
+    circuit_trips: int = 0
+    reviewer_approvals: int = 0
+    reviewer_rejections: int = 0
+    last_activity: Optional[str] = None
+    score_history: List[float] = field(default_factory=list)
 
     @property
     def block_rate(self) -> float:
@@ -99,43 +108,56 @@ class AgentTrustProfile:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "agent_id":            self.agent_id,
-            "score":               round(self.score, 1),
-            "tier":                self.tier,
-            "tier_description":    self.tier_description,
-            "total_decisions":     self.total_decisions,
-            "executed_count":      self.executed_count,
-            "blocked_count":       self.blocked_count,
-            "review_count":        self.review_count,
-            "violation_count":     self.violation_count,
-            "anomaly_count":       self.anomaly_count,
-            "circuit_trips":       self.circuit_trips,
-            "reviewer_approvals":  self.reviewer_approvals,
+            "agent_id": self.agent_id,
+            "score": round(self.score, 1),
+            "tier": self.tier,
+            "tier_description": self.tier_description,
+            "total_decisions": self.total_decisions,
+            "executed_count": self.executed_count,
+            "blocked_count": self.blocked_count,
+            "review_count": self.review_count,
+            "violation_count": self.violation_count,
+            "anomaly_count": self.anomaly_count,
+            "circuit_trips": self.circuit_trips,
+            "reviewer_approvals": self.reviewer_approvals,
             "reviewer_rejections": self.reviewer_rejections,
-            "block_rate":          round(self.block_rate, 4),
-            "execute_rate":        round(self.execute_rate, 4),
-            "violation_rate":      round(self.violation_rate, 4),
-            "last_activity":       self.last_activity,
+            "block_rate": round(self.block_rate, 4),
+            "execute_rate": round(self.execute_rate, 4),
+            "violation_rate": round(self.violation_rate, 4),
+            "last_activity": self.last_activity,
         }
 
 
 class _AgentStats:
     """Internal mutable statistics for one agent."""
-    __slots__ = ["total","executed","blocked","review","violations",
-                 "anomalies","trips","approvals","rejections","score","last_ts","last_decay_ts"]
+
+    __slots__ = [
+        "total",
+        "executed",
+        "blocked",
+        "review",
+        "violations",
+        "anomalies",
+        "trips",
+        "approvals",
+        "rejections",
+        "score",
+        "last_ts",
+        "last_decay_ts",
+    ]
 
     def __init__(self):
-        self.total      = 0
-        self.executed   = 0
-        self.blocked    = 0
-        self.review     = 0
+        self.total = 0
+        self.executed = 0
+        self.blocked = 0
+        self.review = 0
         self.violations = 0
-        self.anomalies  = 0
-        self.trips      = 0
-        self.approvals  = 0
+        self.anomalies = 0
+        self.trips = 0
+        self.approvals = 0
         self.rejections = 0
-        self.score      = 700.0   # Start at RELIABLE tier
-        self.last_ts    = time.time()
+        self.score = 700.0  # Start at RELIABLE tier
+        self.last_ts = time.time()
         self.last_decay_ts = self.last_ts
 
 
@@ -159,12 +181,12 @@ class AgentTrustScorer:
     Thread-safe: all updates use per-agent locks.
     """
 
-    DECAY_RATE_PER_HOUR = 1.0   # points per hour of inactivity, toward 600
-    DECAY_TARGET        = 600.0
+    DECAY_RATE_PER_HOUR = 1.0  # points per hour of inactivity, toward 600
+    DECAY_TARGET = 600.0
 
     def __init__(self, event_bus=None):
         self._agents: Dict[str, _AgentStats] = {}
-        self._locks:  Dict[str, threading.Lock] = {}
+        self._locks: Dict[str, threading.Lock] = {}
         self._global_lock = threading.Lock()
         self._event_bus = event_bus
 
@@ -174,32 +196,32 @@ class AgentTrustScorer:
             bus.subscribe("*", scorer.handle_event)
         """
         try:
-            etype   = getattr(event, "event_type", "")
+            etype = getattr(event, "event_type", "")
             payload = getattr(event, "payload", {}) or {}
-            agent   = payload.get("agent_id", "")
+            agent = payload.get("agent_id", "")
             if not agent:
                 return
 
             stats = self._get_stats(agent)
-            lock  = self._get_lock(agent)
+            lock = self._get_lock(agent)
 
             with lock:
                 stats.last_ts = time.time()
                 stats.last_decay_ts = stats.last_ts
                 if etype == "decision.executed":
-                    stats.total    += 1
+                    stats.total += 1
                     stats.executed += 1
-                    stats.score    = min(1000, stats.score + 5)
+                    stats.score = min(1000, stats.score + 5)
                 elif etype == "decision.blocked":
-                    stats.total   += 1
+                    stats.total += 1
                     stats.blocked += 1
-                    stats.score   = max(0, stats.score - 20)
+                    stats.score = max(0, stats.score - 20)
                 elif etype == "decision.pending_review":
-                    stats.total  += 1
+                    stats.total += 1
                     stats.review += 1
-                    stats.score  = max(0, stats.score - 5)
+                    stats.score = max(0, stats.score - 5)
                 elif etype == "policy.violated":
-                    n_violations  = len(payload.get("violations", []))
+                    n_violations = len(payload.get("violations", []))
                     stats.violations += n_violations
                     stats.score = max(0, stats.score - 10 * n_violations)
                 elif etype == "anomaly.detected":
@@ -219,20 +241,21 @@ class AgentTrustScorer:
                 # Publish updated score so OtelExporter can record the metric
                 if agent and self._event_bus:
                     tier, _ = self._tier_for(stats.score)
-                    try:
+                    with suppress(Exception):
                         from glassbox.events.event_bus import GlassBoxEvent
-                        self._event_bus.publish(GlassBoxEvent(
-                            event_type="trust.score.updated",
-                            payload={
-                                "agent_id": agent,
-                                "score": round(stats.score, 1),
-                                "tier": tier,
-                            },
-                        ))
-                    except Exception:
-                        pass
-        except Exception:
-            pass  # Trust scoring never breaks the calling thread
+
+                        self._event_bus.publish(
+                            GlassBoxEvent(
+                                event_type="trust.score.updated",
+                                payload={
+                                    "agent_id": agent,
+                                    "score": round(stats.score, 1),
+                                    "tier": tier,
+                                },
+                            )
+                        )
+        except Exception as exc:
+            log.debug("Trust scoring failed (never breaks the calling thread): %s", exc)
 
     def get_profile(self, agent_id: str) -> AgentTrustProfile:
         """Get the current trust profile for an agent."""
@@ -241,21 +264,20 @@ class AgentTrustScorer:
             score = self._apply_decay(stats)
             tier, desc = self._tier_for(score)
             return AgentTrustProfile(
-                agent_id           = agent_id,
-                score              = round(score, 1),
-                tier               = tier,
-                tier_description   = desc,
-                total_decisions    = stats.total,
-                executed_count     = stats.executed,
-                blocked_count      = stats.blocked,
-                review_count       = stats.review,
-                violation_count    = stats.violations,
-                anomaly_count      = stats.anomalies,
-                circuit_trips      = stats.trips,
-                reviewer_approvals = stats.approvals,
-                reviewer_rejections= stats.rejections,
-                last_activity      = datetime.fromtimestamp(
-                    stats.last_ts, tz=timezone.utc).isoformat(),
+                agent_id=agent_id,
+                score=round(score, 1),
+                tier=tier,
+                tier_description=desc,
+                total_decisions=stats.total,
+                executed_count=stats.executed,
+                blocked_count=stats.blocked,
+                review_count=stats.review,
+                violation_count=stats.violations,
+                anomaly_count=stats.anomalies,
+                circuit_trips=stats.trips,
+                reviewer_approvals=stats.approvals,
+                reviewer_rejections=stats.rejections,
+                last_activity=datetime.fromtimestamp(stats.last_ts, tz=timezone.utc).isoformat(),
             )
 
     def get_all_profiles(self) -> List[AgentTrustProfile]:
@@ -267,11 +289,11 @@ class AgentTrustScorer:
     def reset_agent(self, agent_id: str) -> None:
         """Reset an agent's trust score to the starting baseline (700)."""
         with self._get_lock(agent_id):
-            stats       = self._get_stats(agent_id)
+            stats = self._get_stats(agent_id)
             stats.score = 700.0
             stats.total = stats.executed = stats.blocked = 0
             stats.review = stats.violations = stats.anomalies = 0
-            stats.trips  = stats.approvals = stats.rejections = 0
+            stats.trips = stats.approvals = stats.rejections = 0
 
     def score_summary(self) -> Dict[str, Any]:
         """Fleet-wide trust score summary."""
@@ -283,10 +305,10 @@ class AgentTrustScorer:
             tier_counts[p.tier] = tier_counts.get(p.tier, 0) + 1
         avg = sum(p.score for p in profiles) / len(profiles)
         return {
-            "total_agents":  len(profiles),
+            "total_agents": len(profiles),
             "average_score": round(avg, 1),
-            "tiers":         tier_counts,
-            "lowest_score":  round(min(p.score for p in profiles), 1),
+            "tiers": tier_counts,
+            "lowest_score": round(min(p.score for p in profiles), 1),
             "highest_score": round(max(p.score for p in profiles), 1),
         }
 
@@ -296,11 +318,11 @@ class AgentTrustScorer:
         with self._global_lock:
             if agent_id not in self._agents:
                 self._agents[agent_id] = _AgentStats()
-                self._locks[agent_id]  = threading.Lock()
+                self._locks[agent_id] = threading.Lock()
         return self._agents[agent_id]
 
     def _get_lock(self, agent_id: str) -> threading.Lock:
-        self._get_stats(agent_id)   # ensure exists
+        self._get_stats(agent_id)  # ensure exists
         return self._locks[agent_id]
 
     def _apply_decay(self, stats: _AgentStats) -> float:

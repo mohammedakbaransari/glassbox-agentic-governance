@@ -74,12 +74,12 @@ class PolicyHotReloader:
 
     def __init__(
         self,
-        rules_dir:         str,
-        policy_engine,            # glassbox.governance.policy_engine.PolicyEngine
-        poll_interval_s:   float = 5.0,
-        recursive:         bool  = False,
-        on_reload:         Optional[Callable[[str, int], None]] = None,
-        on_error:          Optional[Callable[[str, Exception], None]] = None,
+        rules_dir: str,
+        policy_engine,  # glassbox.governance.policy_engine.PolicyEngine
+        poll_interval_s: float = 5.0,
+        recursive: bool = False,
+        on_reload: Optional[Callable[[str, int], None]] = None,
+        on_error: Optional[Callable[[str, Exception], None]] = None,
     ):
         """
         Args:
@@ -90,14 +90,14 @@ class PolicyHotReloader:
             on_reload:       Optional callback(file_path, policies_loaded) on success
             on_error:        Optional callback(file_path, exception) on parse error
         """
-        self.rules_dir       = Path(rules_dir)
-        self.policy_engine   = policy_engine
+        self.rules_dir = Path(rules_dir)
+        self.policy_engine = policy_engine
         self.poll_interval_s = poll_interval_s
-        self.recursive       = recursive
-        self.on_reload       = on_reload
-        self.on_error        = on_error
+        self.recursive = recursive
+        self.on_reload = on_reload
+        self.on_error = on_error
 
-        self._mtimes: Dict[str, float] = {}     # file_path → last mtime
+        self._mtimes: Dict[str, float] = {}  # file_path → last mtime
         self._file_policy_ids: Dict[str, Set[str]] = {}  # file_path → {policy_ids}
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -123,8 +123,11 @@ class PolicyHotReloader:
             daemon=True,
         )
         self._thread.start()
-        log.info("PolicyHotReloader started: watching %s (poll=%.1fs)",
-                 self.rules_dir, self.poll_interval_s)
+        log.info(
+            "PolicyHotReloader started: watching %s (poll=%.1fs)",
+            self.rules_dir,
+            self.poll_interval_s,
+        )
         return self
 
     def stop(self, timeout_s: float = 10.0) -> None:
@@ -141,10 +144,7 @@ class PolicyHotReloader:
     def watched_files(self) -> Dict[str, int]:
         """Return {file_path: policy_count} for all currently tracked files."""
         with self._lock:
-            return {
-                fp: len(ids)
-                for fp, ids in self._file_policy_ids.items()
-            }
+            return {fp: len(ids) for fp, ids in self._file_policy_ids.items()}
 
     # ── Internal ───────────────────────────────────────────────────────────────
 
@@ -190,7 +190,8 @@ class PolicyHotReloader:
                 with self._lock:
                     self._mtimes[str_fp] = mtime
                 if self.on_reload:
-                    try: self.on_reload(str_fp, n)
+                    try:
+                        self.on_reload(str_fp, n)
                     except Exception as exc:
                         log.warning("Hot-reload: callback failed for %s: %s", str_fp, exc)
 
@@ -210,7 +211,8 @@ class PolicyHotReloader:
         """Load policies from a single file. Returns number of policies loaded."""
         try:
             from glassbox.rules.rules_engine import RulesLoader
-            loader  = RulesLoader()
+
+            loader = RulesLoader()
             policies = loader.load(str(fp))
             loaded_ids: Set[str] = set()
 
@@ -221,9 +223,10 @@ class PolicyHotReloader:
             with self._lock:
                 # Disable policies from prior load that are no longer in file
                 prior_ids = self._file_policy_ids.get(str(fp.resolve()), set())
-                removed   = prior_ids - loaded_ids
+                removed = prior_ids - loaded_ids
                 for pid in removed:
-                    try: self.policy_engine.disable(pid)
+                    try:
+                        self.policy_engine.disable(pid)
                     except Exception as exc:
                         log.warning("Hot-reload: failed to disable policy %s: %s", pid, exc)
                 self._file_policy_ids[str(fp.resolve())] = loaded_ids
@@ -234,7 +237,8 @@ class PolicyHotReloader:
         except Exception as exc:
             log.warning("Hot-reload: failed to load %s: %s", fp, exc)
             if self.on_error:
-                try: self.on_error(str(fp), exc)
+                try:
+                    self.on_error(str(fp), exc)
                 except Exception as handler_exc:
                     log.error("Hot-reload: error handler crashed: %s", handler_exc)
             return 0
@@ -247,5 +251,5 @@ class PolicyHotReloader:
             try:
                 self.policy_engine.disable(pid)
                 log.info("Hot-reload: disabled policy %s (file deleted)", pid)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Hot-reload: could not disable policy %s: %s", pid, exc)

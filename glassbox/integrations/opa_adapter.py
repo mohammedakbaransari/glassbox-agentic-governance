@@ -58,12 +58,13 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.request
-import urllib.error
 import subprocess
 import tempfile
 import threading
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from glassbox.governance.models import DecisionContext, DecisionType, PolicyEvaluation
 from glassbox.governance.policy_engine import Policy
@@ -95,19 +96,20 @@ class OPARegoAdapter:
 
     def __init__(
         self,
-        opa_url:      Optional[str] = None,   # e.g. "http://localhost:8181"
-        policy_path:  str           = "glassbox/policy",
-        rule_name:    str           = "deny",
-        timeout_s:    float         = 1.0,    # HTTP timeout — governance cannot block on OPA
-        fallback:     str           = "pass", # "pass" or "fail" if OPA unreachable
+        opa_url: Optional[str] = None,  # e.g. "http://localhost:8181"
+        policy_path: str = "glassbox/policy",
+        rule_name: str = "deny",
+        timeout_s: float = 1.0,  # HTTP timeout — governance cannot block on OPA
+        fallback: str = "pass",  # "pass" or "fail" if OPA unreachable
     ):
-        self._opa_url     = opa_url.rstrip("/") if opa_url else None
+        self._opa_url = opa_url.rstrip("/") if opa_url else None
         self._policy_path = policy_path.strip("/")
-        self._rule        = rule_name
-        self._timeout     = timeout_s
-        self._fallback    = fallback
-        self._lock        = threading.Lock()
+        self._rule = rule_name
+        self._timeout = timeout_s
+        self._fallback = fallback
+        self._lock = threading.Lock()
         self._failure_count = 0
+        self._bundle_path: Optional[str] = None
 
     @classmethod
     def from_bundle(cls, bundle_path: str, **kwargs) -> "OPARegoAdapter":
@@ -125,17 +127,18 @@ class OPARegoAdapter:
 
         if self._opa_url:
             return self._evaluate_http(input_doc)
-        elif hasattr(self, "_bundle_path"):
+        elif self._bundle_path:
             return self._evaluate_cli(input_doc)
         else:
             # No OPA configured — pass through (used in testing)
-            return PolicyEvaluation("OPA", "OPA Policy", "pass",
-                                    "OPA not configured — evaluation skipped")
+            return PolicyEvaluation(
+                "OPA", "OPA Policy", "pass", "OPA not configured — evaluation skipped"
+            )
 
     def as_policy(
         self,
-        policy_id:      str,
-        policy_name:    str,
+        policy_id: str,
+        policy_name: str,
         decision_types: List[DecisionType],
     ) -> Policy:
         """Return a GlassBox Policy object backed by this OPA adapter."""
@@ -152,14 +155,14 @@ class OPARegoAdapter:
         return {
             "payload": payload,
             "context": {
-                "confidence":   ctx.confidence,
-                "environment":  ctx.environment,
-                "agent_chain":  ctx.agent_chain,
-                "user_override":ctx.user_override,
-                "currency":     getattr(ctx, "currency", "USD"),
+                "confidence": ctx.confidence,
+                "environment": ctx.environment,
+                "agent_chain": ctx.agent_chain,
+                "user_override": ctx.user_override,
+                "currency": getattr(ctx, "currency", "USD"),
                 "jurisdiction": getattr(ctx, "jurisdiction", "US"),
-                "source_system":ctx.source_system,
-            }
+                "source_system": ctx.source_system,
+            },
         }
 
     def _evaluate_http(self, input_doc: Dict) -> PolicyEvaluation:
@@ -168,25 +171,28 @@ class OPARegoAdapter:
         body = json.dumps({"input": input_doc}).encode()
 
         try:
-            req  = urllib.request.Request(
-                url, data=body,
-                headers={"Content-Type": "application/json"},
-                method="POST"
+            if urllib.parse.urlparse(url).scheme not in ("http", "https"):
+                raise ValueError(f"OPA adapter: unsupported URL scheme in {url!r}")
+            req = urllib.request.Request(
+                url, data=body, headers={"Content-Type": "application/json"}, method="POST"
             )
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # nosec B310
                 result = json.loads(resp.read().decode())
 
             result_data = result.get("result", {})
-            deny        = bool(result_data.get(self._rule, False))
-            violations  = list(result_data.get("violation", []))
+            deny = bool(result_data.get(self._rule, False))
+            violations = list(result_data.get("violation", []))
 
             with self._lock:
-                self._failure_count = 0   # reset on success
+                self._failure_count = 0  # reset on success
 
             if deny:
-                msg = violations[0] if violations else f"OPA policy '{self._rule}' denied this decision"
-                return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "fail",
-                                        f"[OPA] {msg}")
+                msg = (
+                    violations[0]
+                    if violations
+                    else f"OPA policy '{self._rule}' denied this decision"
+                )
+                return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "fail", f"[OPA] {msg}")
             return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "pass", "OPA: allowed")
 
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
@@ -194,13 +200,23 @@ class OPARegoAdapter:
                 self._failure_count += 1
             # Apply fallback policy when OPA is unreachable
             if self._fallback == "fail":
-                return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "fail",
-                    f"[OPA] Unreachable (fail-closed): {exc}")
-            return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "warn",
-                f"[OPA] Unreachable (fail-open) — evaluation skipped: {exc}")
+                return PolicyEvaluation(
+                    "OPA",
+                    f"OPA:{self._policy_path}",
+                    "fail",
+                    f"[OPA] Unreachable (fail-closed): {exc}",
+                )
+            return PolicyEvaluation(
+                "OPA",
+                f"OPA:{self._policy_path}",
+                "warn",
+                f"[OPA] Unreachable (fail-open) — evaluation skipped: {exc}",
+            )
 
     def _evaluate_cli(self, input_doc: Dict) -> PolicyEvaluation:
         """Evaluate using the local OPA CLI binary."""
+        if not self._bundle_path:
+            raise RuntimeError("OPA CLI evaluation requires a bundle_path")
         input_file = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -208,12 +224,20 @@ class OPARegoAdapter:
                 input_file = f.name
 
             result = subprocess.run(
-                ["opa", "eval",
-                 "--data", self._bundle_path,
-                 "--input", input_file,
-                 f"data.{self._policy_path}.{self._rule}",
-                 "--format", "json"],
-                capture_output=True, text=True, timeout=self._timeout
+                [
+                    "opa",
+                    "eval",
+                    "--data",
+                    self._bundle_path,
+                    "--input",
+                    input_file,
+                    f"data.{self._policy_path}.{self._rule}",
+                    "--format",
+                    "json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
             )
             if result.returncode != 0:
                 raise RuntimeError(f"OPA CLI error: {result.stderr}")
@@ -225,18 +249,30 @@ class OPARegoAdapter:
                 self._failure_count = 0
 
             if deny:
-                return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "fail",
-                    f"[OPA] Policy '{self._rule}' denied this decision (CLI evaluation)")
+                return PolicyEvaluation(
+                    "OPA",
+                    f"OPA:{self._policy_path}",
+                    "fail",
+                    f"[OPA] Policy '{self._rule}' denied this decision (CLI evaluation)",
+                )
             return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "pass", "OPA: allowed")
 
         except Exception as exc:
             with self._lock:
                 self._failure_count += 1
             if self._fallback == "fail":
-                return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "fail",
-                    f"[OPA] CLI evaluation failed (fail-closed): {exc}")
-            return PolicyEvaluation("OPA", f"OPA:{self._policy_path}", "warn",
-                f"[OPA] CLI evaluation failed (fail-open): {exc}")
+                return PolicyEvaluation(
+                    "OPA",
+                    f"OPA:{self._policy_path}",
+                    "fail",
+                    f"[OPA] CLI evaluation failed (fail-closed): {exc}",
+                )
+            return PolicyEvaluation(
+                "OPA",
+                f"OPA:{self._policy_path}",
+                "warn",
+                f"[OPA] CLI evaluation failed (fail-open): {exc}",
+            )
         finally:
             if input_file:
                 try:
@@ -256,8 +292,9 @@ class OPARegoAdapter:
             return {"status": "no_server", "mode": "cli_or_passthrough"}
         try:
             url = f"{self._opa_url}/health"
-            with urllib.request.urlopen(url, timeout=2.0) as resp:
-                return {"status": "ok", "url": self._opa_url,
-                        "http_status": resp.status}
+            if urllib.parse.urlparse(url).scheme not in ("http", "https"):
+                raise ValueError(f"OPA adapter: unsupported URL scheme in {url!r}")
+            with urllib.request.urlopen(url, timeout=2.0) as resp:  # nosec B310
+                return {"status": "ok", "url": self._opa_url, "http_status": resp.status}
         except Exception as e:
             return {"status": "error", "url": self._opa_url, "error": str(e)}

@@ -1,7 +1,5 @@
 # GlassBox — Architecture Reference
 
-**v1.2.0 | Mohammed Akbar Ansari | Independent Researcher |  **
-
 ---
 
 ## 1. Overview
@@ -337,7 +335,7 @@ flowchart TD
 
 ---
 
-## 8. Distributed Components (v1.2.0)
+## 8. Distributed Components
 
 ### 8.1 Fleet Budget — Redis-backed
 
@@ -397,7 +395,7 @@ stateDiagram-v2
     timed_out --> escalated: auto-escalate if configured
 ```
 
-**Idempotency (v1.2.0):** `create_from_decision(decision_id)` checks `repo.get_by_decision(decision_id)` before creating. Duplicate calls (e.g., from WAL replay) return the existing `WorkflowInstance`.
+**Idempotency:** `create_from_decision(decision_id)` checks `repo.get_by_decision(decision_id)` before creating. Duplicate calls (e.g., from WAL replay) return the existing `WorkflowInstance`.
 
 ---
 
@@ -444,7 +442,7 @@ flowchart TD
     EXCEPT -->|"internal stack traces\nnever reach caller"| SAFE[Sanitized error message\nfull detail in audit log only]
 ```
 
-**Exception sanitization (v1.2.0 — O5):** When a policy rule raises an exception, the caller receives `"Policy evaluation error (see audit log for details)"`. The full stack trace is written to the structured audit log only.
+**Exception sanitization:** When a policy rule raises an exception, the caller receives `"Policy evaluation error (see audit log for details)"`. The full stack trace is written to the structured audit log only.
 
 ---
 
@@ -615,9 +613,10 @@ P50 = 0.11 ms · P99 = 0.47 ms (single-thread, in-memory, no DB)
 | AI-001 | All (incl. Clinical, Trading) | Model confidence must be ≥ 0.30 |
 | SECURITY-001 | All (incl. Clinical, Trading) | No `user_override` in production |
 
-> **v1.2.0 change (O7):** `SECURITY-001` and `AI-001` now enforce on `CLINICAL` and `TRADING` decision types.
-> **v1.2.0 change (O6):** `PROC-006` sanctions/debarment lists are runtime-configurable via `PolicyParameterStore`.
-> **v1.2.0 change (O5):** All policy exception messages are sanitized — no internal stack traces reach callers.
+`SECURITY-001` and `AI-001` enforce on `CLINICAL` and `TRADING` decision types.
+`PROC-006` sanctions/debarment lists are runtime-configurable via
+`PolicyParameterStore`. All policy exception messages are sanitized — no
+internal stack traces reach callers.
 
 ---
 
@@ -670,8 +669,7 @@ P50 = 0.11 ms · P99 = 0.47 ms (single-thread, in-memory, no DB)
 
 ---
 
-*GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher ·  *
-*Not affiliated with any employer, vendor, or customer engagement.*
+*GlassBox · Apache 2.0*
 
 
 

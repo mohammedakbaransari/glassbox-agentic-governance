@@ -16,15 +16,15 @@ This directory contains security documentation, hardening guides, and best pract
 ## Security-First Design
 
 GlassBox follows "Security by Default":
-- All inputs validated (PayloadSanitizer, 25+ injection patterns)
+- All inputs validated (schema allow-lists, structural payload limits)
 - All state protected by locks (RLock, per-agent lock pool)
 - All decisions audited (immutable HMAC/SHA-256 hash chain)
 - All API requests authenticatable (Bearer token middleware)
 - All traffic encryptable (AES-256-GCM field-level)
 - No hardcoded credentials or secrets
 - Principle of least privilege (RBAC with role hierarchy)
-- **Policy exception messages sanitized** — internal stack traces never reach callers (v1.2.0)
-- **Sanctions lists runtime-configurable** — no code deployment needed (v1.2.0)
+- **Policy exception messages sanitized** — internal stack traces never reach callers
+- **Sanctions lists runtime-configurable** — no code deployment needed
 - **Tamper-evident audit** — HMAC/SHA-256 hash chaining detects any record modification
 
 ## 🛡️ Security Layers
@@ -274,12 +274,11 @@ Found a security vulnerability?
 3. Include: Description, impact, reproduction steps
 4. Credit in release notes (if desired)
 
-## Known Security Considerations (v1.2.0)
+## Known Security Considerations
 
 | Item | Risk | Status |
 |---|---|---|
 | `tenant_id` path validation does not verify result stays inside `GLASSBOX_LOG_DIR` after `Path.resolve()` | MEDIUM — mitigated by OS file permissions | Open — fix: add `startswith(base_log_dir)` check |
-| `user_override` accepted from request body in v1.0.0 | HIGH | Fixed in v1.0.1 — now restricted to authenticated sessions only |
 | Policy snapshot uses `object.__setattr__` guard; can be bypassed via `object.__setattr__` directly | LOW — requires code access | Accepted risk |
 | GENESIS_SENTINEL (`"0"*64`) hardcoded in advanced audit | LOW — only affects crash recovery edge case | Accepted risk |
 

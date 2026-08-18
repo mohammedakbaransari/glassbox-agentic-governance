@@ -63,6 +63,7 @@ log = get_logger("wal")
 
 class WALEntryState(Enum):
     """WAL entry lifecycle."""
+
     PENDING = "PENDING"  # Logged but side effects not started
     IN_PROGRESS = "IN_PROGRESS"  # Side effects in progress
     COMMITTED = "COMMITTED"  # All side effects completed
@@ -72,9 +73,16 @@ class WALEntryState(Enum):
 
 class WALEntry:
     """Single entry in Write-Ahead-Log."""
+
     __slots__ = (
-        'entry_id', 'decision_id', 'state', 'created_at', 'updated_at',
-        'audit_record_json', 'side_effects', 'error_message',
+        "entry_id",
+        "decision_id",
+        "state",
+        "created_at",
+        "updated_at",
+        "audit_record_json",
+        "side_effects",
+        "error_message",
     )
 
     def __init__(
@@ -90,7 +98,7 @@ class WALEntry:
         self.created_at = datetime.now(timezone.utc)
         self.updated_at = self.created_at
         self.audit_record_json = audit_record_json
-        self.side_effects = {}  # Track which side effects completed
+        self.side_effects: Dict[str, Any] = {}  # Track which side effects completed
         self.error_message: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -152,9 +160,10 @@ class WriteAheadLog:
             self._next_entry_id = self._load_next_entry_id()
 
         log.info(
-            "WriteAheadLog initialized: db_path=%s, checkpoint_interval=%d, "
-            "sync_writes=%s",
-            db_path, checkpoint_interval, enable_sync_writes,
+            "WriteAheadLog initialized: db_path=%s, checkpoint_interval=%d, " "sync_writes=%s",
+            db_path,
+            checkpoint_interval,
+            enable_sync_writes,
         )
 
     def _init_db(self):
@@ -179,16 +188,12 @@ class WriteAheadLog:
                 """)
 
                 # Compound index for recovery queries
-                conn.execute(
-                    """CREATE INDEX IF NOT EXISTS idx_wal_state_created 
-                       ON wal_entries(state, created_at)"""
-                )
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_wal_state_created 
+                       ON wal_entries(state, created_at)""")
 
                 # Index for recovery (find pending/in_progress entries)
-                conn.execute(
-                    """CREATE INDEX IF NOT EXISTS idx_wal_pending 
-                       ON wal_entries(state) WHERE state IN ('PENDING', 'IN_PROGRESS')"""
-                )
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_wal_pending 
+                       ON wal_entries(state) WHERE state IN ('PENDING', 'IN_PROGRESS')""")
 
                 # Checkpoint table for durability
                 conn.execute("""
@@ -249,7 +254,8 @@ class WriteAheadLog:
 
         log.debug(
             "WriteAheadLog: BEGIN transaction entry_id=%d, decision_id=%s",
-            entry_id, decision_id,
+            entry_id,
+            decision_id,
         )
 
         return entry
@@ -305,7 +311,9 @@ class WriteAheadLog:
 
         log.debug(
             "WriteAheadLog: marked side_effect entry_id=%d, side_effect=%s, success=%s",
-            entry_id, side_effect_name, success,
+            entry_id,
+            side_effect_name,
+            success,
         )
 
     def commit(self, entry_id: int) -> None:
@@ -367,7 +375,8 @@ class WriteAheadLog:
             # In-memory only: return from cache
             with self._cache_lock:
                 return [
-                    e for e in self._entry_cache.values()
+                    e
+                    for e in self._entry_cache.values()
                     if e.state in (WALEntryState.PENDING, WALEntryState.IN_PROGRESS)
                 ]
 
@@ -400,7 +409,7 @@ class WriteAheadLog:
         """Return WAL statistics."""
         if not self.db_path:
             with self._cache_lock:
-                states = {}
+                states: Dict[str, int] = {}
                 for entry in self._entry_cache.values():
                     state_name = entry.state.value
                     states[state_name] = states.get(state_name, 0) + 1
@@ -413,19 +422,15 @@ class WriteAheadLog:
 
         try:
             with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.execute(
-                    """
+                cursor = conn.execute("""
                     SELECT state, COUNT(*) FROM wal_entries GROUP BY state
-                    """
-                )
+                    """)
 
                 states = dict(cursor.fetchall())
                 total = sum(states.values())
 
                 # Get last checkpoint
-                cursor = conn.execute(
-                    "SELECT MAX(last_committed_entry_id) FROM wal_checkpoints"
-                )
+                cursor = conn.execute("SELECT MAX(last_committed_entry_id) FROM wal_checkpoints")
                 last_checkpoint = cursor.fetchone()[0] or 0
 
                 return {
@@ -504,8 +509,16 @@ class WriteAheadLog:
 
     def _row_to_entry(self, row: tuple) -> WALEntry:
         """Convert DB row to WALEntry."""
-        (entry_id, decision_id, state_str, audit_json,
-         side_effects_json, error_msg, created_str, updated_str) = row
+        (
+            entry_id,
+            decision_id,
+            state_str,
+            audit_json,
+            side_effects_json,
+            error_msg,
+            created_str,
+            updated_str,
+        ) = row
 
         entry = WALEntry(
             entry_id=entry_id,

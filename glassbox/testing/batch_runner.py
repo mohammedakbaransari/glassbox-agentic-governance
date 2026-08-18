@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_MANIFEST = _REPO_ROOT / "tests" / "batch_manifest.json"
 _DEFAULT_OUTPUT_ROOT = _REPO_ROOT / "test-results"
@@ -161,7 +160,9 @@ def select_batches(
     return selected
 
 
-def rerun_failed_batches(previous_summary_path: Path, batches: Sequence[BatchSpec]) -> List[BatchSpec]:
+def rerun_failed_batches(
+    previous_summary_path: Path, batches: Sequence[BatchSpec]
+) -> List[BatchSpec]:
     payload = json.loads(Path(previous_summary_path).read_text(encoding="utf-8"))
     failed_names = {
         item["name"]
@@ -249,7 +250,9 @@ def prepare_batches(
     if rerun_failed_from:
         batches = rerun_failed_batches(Path(rerun_failed_from), batches)
     else:
-        batches = select_batches(batches, include_batches, exclude_batches, include_tags, exclude_tags)
+        batches = select_batches(
+            batches, include_batches, exclude_batches, include_tags, exclude_tags
+        )
     batches = schedule_batches(batches, output_root=Path(output_root), strategy=scheduling_strategy)
     return manifest, batches
 
@@ -312,10 +315,24 @@ def _build_execution_plan_from_batches(
         output_root=str(Path(output_root)),
         scheduling_strategy=scheduling_strategy,
         max_workers=max(max_workers, 1),
-        parallel_worker_count=max(1, min(max(max_workers, 1), len([batch for batch in batches if batch.profile not in _SEQUENTIAL_PROFILES]))) if any(batch.profile not in _SEQUENTIAL_PROFILES for batch in batches) else 0,
+        parallel_worker_count=(
+            max(
+                1,
+                min(
+                    max(max_workers, 1),
+                    len([batch for batch in batches if batch.profile not in _SEQUENTIAL_PROFILES]),
+                ),
+            )
+            if any(batch.profile not in _SEQUENTIAL_PROFILES for batch in batches)
+            else 0
+        ),
         selected_batches=[batch.name for batch in batches],
-        sequential_batch_names=[batch.name for batch in batches if batch.profile in _SEQUENTIAL_PROFILES],
-        parallel_batch_names=[batch.name for batch in batches if batch.profile not in _SEQUENTIAL_PROFILES],
+        sequential_batch_names=[
+            batch.name for batch in batches if batch.profile in _SEQUENTIAL_PROFILES
+        ],
+        parallel_batch_names=[
+            batch.name for batch in batches if batch.profile not in _SEQUENTIAL_PROFILES
+        ],
         batch_results=planned_batches,
     )
 
@@ -351,7 +368,9 @@ def _assign_planned_runners(
     return runner_map
 
 
-def create_run_directory(output_root: Path = _DEFAULT_OUTPUT_ROOT, run_id: Optional[str] = None) -> Path:
+def create_run_directory(
+    output_root: Path = _DEFAULT_OUTPUT_ROOT, run_id: Optional[str] = None
+) -> Path:
     resolved_run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = Path(output_root) / resolved_run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -412,15 +431,25 @@ def execute_batch(
         timed_out = True
         exit_code = None
         status = "timed_out"
-        stdout_text = exc.stdout or ""
-        stderr_text = exc.stderr or ""
+        stdout_text = (
+            exc.stdout.decode("utf-8", "replace")
+            if isinstance(exc.stdout, bytes)
+            else (exc.stdout or "")
+        )
+        stderr_text = (
+            exc.stderr.decode("utf-8", "replace")
+            if isinstance(exc.stderr, bytes)
+            else (exc.stderr or "")
+        )
 
     stdout_path.write_text(stdout_text, encoding="utf-8")
     stderr_path.write_text(stderr_text, encoding="utf-8")
 
     finished = datetime.now(timezone.utc)
     current_thread = threading.current_thread()
-    raw_observed_runner = "sequential" if current_thread.name == "MainThread" else current_thread.name
+    raw_observed_runner = (
+        "sequential" if current_thread.name == "MainThread" else current_thread.name
+    )
     result = BatchResult(
         name=batch.name,
         status=status,
@@ -508,7 +537,14 @@ def run_batches(
         result.completion_order = len(results) + 1
         results.append(result)
         if fail_fast and result.status != "passed":
-            return _finalize_summary(started, manifest, run_dir, batches, results, scheduling_strategy=scheduling_strategy)
+            return _finalize_summary(
+                started,
+                manifest,
+                run_dir,
+                batches,
+                results,
+                scheduling_strategy=scheduling_strategy,
+            )
 
     if parallel:
         if max_workers <= 1:
@@ -546,7 +582,9 @@ def run_batches(
                     if fail_fast and result.status != "passed":
                         break
 
-    return _finalize_summary(started, manifest, run_dir, batches, results, scheduling_strategy=scheduling_strategy)
+    return _finalize_summary(
+        started, manifest, run_dir, batches, results, scheduling_strategy=scheduling_strategy
+    )
 
 
 def render_summary_text(summary: RunSummary) -> str:
@@ -683,7 +721,9 @@ def build_run_analysis(summary: RunSummary) -> Dict[str, Any]:
         planned_position = planned_positions.get(result.name)
         observed_position = observed_positions.get(result.name)
         order_changed = planned_position != observed_position
-        runner_changed = bool(result.planned_runner) and result.planned_runner != result.observed_runner
+        runner_changed = (
+            bool(result.planned_runner) and result.planned_runner != result.observed_runner
+        )
         if order_changed:
             order_changes += 1
         if runner_changed:
@@ -781,7 +821,8 @@ def _parse_junit_counts(junit_path: Path) -> Optional[Dict[str, int]]:
     if not junit_path.exists():
         return None
     try:
-        root = ET.fromstring(junit_path.read_text(encoding="utf-8"))
+        # Self-generated by the pytest invocation just above; not attacker-controlled.
+        root = ET.fromstring(junit_path.read_text(encoding="utf-8"))  # nosec B314
     except ET.ParseError:
         return None
 
@@ -828,7 +869,9 @@ def _write_latest_pointer(output_root: Path, summary: RunSummary) -> None:
         "summary_txt": str(Path(summary.output_dir) / "summary.txt"),
         "finished_at": summary.finished_at,
         "scheduling_strategy": summary.scheduling_strategy,
-        "status": "passed" if summary.failed_batches == 0 and summary.timed_out_batches == 0 else "failed",
+        "status": (
+            "passed" if summary.failed_batches == 0 and summary.timed_out_batches == 0 else "failed"
+        ),
     }
     latest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -921,4 +964,6 @@ def _normalize_observed_runners(results: Sequence[BatchResult]) -> None:
 
 def _persist_batch_result_artifacts(results: Sequence[BatchResult]) -> None:
     for result in results:
-        Path(result.batch_json_path).write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+        Path(result.batch_json_path).write_text(
+            json.dumps(result.to_dict(), indent=2), encoding="utf-8"
+        )

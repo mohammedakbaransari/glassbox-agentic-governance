@@ -21,6 +21,7 @@ Usage:
     def submit():
         ...
 """
+
 from __future__ import annotations
 
 import hmac
@@ -98,6 +99,7 @@ def require_auth(secret_key: str | None = None) -> Callable:
 
     The validated token is available as g.token inside the decorated view.
     """
+
     def decorator(f: Callable) -> Callable:
         @wraps(f)
         def decorated(*args, **kwargs):
@@ -119,7 +121,9 @@ def require_auth(secret_key: str | None = None) -> Callable:
                     abort(401, description="Invalid token")
             g.token = token
             return f(*args, **kwargs)
+
         return decorated
+
     return decorator
 
 
@@ -130,6 +134,7 @@ def add_cors_headers(app: Flask, allowed_origins: str = "*") -> None:
     Call once during app creation:
         add_cors_headers(app, allowed_origins="https://dashboard.example.com")
     """
+
     @app.after_request
     def _cors(resp):
         resp.headers["Access-Control-Allow-Origin"] = allowed_origins

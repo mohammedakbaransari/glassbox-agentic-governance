@@ -730,4 +730,4 @@ benchmark_pipeline(pipeline, payloads)
 
 ---
 
-*GlassBox v1.2.0 · Apache 2.0 · Mohammed Akbar Ansari · Independent Researcher ·  *
+*GlassBox · Apache 2.0*

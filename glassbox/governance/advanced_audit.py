@@ -18,10 +18,10 @@ Design:
 
 Usage:
     from glassbox.governance.advanced_audit import TamperEvidentAuditLogger, AuditRecord
-    
+
     # Create logger
     logger = TamperEvidentAuditLogger()
-    
+
     # Log an action
     logger.log_action(
         user_id="user123",
@@ -35,14 +35,14 @@ Usage:
             "reason": "Quarterly review"
         }
     )
-    
+
     # Search audit trail
     records = logger.search(
         user_id="user123",
         action="policy_*",
         start_time=datetime.now() - timedelta(days=30)
     )
-    
+
     # Verify integrity
     is_valid = logger.verify_hash_chain()
 
@@ -51,16 +51,16 @@ Author: Mohammed Akbar Ansari
 
 import hashlib
 import json
-import threading
 import sqlite3
-from fnmatch import fnmatch
-from dataclasses import dataclass, asdict, field
-from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+import threading
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from fnmatch import fnmatch
+from typing import Any, Dict, List, Optional
 
-from glassbox.governance.logging_manager import get_logger
 from glassbox.governance.encryption import CryptoManager
+from glassbox.governance.logging_manager import get_logger
 
 log = get_logger("advanced_audit")
 
@@ -102,7 +102,7 @@ class AuditRecord:
             "error_message": self.error_message,
             "previous_hash": self.previous_hash,
         }
-        json_str = json.dumps(data, sort_keys=True, separators=(',', ':'))
+        json_str = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(json_str.encode()).hexdigest()
 
     def to_dict(self) -> Dict[str, Any]:
@@ -114,14 +114,14 @@ class AuditRecord:
 
 class TamperEvidentAuditLogger:
     """Advanced tamper-evident audit logging engine.
-    
+
     Provides:
       - Immutable audit trail (write-once, append-only)
       - Tamper detection via cryptographic hashing
       - Optional digital signatures (if cryptography package installed)
       - Configurable retention policies
       - Search and filtering
-    
+
     Gracefully degrades if cryptography package is not installed.
     """
 
@@ -135,8 +135,9 @@ class TamperEvidentAuditLogger:
         self.db_path = db_path
         self.enable_hash_chain = enable_hash_chain
         self.retention_days = retention_days
-        
+
         # P3-C: Gracefully handle missing cryptography package
+        self.crypto_manager: Optional[CryptoManager]
         if crypto_manager is not None:
             self.crypto_manager = crypto_manager
         else:
@@ -155,16 +156,16 @@ class TamperEvidentAuditLogger:
         # For :memory: databases hold a single persistent connection so schema
         # and data are visible to all subsequent calls on this logger instance.
         self._persistent_conn: Optional[sqlite3.Connection] = (
-            sqlite3.connect(":memory:", check_same_thread=False)
-            if db_path == ":memory:"
-            else None
+            sqlite3.connect(":memory:", check_same_thread=False) if db_path == ":memory:" else None
         )
         self._init_database()
         self._hydrate_chain_state()
 
         log.info(
             "AuditLogger initialized: db=%s, hash_chain=%s, retention=%d days",
-            db_path, enable_hash_chain, retention_days
+            db_path,
+            enable_hash_chain,
+            retention_days,
         )
 
     def close(self) -> None:
@@ -265,20 +266,46 @@ class TamperEvidentAuditLogger:
 
         Returns:
             Created AuditRecord
+        GB-040: this issues a single ``INSERT`` only. Earlier versions wrote a
+        placeholder row and then an ``UPDATE ... SET record_hash`` once the hash
+        was known -- any capability to ``UPDATE`` a row in an append-only audit
+        table undermines the tamper-evidence claim regardless of how it is
+        used internally, so the hash is now computed *before* the row exists
+        and written once, using the row id this logger already tracks in
+        memory (the same counter :meth:`_hydrate_chain_state` resumes from on
+        startup) instead of relying on ``AUTOINCREMENT`` plus a follow-up
+        statement.
         """
         with self._lock:
             timestamp = datetime.now(timezone.utc)
+            next_id = self._record_count + 1
+            previous_hash = self._last_hash if self.enable_hash_chain else None
+
+            record = AuditRecord(
+                id=next_id,
+                timestamp=timestamp,
+                user_id=user_id,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                result=result,
+                context=context or {},
+                error_message=error_message,
+                previous_hash=previous_hash,
+            )
+            record.record_hash = record.compute_hash()
 
             with self._get_connection() as conn:
-                cursor = conn.execute(
+                conn.execute(
                     """
                     INSERT INTO audit_records (
-                        timestamp, user_id, action, resource_type, resource_id,
+                        id, timestamp, user_id, action, resource_type, resource_id,
                         result, context, error_message, previous_hash, record_hash,
                         created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        next_id,
                         timestamp.isoformat(),
                         user_id,
                         action,
@@ -287,27 +314,10 @@ class TamperEvidentAuditLogger:
                         result,
                         json.dumps(context or {}),
                         error_message,
-                        self._last_hash if self.enable_hash_chain else None,
-                        "",
+                        previous_hash,
+                        record.record_hash,
                         datetime.now(timezone.utc).isoformat(),
                     ),
-                )
-                record = AuditRecord(
-                    id=int(cursor.lastrowid),
-                    timestamp=timestamp,
-                    user_id=user_id,
-                    action=action,
-                    resource_type=resource_type,
-                    resource_id=resource_id,
-                    result=result,
-                    context=context or {},
-                    error_message=error_message,
-                    previous_hash=self._last_hash if self.enable_hash_chain else None,
-                )
-                record.record_hash = record.compute_hash()
-                conn.execute(
-                    "UPDATE audit_records SET record_hash = ? WHERE id = ?",
-                    (record.record_hash, record.id),
                 )
                 conn.commit()
 
@@ -315,10 +325,7 @@ class TamperEvidentAuditLogger:
             if self.enable_hash_chain:
                 self._last_hash = record.record_hash
 
-            log.info(
-                "Audit logged: %s:%s by %s -> %s",
-                resource_type, resource_id, user_id, result
-            )
+            log.info("Audit logged: %s:%s by %s -> %s", resource_type, resource_id, user_id, result)
 
             return record
 
@@ -326,25 +333,28 @@ class TamperEvidentAuditLogger:
         """Store record in database."""
         with self._lock:
             with self._get_connection() as conn:
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT INTO audit_records (
                         timestamp, user_id, action, resource_type, resource_id,
                         result, context, error_message, previous_hash, record_hash,
                         created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    record.timestamp.isoformat(),
-                    record.user_id,
-                    record.action,
-                    record.resource_type,
-                    record.resource_id,
-                    record.result,
-                    json.dumps(record.context),
-                    record.error_message,
-                    record.previous_hash,
-                    record.record_hash,
-                    datetime.now(timezone.utc).isoformat(),
-                ))
+                """,
+                    (
+                        record.timestamp.isoformat(),
+                        record.user_id,
+                        record.action,
+                        record.resource_type,
+                        record.resource_id,
+                        record.result,
+                        json.dumps(record.context),
+                        record.error_message,
+                        record.previous_hash,
+                        record.record_hash,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
                 conn.commit()
 
     def search(
@@ -390,19 +400,21 @@ class TamperEvidentAuditLogger:
                     continue
 
                 context = json.loads(row["context"]) if row["context"] else {}
-                records.append(AuditRecord(
-                    id=row["id"],
-                    timestamp=row_ts,
-                    user_id=row["user_id"],
-                    action=row["action"],
-                    resource_type=row["resource_type"],
-                    resource_id=row["resource_id"],
-                    result=row["result"],
-                    context=context,
-                    error_message=row["error_message"],
-                    previous_hash=row["previous_hash"],
-                    record_hash=row["record_hash"],
-                ))
+                records.append(
+                    AuditRecord(
+                        id=row["id"],
+                        timestamp=row_ts,
+                        user_id=row["user_id"],
+                        action=row["action"],
+                        resource_type=row["resource_type"],
+                        resource_id=row["resource_id"],
+                        result=row["result"],
+                        context=context,
+                        error_message=row["error_message"],
+                        previous_hash=row["previous_hash"],
+                        record_hash=row["record_hash"],
+                    )
+                )
 
             return records[:limit]
 
@@ -419,8 +431,7 @@ class TamperEvidentAuditLogger:
         with self._lock:
             with self._get_connection() as conn:
                 cursor = conn.execute(
-                    "SELECT * FROM audit_records WHERE id >= ? ORDER BY id ASC",
-                    (start_id,)
+                    "SELECT * FROM audit_records WHERE id >= ? ORDER BY id ASC", (start_id,)
                 )
                 rows = cursor.fetchall()
                 if not rows:
@@ -434,7 +445,10 @@ class TamperEvidentAuditLogger:
                         (start_id,),
                     ).fetchone()
                     if prev_row is None:
-                        log.error("Hash chain verification failed: start_id=%d has no predecessor", start_id)
+                        log.error(
+                            "Hash chain verification failed: start_id=%d has no predecessor",
+                            start_id,
+                        )
                         return False
                     previous_hash = prev_row["record_hash"]
                     previous_timestamp = datetime.fromisoformat(prev_row["timestamp"])
@@ -462,7 +476,7 @@ class TamperEvidentAuditLogger:
                     if start_id == 1 and i == 0 and record.previous_hash != GENESIS_SENTINEL:
                         log.error(
                             "Genesis sentinel mismatch at record %d: possible insertion attack",
-                            row["id"]
+                            row["id"],
                         )
                         return False
 
@@ -471,7 +485,9 @@ class TamperEvidentAuditLogger:
                     if expected_hash != row["record_hash"]:
                         log.error(
                             "Hash mismatch at record %d: expected %s, got %s",
-                            row["id"], expected_hash, row["record_hash"]
+                            row["id"],
+                            expected_hash,
+                            row["record_hash"],
                         )
                         return False
 
@@ -479,7 +495,9 @@ class TamperEvidentAuditLogger:
                     if record.previous_hash != previous_hash:
                         log.error(
                             "Hash chain broken at record %d: expected %s, got %s",
-                            row["id"], previous_hash, record.previous_hash
+                            row["id"],
+                            previous_hash,
+                            record.previous_hash,
                         )
                         return False
 
@@ -490,11 +508,13 @@ class TamperEvidentAuditLogger:
                         log.error(
                             "Timestamp non-monotonic at record %d: %s < previous %s"
                             " (possible backdated injection)",
-                            row["id"], record_ts.isoformat(), previous_timestamp.isoformat(),
+                            row["id"],
+                            record_ts.isoformat(),
+                            previous_timestamp.isoformat(),
                         )
                         return False
 
-                    previous_hash = record.record_hash
+                    previous_hash = record.record_hash or GENESIS_SENTINEL
                     previous_timestamp = record_ts
 
         log.info("Hash chain verification successful")
@@ -502,22 +522,32 @@ class TamperEvidentAuditLogger:
 
     def purge_old_records(self, days: Optional[int] = None) -> int:
         """
-        Delete audit records older than retention period.
+        Removed (GB-040): this method used to run an unconditional
+        ``DELETE FROM audit_records WHERE timestamp < ?``, which permanently
+        broke :meth:`verify_hash_chain` for every record after the deleted
+        range -- an organisation had to choose between honouring its
+        retention policy and keeping its evidence defensible. It could not
+        have both, and quietly returned a row count as if it had.
 
-        Returns number of deleted records.
+        There is no safe way to make this method work as documented, so it is
+        no longer implemented here. Use
+        :class:`glassbox.app.sealer.SegmentSealer`, which publishes a signed,
+        write-once (WORM) attestation of a segment's Merkle root *before*
+        purging it, so purged records remain provable via
+        :class:`~glassbox.domain.merkle.MerkleProof` and
+        :meth:`verify_hash_chain`'s v2 equivalent continues to report the
+        segment as sound (``IntegrityStatus.SEALED_PURGED``, not broken).
+
+        Raises:
+            NotImplementedError: always. This is a deliberate removal, not an
+                oversight -- see docs/CLAIMS.md.
         """
-        days = days or self.retention_days
-        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
-
-        with self._lock:
-            with self._get_connection() as conn:
-                cursor = conn.execute(
-                    "DELETE FROM audit_records WHERE timestamp < ?",
-                    (cutoff_date.isoformat(),)
-                )
-                conn.commit()
-                self._hydrate_chain_state()
-                return cursor.rowcount
+        raise NotImplementedError(
+            "TamperEvidentAuditLogger.purge_old_records was removed: "
+            "an unconditional DELETE permanently broke hash-chain verification. "
+            "Use glassbox.app.sealer.SegmentSealer.purge(), which seals a "
+            "signed WORM anchor before purging so verification stays sound."
+        )
 
     def get_stats(self) -> Dict[str, Any]:
         """Get audit logger statistics."""
@@ -526,8 +556,7 @@ class TamperEvidentAuditLogger:
             count = cursor.fetchone()["count"]
 
             cursor = conn.execute(
-                "SELECT MIN(timestamp) as oldest, MAX(timestamp) as newest "
-                "FROM audit_records"
+                "SELECT MIN(timestamp) as oldest, MAX(timestamp) as newest " "FROM audit_records"
             )
             row = cursor.fetchone()
 

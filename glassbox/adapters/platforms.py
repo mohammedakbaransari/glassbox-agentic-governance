@@ -30,10 +30,12 @@ Author: Mohammed Akbar Ansari
 from __future__ import annotations
 
 import os
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, Optional
 
-
 # ── Base Adapter ──────────────────────────────────────────────────────────────
+
 
 class BaseAdapter:
     """
@@ -65,15 +67,16 @@ class BaseAdapter:
     def get_config(self) -> Dict[str, Any]:
         """Return configuration dict for GovernancePipeline constructor."""
         return {
-            "log_dir":            self._log_dir(),
-            "environment":        self._env_name(),
+            "log_dir": self._log_dir(),
+            "environment": self._env_name(),
             "max_memory_records": self._max_memory(),
-            "echo":               self._echo(),
+            "echo": self._echo(),
         }
 
     def create_pipeline(self, **overrides):
         """Create a fully configured GovernancePipeline for this platform."""
         from glassbox.governance.pipeline import GovernancePipeline
+
         cfg = {**self.get_config(), **overrides}
         return GovernancePipeline(**cfg)
 
@@ -82,6 +85,7 @@ class BaseAdapter:
 
 
 # ── Databricks Adapter ────────────────────────────────────────────────────────
+
 
 class DatabricksAdapter(BaseAdapter):
     """
@@ -104,9 +108,9 @@ class DatabricksAdapter(BaseAdapter):
 
     def _detect(self) -> bool:
         return (
-            "DATABRICKS_RUNTIME_VERSION" in os.environ or
-            os.path.exists("/dbfs") or
-            os.environ.get("DB_CLUSTER_ID") is not None
+            "DATABRICKS_RUNTIME_VERSION" in os.environ
+            or os.path.exists("/dbfs")
+            or os.environ.get("DB_CLUSTER_ID") is not None
         )
 
     def _log_dir(self) -> str:
@@ -127,21 +131,24 @@ class DatabricksAdapter(BaseAdapter):
     def get_spark_config(self) -> Dict[str, str]:
         """Return Spark configuration hints for Databricks deployments."""
         return {
-            "spark.serializer":                  "org.apache.spark.serializer.KryoSerializer",
-            "spark.sql.execution.arrow.enabled":  "true",
+            "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
+            "spark.sql.execution.arrow.enabled": "true",
         }
 
     def platform_info(self) -> Dict[str, Any]:
         info = super().platform_info()
-        info.update({
-            "databricks_runtime": os.environ.get("DATABRICKS_RUNTIME_VERSION", "unknown"),
-            "cluster_id":         os.environ.get("DB_CLUSTER_ID", "unknown"),
-            "workspace_url":      os.environ.get("DATABRICKS_HOST", "unknown"),
-        })
+        info.update(
+            {
+                "databricks_runtime": os.environ.get("DATABRICKS_RUNTIME_VERSION", "unknown"),
+                "cluster_id": os.environ.get("DB_CLUSTER_ID", "unknown"),
+                "workspace_url": os.environ.get("DATABRICKS_HOST", "unknown"),
+            }
+        )
         return info
 
 
 # ── Kubernetes Adapter ────────────────────────────────────────────────────────
+
 
 class KubernetesAdapter(BaseAdapter):
     """
@@ -164,17 +171,15 @@ class KubernetesAdapter(BaseAdapter):
     platform_name = "kubernetes"
 
     def _detect(self) -> bool:
-        return (
-            "KUBERNETES_SERVICE_HOST" in os.environ or
-            os.path.exists("/var/run/secrets/kubernetes.io")
+        return "KUBERNETES_SERVICE_HOST" in os.environ or os.path.exists(
+            "/var/run/secrets/kubernetes.io"
         )
 
     def _log_dir(self) -> str:
         return os.environ.get("GLASSBOX_LOG_DIR", "/var/log/glassbox")
 
     def _env_name(self) -> str:
-        return os.environ.get("GLASSBOX_ENV",
-               os.environ.get("K8S_NAMESPACE", "production"))
+        return os.environ.get("GLASSBOX_ENV", os.environ.get("K8S_NAMESPACE", "production"))
 
     def readiness_check(self, pipeline) -> Dict[str, Any]:
         """
@@ -182,33 +187,36 @@ class KubernetesAdapter(BaseAdapter):
         Returns a dict suitable for JSON response with HTTP 200 / 503.
         """
         health = pipeline.health()
-        ready  = health.get("status") == "healthy"
+        ready = health.get("status") == "healthy"
         return {
-            "ready":   ready,
+            "ready": ready,
             "details": health,
-            "pod":     os.environ.get("HOSTNAME", "unknown"),
+            "pod": os.environ.get("HOSTNAME", "unknown"),
         }
 
     def liveness_check(self) -> Dict[str, Any]:
         """K8s liveness probe — checks that the process is alive."""
         return {
-            "alive":   True,
-            "pod":     os.environ.get("HOSTNAME", "unknown"),
+            "alive": True,
+            "pod": os.environ.get("HOSTNAME", "unknown"),
             "service": "GlassBox",
         }
 
     def platform_info(self) -> Dict[str, Any]:
         info = super().platform_info()
-        info.update({
-            "pod_name":   os.environ.get("HOSTNAME", "unknown"),
-            "namespace":  os.environ.get("K8S_NAMESPACE", "unknown"),
-            "node_name":  os.environ.get("K8S_NODE_NAME", "unknown"),
-            "service_account": os.environ.get("K8S_SERVICE_ACCOUNT", "unknown"),
-        })
+        info.update(
+            {
+                "pod_name": os.environ.get("HOSTNAME", "unknown"),
+                "namespace": os.environ.get("K8S_NAMESPACE", "unknown"),
+                "node_name": os.environ.get("K8S_NODE_NAME", "unknown"),
+                "service_account": os.environ.get("K8S_SERVICE_ACCOUNT", "unknown"),
+            }
+        )
         return info
 
 
 # ── Microsoft Fabric Adapter ──────────────────────────────────────────────────
+
 
 class FabricAdapter(BaseAdapter):
     """
@@ -228,33 +236,39 @@ class FabricAdapter(BaseAdapter):
 
     def _detect(self) -> bool:
         return (
-            os.path.exists("/lakehouse") or
-            "FABRIC_WORKSPACE_ID" in os.environ or
-            os.environ.get("FABRIC_ENVIRONMENT") is not None
+            os.path.exists("/lakehouse")
+            or "FABRIC_WORKSPACE_ID" in os.environ
+            or os.environ.get("FABRIC_ENVIRONMENT") is not None
         )
 
     def _log_dir(self) -> str:
         if os.path.exists("/lakehouse/default/Files"):
-            return os.environ.get(
-                "GLASSBOX_LOG_DIR",
-                "/lakehouse/default/Files/glassbox/logs"
-            )
-        return os.environ.get("GLASSBOX_LOG_DIR", "/tmp/glassbox/logs")
+            return os.environ.get("GLASSBOX_LOG_DIR", "/lakehouse/default/Files/glassbox/logs")
+        # Dev-only fallback; the `dev` profile provides no production assurance.
+        return os.environ.get(
+            "GLASSBOX_LOG_DIR", str(Path(tempfile.gettempdir()) / "glassbox" / "logs")
+        )
 
     def _env_name(self) -> str:
-        return os.environ.get("GLASSBOX_ENV",
-               os.environ.get("FABRIC_ENVIRONMENT", "fabric"))
+        return os.environ.get("GLASSBOX_ENV", os.environ.get("FABRIC_ENVIRONMENT", "fabric"))
 
     def platform_info(self) -> Dict[str, Any]:
         info = super().platform_info()
-        info.update({
-            "workspace_id":  os.environ.get("FABRIC_WORKSPACE_ID", "unknown"),
-            "lakehouse_path": "/lakehouse/default/Files" if os.path.exists("/lakehouse/default/Files") else "not_mounted",
-        })
+        info.update(
+            {
+                "workspace_id": os.environ.get("FABRIC_WORKSPACE_ID", "unknown"),
+                "lakehouse_path": (
+                    "/lakehouse/default/Files"
+                    if os.path.exists("/lakehouse/default/Files")
+                    else "not_mounted"
+                ),
+            }
+        )
         return info
 
 
 # ── Auto-detect helper ────────────────────────────────────────────────────────
+
 
 def auto_detect_adapter() -> BaseAdapter:
     """

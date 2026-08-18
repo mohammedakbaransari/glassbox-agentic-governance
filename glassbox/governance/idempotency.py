@@ -44,7 +44,8 @@ log = get_logger("idempotency")
 
 class IdempotencyRecord:
     """Immutable deduplication record."""
-    __slots__ = ('decision_id', 'payload_hash', 'response_json', 'created_at', 'expires_at')
+
+    __slots__ = ("decision_id", "payload_hash", "response_json", "created_at", "expires_at")
 
     def __init__(
         self,
@@ -91,7 +92,9 @@ class IdempotencyService:
             self._init_db()
             # Start background cleanup thread
             self._cleanup_thread = threading.Thread(
-                target=self._cleanup_expired_records, daemon=True, name="glassbox-idempotency-cleanup"
+                target=self._cleanup_expired_records,
+                daemon=True,
+                name="glassbox-idempotency-cleanup",
             )
             self._cleanup_thread.start()
 
@@ -172,14 +175,16 @@ class IdempotencyService:
 
         # 2. Check SQLite backend (if enabled and cache miss)
         if self.enable_db_backend and self.db_path:
-            cached_resp = self._check_db(decision_id, payload_hash)
-            if cached_resp:
+            db_resp = self._check_db(decision_id, payload_hash)
+            if db_resp:
                 # Repopulate in-memory cache from DB
                 with self._cache_lock:
-                    expires_at = datetime.now(timezone.utc) + timedelta(hours=self.cache_retention_hours)
-                    self._cache[decision_id] = (payload_hash, cached_resp, expires_at)
+                    expires_at = datetime.now(timezone.utc) + timedelta(
+                        hours=self.cache_retention_hours
+                    )
+                    self._cache[decision_id] = (payload_hash, db_resp, expires_at)
                 log.debug("IdempotencyService: DB HIT for decision_id=%s", decision_id)
-                return (True, cached_resp)
+                return (True, db_resp)
 
         # 3. New decision (not in cache, not in DB)
         log.debug("IdempotencyService: MISS for decision_id=%s (new decision)", decision_id)
@@ -213,8 +218,7 @@ class IdempotencyService:
             if len(self._cache) > self.max_cache_entries:
                 # Simple strategy: remove oldest entry
                 oldest_id = min(
-                    self._cache.keys(),
-                    key=lambda k: self._cache[k][2]  # min by expires_at
+                    self._cache.keys(), key=lambda k: self._cache[k][2]  # min by expires_at
                 )
                 del self._cache[oldest_id]
                 log.debug("IdempotencyService: evicted LRU entry %s", oldest_id)
@@ -248,8 +252,7 @@ class IdempotencyService:
                 if datetime.now(timezone.utc) > expires_at:
                     # Mark for cleanup (lazy delete)
                     conn.execute(
-                        "DELETE FROM idempotency_records WHERE decision_id = ?",
-                        (decision_id,)
+                        "DELETE FROM idempotency_records WHERE decision_id = ?", (decision_id,)
                     )
                     conn.commit()
                     return None
@@ -325,8 +328,8 @@ class IdempotencyService:
                 # Back off before retrying to avoid a tight error loop.
                 try:
                     time.sleep(60)
-                except Exception:
-                    pass
+                except Exception as sleep_exc:
+                    log.debug("Backoff sleep interrupted: %s", sleep_exc)
 
     def clear_cache(self) -> None:
         """Clear in-memory cache (useful for testing/reset)."""
@@ -348,8 +351,8 @@ class IdempotencyService:
                         (datetime.now(timezone.utc).isoformat(),),
                     )
                     db_count = cursor.fetchone()[0]
-            except:
-                pass
+            except Exception as exc:
+                log.debug("Idempotency DB stats query failed: %s", exc)
 
         return {
             "cache_size": cache_size,

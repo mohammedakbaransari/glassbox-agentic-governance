@@ -12,15 +12,15 @@ from glassbox.testing.batch_runner import (
     BatchSpec,
     ExecutionPlan,
     PlannedBatch,
-    build_run_analysis,
     build_execution_plan,
-    load_manifest,
+    build_run_analysis,
     load_duration_history,
+    load_manifest,
+    render_ci_summary,
     render_execution_plan,
     render_plan_summary,
     render_run_analysis_summary,
     render_run_analysis_text,
-    render_ci_summary,
     render_summary_text,
     resolve_latest_summary,
     run_batches,
@@ -89,6 +89,7 @@ class TestBatchRunner(unittest.TestCase):
             skipped=0,
         )
         from glassbox.testing.batch_runner import RunSummary
+
         summary = RunSummary(
             run_id="rid",
             started_at="2026-04-19T00:00:00+00:00",
@@ -134,6 +135,7 @@ class TestBatchRunner(unittest.TestCase):
             skipped=0,
         )
         from glassbox.testing.batch_runner import RunSummary
+
         summary = RunSummary(
             run_id="rid",
             started_at="2026-04-19T00:00:00+00:00",
@@ -164,8 +166,7 @@ class TestBatchRunner(unittest.TestCase):
             tests_dir.mkdir(parents=True)
             test_file = tests_dir / "test_sample.py"
             test_file.write_text(
-                "def test_ok():\n"
-                "    assert True\n",
+                "def test_ok():\n" "    assert True\n",
                 encoding="utf-8",
             )
             manifest_path = root / "manifest.json"
@@ -177,7 +178,7 @@ class TestBatchRunner(unittest.TestCase):
                                 "name": "sample",
                                 "targets": [str(test_file)],
                                 "profile": "standard",
-                                "timeout_seconds": 60
+                                "timeout_seconds": 60,
                             }
                         ]
                     }
@@ -218,14 +219,20 @@ class TestBatchRunner(unittest.TestCase):
             self.assertEqual(summary.batch_results[0].observed_runner, "sequential")
             self.assertEqual(summary.batch_results[0].raw_observed_runner, "sequential")
             self.assertEqual(summary.batch_results[0].completion_order, 1)
-            execution_plan = json.loads((run_dir / "execution_plan.json").read_text(encoding="utf-8"))
+            execution_plan = json.loads(
+                (run_dir / "execution_plan.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(execution_plan["selected_batches"], ["sample"])
             self.assertEqual(execution_plan["batch_results"][0]["planned_runner"], "worker-1")
             summary_payload = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary_payload["batch_results"][0]["observed_runner"], "sequential")
-            self.assertEqual(summary_payload["batch_results"][0]["raw_observed_runner"], "sequential")
+            self.assertEqual(
+                summary_payload["batch_results"][0]["raw_observed_runner"], "sequential"
+            )
             self.assertEqual(summary_payload["batch_results"][0]["completion_order"], 1)
-            analysis_payload = json.loads((run_dir / "run_analysis.json").read_text(encoding="utf-8"))
+            analysis_payload = json.loads(
+                (run_dir / "run_analysis.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(analysis_payload["planned_order"], ["sample"])
             self.assertEqual(analysis_payload["observed_completion_order"], ["sample"])
             self.assertEqual(analysis_payload["order_changes"], 0)
@@ -244,8 +251,16 @@ class TestBatchRunner(unittest.TestCase):
                 json.dumps(
                     {
                         "batches": [
-                            {"name": "pass-batch", "targets": [str(passing)], "timeout_seconds": 60},
-                            {"name": "fail-batch", "targets": [str(failing)], "timeout_seconds": 60},
+                            {
+                                "name": "pass-batch",
+                                "targets": [str(passing)],
+                                "timeout_seconds": 60,
+                            },
+                            {
+                                "name": "fail-batch",
+                                "targets": [str(failing)],
+                                "timeout_seconds": 60,
+                            },
                         ]
                     }
                 ),
@@ -282,7 +297,7 @@ class TestBatchRunner(unittest.TestCase):
                             {
                                 "batch_durations": {
                                     "slow": {"duration_seconds": 5.0},
-                                    "fast": {"duration_seconds": 1.0}
+                                    "fast": {"duration_seconds": 1.0},
                                 }
                             }
                         ]
@@ -314,14 +329,14 @@ class TestBatchRunner(unittest.TestCase):
                                 "name": "perf-batch",
                                 "targets": ["tests/test_perf.py"],
                                 "profile": "perf",
-                                "tags": ["perf"]
+                                "tags": ["perf"],
                             },
                             {
                                 "name": "core-batch",
                                 "targets": ["tests/test_core.py"],
                                 "profile": "standard",
-                                "tags": ["core", "shard"]
-                            }
+                                "tags": ["core", "shard"],
+                            },
                         ]
                     }
                 ),
@@ -334,7 +349,7 @@ class TestBatchRunner(unittest.TestCase):
                             {
                                 "batch_durations": {
                                     "perf-batch": {"duration_seconds": 9.0},
-                                    "core-batch": {"duration_seconds": 2.0}
+                                    "core-batch": {"duration_seconds": 2.0},
                                 }
                             }
                         ]
@@ -371,7 +386,7 @@ class TestBatchRunner(unittest.TestCase):
                                 "name": "core-batch",
                                 "targets": ["tests/test_core.py"],
                                 "profile": "standard",
-                                "tags": ["core"]
+                                "tags": ["core"],
                             }
                         ]
                     }
@@ -537,9 +552,21 @@ class TestBatchRunner(unittest.TestCase):
                 json.dumps(
                     {
                         "batches": [
-                            {"name": "alpha", "targets": ["tests/test_alpha.py"], "profile": "standard"},
-                            {"name": "beta", "targets": ["tests/test_beta.py"], "profile": "standard"},
-                            {"name": "gamma", "targets": ["tests/test_gamma.py"], "profile": "standard"},
+                            {
+                                "name": "alpha",
+                                "targets": ["tests/test_alpha.py"],
+                                "profile": "standard",
+                            },
+                            {
+                                "name": "beta",
+                                "targets": ["tests/test_beta.py"],
+                                "profile": "standard",
+                            },
+                            {
+                                "name": "gamma",
+                                "targets": ["tests/test_gamma.py"],
+                                "profile": "standard",
+                            },
                         ]
                     }
                 ),
@@ -553,7 +580,7 @@ class TestBatchRunner(unittest.TestCase):
                                 "batch_durations": {
                                     "alpha": {"duration_seconds": 6.0},
                                     "beta": {"duration_seconds": 4.0},
-                                    "gamma": {"duration_seconds": 2.0}
+                                    "gamma": {"duration_seconds": 2.0},
                                 }
                             }
                         ]
@@ -587,7 +614,7 @@ class TestBatchRunner(unittest.TestCase):
                                 "name": "core-batch",
                                 "targets": ["tests/test_core.py"],
                                 "profile": "standard",
-                                "tags": ["core"]
+                                "tags": ["core"],
                             }
                         ]
                     }
@@ -782,15 +809,11 @@ class TestBatchRunner(unittest.TestCase):
             slow_file = tests_dir / "test_slow.py"
             fast_file = tests_dir / "test_fast.py"
             slow_file.write_text(
-                "import time\n\n"
-                "def test_slow():\n"
-                "    time.sleep(0.2)\n"
-                "    assert True\n",
+                "import time\n\n" "def test_slow():\n" "    time.sleep(0.2)\n" "    assert True\n",
                 encoding="utf-8",
             )
             fast_file.write_text(
-                "def test_fast():\n"
-                "    assert True\n",
+                "def test_fast():\n" "    assert True\n",
                 encoding="utf-8",
             )
             manifest_path = root / "manifest.json"
@@ -798,8 +821,18 @@ class TestBatchRunner(unittest.TestCase):
                 json.dumps(
                     {
                         "batches": [
-                            {"name": "slow", "targets": [str(slow_file)], "profile": "standard", "timeout_seconds": 60},
-                            {"name": "fast", "targets": [str(fast_file)], "profile": "standard", "timeout_seconds": 60},
+                            {
+                                "name": "slow",
+                                "targets": [str(slow_file)],
+                                "profile": "standard",
+                                "timeout_seconds": 60,
+                            },
+                            {
+                                "name": "fast",
+                                "targets": [str(fast_file)],
+                                "profile": "standard",
+                                "timeout_seconds": 60,
+                            },
                         ]
                     }
                 ),
@@ -862,7 +895,12 @@ class TestBatchRunner(unittest.TestCase):
                 json.dumps(
                     {
                         "batches": [
-                            {"name": "sample", "targets": [str(test_file)], "profile": "standard", "timeout_seconds": 60}
+                            {
+                                "name": "sample",
+                                "targets": [str(test_file)],
+                                "profile": "standard",
+                                "timeout_seconds": 60,
+                            }
                         ]
                     }
                 ),

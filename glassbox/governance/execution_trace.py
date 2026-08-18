@@ -27,31 +27,32 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 
 @dataclass
 class ExecutionStep:
     """Record of one pipeline stage execution."""
-    stage_num:    int
-    stage_name:   str
-    outcome:      str           # "passed" | "blocked" | "warned" | "skipped" | "error"
-    duration_ms:  float         = 0.0
+
+    stage_num: int
+    stage_name: str
+    outcome: str  # "passed" | "blocked" | "warned" | "skipped" | "error"
+    duration_ms: float = 0.0
     input_summary: Dict[str, Any] = field(default_factory=dict)
     output_summary: Dict[str, Any] = field(default_factory=dict)
-    detail:       str           = ""
-    error:        Optional[str] = None
+    detail: str = ""
+    error: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "stage_num":      self.stage_num,
-            "stage_name":     self.stage_name,
-            "outcome":        self.outcome,
-            "duration_ms":    round(self.duration_ms, 3),
-            "input_summary":  self.input_summary,
+            "stage_num": self.stage_num,
+            "stage_name": self.stage_name,
+            "outcome": self.outcome,
+            "duration_ms": round(self.duration_ms, 3),
+            "input_summary": self.input_summary,
             "output_summary": self.output_summary,
-            "detail":         self.detail,
-            "error":          self.error,
+            "detail": self.detail,
+            "error": self.error,
         }
 
 
@@ -71,9 +72,9 @@ class ExecutionTrace:
 
     def __init__(self, decision_id: str):
         self.decision_id = decision_id
-        self.steps:    List[ExecutionStep] = []
-        self._started  = time.perf_counter()
-        self.total_ms  = 0.0
+        self.steps: List[ExecutionStep] = []
+        self._started = time.perf_counter()
+        self.total_ms = 0.0
 
     def add(self, step: ExecutionStep) -> None:
         self.steps.append(step)
@@ -90,18 +91,15 @@ class ExecutionTrace:
 
     def summary(self) -> str:
         """One-line summary of the trace for logging."""
-        stages = " → ".join(
-            f"{s.stage_name}[{s.outcome[0].upper()}]"
-            for s in self.steps
-        )
+        stages = " → ".join(f"{s.stage_name}[{s.outcome[0].upper()}]" for s in self.steps)
         return f"decision={self.decision_id} | {stages} | total={self.total_ms}ms"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "decision_id": self.decision_id,
-            "total_ms":    self.total_ms,
-            "blocked_at":  self.blocked_at(),
-            "steps":       [s.to_dict() for s in self.steps],
+            "total_ms": self.total_ms,
+            "blocked_at": self.blocked_at(),
+            "steps": [s.to_dict() for s in self.steps],
         }
 
 
@@ -118,17 +116,17 @@ class StageTimer:
 
     def __init__(
         self,
-        trace:      ExecutionTrace,
-        stage_num:  int,
+        trace: ExecutionTrace,
+        stage_num: int,
         stage_name: str,
-        input_summary: Dict[str, Any] = None,
+        input_summary: Optional[Dict[str, Any]] = None,
     ):
-        self.trace         = trace
-        self.stage_num     = stage_num
-        self.stage_name    = stage_name
+        self.trace = trace
+        self.stage_num = stage_num
+        self.stage_name = stage_name
         self.input_summary = input_summary or {}
-        self.outcome       = "passed"
-        self.detail        = ""
+        self.outcome = "passed"
+        self.detail = ""
         self.output_summary: Dict[str, Any] = {}
         self.error: Optional[str] = None
         self._t0: float = 0.0
@@ -137,19 +135,21 @@ class StageTimer:
         self._t0 = time.perf_counter()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+    def __exit__(self, exc_type, exc_val, exc_tb) -> Literal[False]:
         duration_ms = round((time.perf_counter() - self._t0) * 1000, 3)
         if exc_val is not None:
             self.outcome = "error"
-            self.error   = f"{type(exc_val).__name__}: {exc_val}"
-        self.trace.add(ExecutionStep(
-            stage_num=self.stage_num,
-            stage_name=self.stage_name,
-            outcome=self.outcome,
-            duration_ms=duration_ms,
-            input_summary=self.input_summary,
-            output_summary=self.output_summary,
-            detail=self.detail,
-            error=self.error,
-        ))
-        return False   # do not suppress exceptions
+            self.error = f"{type(exc_val).__name__}: {exc_val}"
+        self.trace.add(
+            ExecutionStep(
+                stage_num=self.stage_num,
+                stage_name=self.stage_name,
+                outcome=self.outcome,
+                duration_ms=duration_ms,
+                input_summary=self.input_summary,
+                output_summary=self.output_summary,
+                detail=self.detail,
+                error=self.error,
+            )
+        )
+        return False  # do not suppress exceptions

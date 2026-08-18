@@ -15,6 +15,7 @@ adversarial low-level DB access.
 Run with:
     pytest tests/test_hash_chain_tamper.py -v
 """
+
 import json
 import os
 import sqlite3
@@ -31,6 +32,7 @@ class TestHashChainTampering(unittest.TestCase):
 
     def _make_logger(self, db_path: str):
         from glassbox.governance.advanced_audit import TamperEvidentAuditLogger
+
         return TamperEvidentAuditLogger(db_path=db_path, enable_hash_chain=True)
 
     def _log_n(self, logger, n: int):
@@ -130,8 +132,7 @@ class TestHashChainTampering(unittest.TestCase):
             # Attacker rewrites the action to cover tracks
             with sqlite3.connect(db_path) as conn:
                 conn.execute(
-                    "UPDATE audit_records SET action = 'read_report' "
-                    "WHERE user_id = 'attacker'"
+                    "UPDATE audit_records SET action = 'read_report' " "WHERE user_id = 'attacker'"
                 )
             conn.close()
 
@@ -152,9 +153,7 @@ class TestHashChainTampering(unittest.TestCase):
             self.assertTrue(logger.verify_hash_chain())
 
             with sqlite3.connect(db_path) as conn:
-                conn.execute(
-                    "UPDATE audit_records SET result = 'blocked' WHERE id = 2"
-                )
+                conn.execute("UPDATE audit_records SET result = 'blocked' WHERE id = 2")
             conn.close()
 
             self.assertFalse(
@@ -171,7 +170,11 @@ class TestHashChainTampering(unittest.TestCase):
         try:
             logger = self._make_logger(db_path)
             logger.log_action(
-                "admin", "approve_transfer", "account", "acc_001", "success",
+                "admin",
+                "approve_transfer",
+                "account",
+                "acc_001",
+                "success",
                 {"amount": 100_000, "currency": "USD"},
             )
             self.assertTrue(logger.verify_hash_chain())
@@ -212,11 +215,14 @@ class TestHashChainTampering(unittest.TestCase):
             # In SQLite, rowid determines ORDER BY id ASC sequence.
             fake_prev_hash = "a" * 64  # Not the genesis sentinel
             with sqlite3.connect(db_path) as conn:
-                conn.execute("""
+                conn.execute(
+                    """
                     UPDATE audit_records
                     SET previous_hash = ?
                     WHERE id = 1
-                """, (fake_prev_hash,))
+                """,
+                    (fake_prev_hash,),
+                )
             conn.close()
 
             self.assertFalse(
@@ -242,9 +248,7 @@ class TestHashChainTampering(unittest.TestCase):
 
             # Attacker replaces the genesis sentinel with empty string
             with sqlite3.connect(db_path) as conn:
-                conn.execute(
-                    "UPDATE audit_records SET previous_hash = '' WHERE id = 1"
-                )
+                conn.execute("UPDATE audit_records SET previous_hash = '' WHERE id = 1")
             conn.close()
 
             self.assertFalse(

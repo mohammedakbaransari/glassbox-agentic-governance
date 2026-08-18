@@ -16,10 +16,10 @@ Design:
 
 Usage:
     from glassbox.store.database_abstraction import DatabaseFactory
-    
+
     # SQLite (default)
     db = DatabaseFactory.create('sqlite', db_path='/tmp/glassbox.db')
-    
+
     # PostgreSQL (high-throughput)
     db = DatabaseFactory.create('postgresql',
         host='pg.example.com',
@@ -29,7 +29,7 @@ Usage:
         password=os.getenv("DB_PASSWORD"),
         pool_size=10,
     )
-    
+
     # SQL Server
     db = DatabaseFactory.create('sqlserver',
         server='sql.example.com',
@@ -38,11 +38,11 @@ Usage:
         password=os.getenv("DB_PASSWORD"),
         pool_size=10,
     )
-    
+
     # Use
     db.execute("INSERT INTO audit_records (...) VALUES (...)")
     result = db.query_one("SELECT * FROM audit_records WHERE id=?", (123,))
-    
+
     # Cleanup
     db.close()
 
@@ -55,8 +55,9 @@ import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
-from queue import Queue, Empty
+from queue import Empty, Queue
 from typing import Any, Dict, List, Optional, Tuple
 
 from glassbox.governance.logging_manager import get_logger
@@ -130,45 +131,48 @@ class SQLiteBackend(DatabaseBackend):
         self.timeout = timeout
         self.enable_wal = enable_wal
 
-        # SQLite is single-threaded, but we can use thread-local connections
-        self._local = threading.local()
+        # SQLite is single-threaded, but we can use context-local connections
+        self._tx_connection: ContextVar[Any] = ContextVar(
+            f"sqlite_tx_conn_{id(self)}", default=None
+        )
+        self._tx_depth: ContextVar[int] = ContextVar(f"sqlite_tx_depth_{id(self)}", default=0)
+        self._connection: ContextVar[Any] = ContextVar(f"sqlite_conn_{id(self)}", default=None)
         self._lock = threading.Lock()
         self._stats = {"queries": 0, "errors": 0}
 
     def _set_tx_connection(self, conn) -> None:
-        self._local.tx_connection = conn
-        self._local.tx_depth = getattr(self._local, "tx_depth", 0) + 1
+        self._tx_connection.set(conn)
+        self._tx_depth.set(self._tx_depth.get() + 1)
 
     def _clear_tx_connection(self) -> None:
-        depth = max(0, getattr(self._local, "tx_depth", 0) - 1)
-        self._local.tx_depth = depth
+        depth = max(0, self._tx_depth.get() - 1)
+        self._tx_depth.set(depth)
         if depth == 0:
-            self._local.tx_connection = None
+            self._tx_connection.set(None)
 
     def _active_tx_connection(self):
-        return getattr(self._local, "tx_connection", None)
+        return self._tx_connection.get()
 
-        log.info(
-            "SQLiteBackend initialized: db_path=%s, wal=%s",
-            db_path, enable_wal
-        )
+        log.info("SQLiteBackend initialized: db_path=%s, wal=%s", db_path, enable_wal)
 
     def _get_connection(self):
-        """Get thread-local connection."""
+        """Get context-local connection."""
         tx_conn = self._active_tx_connection()
         if tx_conn is not None:
             return tx_conn
-        if not hasattr(self._local, "connection") or self._local.connection is None:
-            self._local.connection = sqlite3.connect(
+        conn = self._connection.get()
+        if conn is None:
+            conn = sqlite3.connect(
                 self.db_path,
                 timeout=self.timeout,
                 check_same_thread=False,
             )
-            self._local.connection.row_factory = sqlite3.Row
+            conn.row_factory = sqlite3.Row
             if self.enable_wal:
-                self._local.connection.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA journal_mode=WAL")
+            self._connection.set(conn)
 
-        return self._local.connection
+        return conn
 
     def execute(
         self,
@@ -245,10 +249,11 @@ class SQLiteBackend(DatabaseBackend):
                 self._clear_tx_connection()
 
     def close(self) -> None:
-        """Close thread-local connection."""
-        if hasattr(self._local, "connection") and self._local.connection:
-            self._local.connection.close()
-            self._local.connection = None
+        """Close context-local connection."""
+        conn = self._connection.get()
+        if conn:
+            conn.close()
+            self._connection.set(None)
 
     def health_check(self) -> bool:
         """Check DB health."""
@@ -280,7 +285,7 @@ class ConnectionPool:
         pool_size: int = 10,
         timeout: float = 5.0,
     ):
-        self.pool = Queue(maxsize=pool_size)
+        self.pool: "Queue[Any]" = Queue(maxsize=pool_size)
         self.pool_size = pool_size
         self.timeout = timeout
         self.create_connection_fn = create_connection_fn
@@ -297,10 +302,7 @@ class ConnectionPool:
             except Exception as exc:
                 log.warning("Failed to pre-create connection: %s", exc)
 
-        log.info(
-            "ConnectionPool initialized: size=%d, created=%d",
-            pool_size, self._created
-        )
+        log.info("ConnectionPool initialized: size=%d, created=%d", pool_size, self._created)
 
     def get_connection(self):
         """Get connection from pool (or create new)."""
@@ -314,7 +316,8 @@ class ConnectionPool:
             log.warning(
                 "ConnectionPool exhausted, creating temporary connection "
                 "(pool_size=%d, gets=%d)",
-                self.pool_size, self._stats["gets"]
+                self.pool_size,
+                self._stats["gets"],
             )
             return self.create_connection_fn()
 
@@ -333,8 +336,8 @@ class ConnectionPool:
             try:
                 conn = self.pool.get_nowait()
                 conn.close()
-            except:
-                pass
+            except Exception as exc:
+                log.debug("Error closing pooled connection: %s", exc)
 
         log.info("ConnectionPool closed all %d connections", self._created)
 
@@ -366,10 +369,11 @@ class PostgreSQLBackend(DatabaseBackend):
         try:
             import psycopg2
             import psycopg2.pool
-        except ImportError:
-            raise ImportError("PostgreSQL backend requires: pip install psycopg2-binary")
+        except ImportError as exc:
+            raise ImportError("PostgreSQL backend requires: pip install psycopg2-binary") from exc
 
         import warnings as _warnings
+
         if pool_size < 1:
             raise ValueError("pool_size must be >= 1")
         if pool_size > 500:
@@ -405,11 +409,14 @@ class PostgreSQLBackend(DatabaseBackend):
 
         self.pool = ConnectionPool(create_conn, pool_size, timeout)
         self._stats = {"queries": 0, "errors": 0}
-        self._local = threading.local()
+        self._tx_connection: ContextVar[Any] = ContextVar(f"pg_tx_conn_{id(self)}", default=None)
 
         log.info(
             "PostgreSQLBackend initialized: host=%s:%d, database=%s, pool_size=%d",
-            host, port, database, pool_size
+            host,
+            port,
+            database,
+            pool_size,
         )
 
     def execute(
@@ -419,13 +426,13 @@ class PostgreSQLBackend(DatabaseBackend):
         commit: bool = True,
     ) -> int:
         """Execute INSERT/UPDATE/DELETE."""
-        conn = getattr(self._local, "tx_connection", None) or self.pool.get_connection()
-        borrowed_from_pool = getattr(self._local, "tx_connection", None) is None
+        conn = self._tx_connection.get() or self.pool.get_connection()
+        borrowed_from_pool = self._tx_connection.get() is None
         try:
             cursor = conn.cursor()
             cursor.execute(query, params)
             affected = cursor.rowcount
-            if commit and not getattr(self._local, "tx_connection", None):
+            if commit and not self._tx_connection.get():
                 conn.commit()
             cursor.close()
             self._stats["queries"] += 1
@@ -445,8 +452,8 @@ class PostgreSQLBackend(DatabaseBackend):
         params: Tuple = (),
     ) -> Optional[Dict[str, Any]]:
         """Execute SELECT, return first row."""
-        conn = getattr(self._local, "tx_connection", None) or self.pool.get_connection()
-        borrowed_from_pool = getattr(self._local, "tx_connection", None) is None
+        conn = self._tx_connection.get() or self.pool.get_connection()
+        borrowed_from_pool = self._tx_connection.get() is None
         try:
             cursor = conn.cursor()
             cursor.execute(query, params)
@@ -474,8 +481,8 @@ class PostgreSQLBackend(DatabaseBackend):
         params: Tuple = (),
     ) -> List[Dict[str, Any]]:
         """Execute SELECT, return all rows."""
-        conn = getattr(self._local, "tx_connection", None) or self.pool.get_connection()
-        borrowed_from_pool = getattr(self._local, "tx_connection", None) is None
+        conn = self._tx_connection.get() or self.pool.get_connection()
+        borrowed_from_pool = self._tx_connection.get() is None
         try:
             cursor = conn.cursor()
             cursor.execute(query, params)
@@ -496,11 +503,11 @@ class PostgreSQLBackend(DatabaseBackend):
     @contextmanager
     def transaction(self):
         """Context manager for transaction."""
-        conn = getattr(self._local, "tx_connection", None)
+        conn = self._tx_connection.get()
         nested = conn is not None
         if conn is None:
             conn = self.pool.get_connection()
-            self._local.tx_connection = conn
+            self._tx_connection.set(conn)
         try:
             yield conn
             if not nested:
@@ -512,7 +519,7 @@ class PostgreSQLBackend(DatabaseBackend):
             raise
         finally:
             if not nested:
-                self._local.tx_connection = None
+                self._tx_connection.set(None)
                 self.pool.return_connection(conn)
 
     def close(self) -> None:
@@ -533,19 +540,21 @@ class PostgreSQLBackend(DatabaseBackend):
         finally:
             try:
                 self.pool.return_connection(conn)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Error returning connection to pool: %s", exc)
 
     def get_stats(self) -> Dict[str, Any]:
         """Return DB statistics."""
         stats = self.pool.get_stats()
-        stats.update({
-            "backend": "postgresql",
-            "host": self.host,
-            "database": self.database,
-            "queries": self._stats["queries"],
-            "errors": self._stats["errors"],
-        })
+        stats.update(
+            {
+                "backend": "postgresql",
+                "host": self.host,
+                "database": self.database,
+                "queries": self._stats["queries"],
+                "errors": self._stats["errors"],
+            }
+        )
         return stats
 
 
@@ -564,8 +573,8 @@ class SQLServerBackend(DatabaseBackend):
     ):
         try:
             import pyodbc
-        except ImportError:
-            raise ImportError("SQL Server backend requires: pip install pyodbc")
+        except ImportError as exc:
+            raise ImportError("SQL Server backend requires: pip install pyodbc") from exc
 
         self.server = server
         self.database = database
@@ -587,11 +596,14 @@ class SQLServerBackend(DatabaseBackend):
 
         self.pool = ConnectionPool(create_conn, pool_size, timeout)
         self._stats = {"queries": 0, "errors": 0}
-        self._local = threading.local()
+        self._tx_connection: ContextVar[Any] = ContextVar(f"mssql_tx_conn_{id(self)}", default=None)
 
         log.info(
             "SQLServerBackend initialized: server=%s:%d, database=%s, pool_size=%d",
-            server, port, database, pool_size
+            server,
+            port,
+            database,
+            pool_size,
         )
 
     def execute(
@@ -601,13 +613,13 @@ class SQLServerBackend(DatabaseBackend):
         commit: bool = True,
     ) -> int:
         """Execute INSERT/UPDATE/DELETE."""
-        conn = getattr(self._local, "tx_connection", None) or self.pool.get_connection()
-        borrowed_from_pool = getattr(self._local, "tx_connection", None) is None
+        conn = self._tx_connection.get() or self.pool.get_connection()
+        borrowed_from_pool = self._tx_connection.get() is None
         try:
             cursor = conn.cursor()
             cursor.execute(query, params)
             affected = cursor.rowcount
-            if commit and not getattr(self._local, "tx_connection", None):
+            if commit and not self._tx_connection.get():
                 conn.commit()
             cursor.close()
             self._stats["queries"] += 1
@@ -627,8 +639,8 @@ class SQLServerBackend(DatabaseBackend):
         params: Tuple = (),
     ) -> Optional[Dict[str, Any]]:
         """Execute SELECT, return first row."""
-        conn = getattr(self._local, "tx_connection", None) or self.pool.get_connection()
-        borrowed_from_pool = getattr(self._local, "tx_connection", None) is None
+        conn = self._tx_connection.get() or self.pool.get_connection()
+        borrowed_from_pool = self._tx_connection.get() is None
         try:
             cursor = conn.cursor()
             cursor.execute(query, params)
@@ -655,8 +667,8 @@ class SQLServerBackend(DatabaseBackend):
         params: Tuple = (),
     ) -> List[Dict[str, Any]]:
         """Execute SELECT, return all rows."""
-        conn = getattr(self._local, "tx_connection", None) or self.pool.get_connection()
-        borrowed_from_pool = getattr(self._local, "tx_connection", None) is None
+        conn = self._tx_connection.get() or self.pool.get_connection()
+        borrowed_from_pool = self._tx_connection.get() is None
         try:
             cursor = conn.cursor()
             cursor.execute(query, params)
@@ -676,11 +688,11 @@ class SQLServerBackend(DatabaseBackend):
     @contextmanager
     def transaction(self):
         """Context manager for transaction."""
-        conn = getattr(self._local, "tx_connection", None)
+        conn = self._tx_connection.get()
         nested = conn is not None
         if conn is None:
             conn = self.pool.get_connection()
-            self._local.tx_connection = conn
+            self._tx_connection.set(conn)
         try:
             yield conn
             if not nested:
@@ -692,7 +704,7 @@ class SQLServerBackend(DatabaseBackend):
             raise
         finally:
             if not nested:
-                self._local.tx_connection = None
+                self._tx_connection.set(None)
                 self.pool.return_connection(conn)
 
     def close(self) -> None:
@@ -713,19 +725,21 @@ class SQLServerBackend(DatabaseBackend):
         finally:
             try:
                 self.pool.return_connection(conn)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Error returning connection to pool: %s", exc)
 
     def get_stats(self) -> Dict[str, Any]:
         """Return DB statistics."""
         stats = self.pool.get_stats()
-        stats.update({
-            "backend": "sqlserver",
-            "server": self.server,
-            "database": self.database,
-            "queries": self._stats["queries"],
-            "errors": self._stats["errors"],
-        })
+        stats.update(
+            {
+                "backend": "sqlserver",
+                "server": self.server,
+                "database": self.database,
+                "queries": self._stats["queries"],
+                "errors": self._stats["errors"],
+            }
+        )
         return stats
 
 
@@ -777,6 +791,5 @@ class DatabaseFactory:
 
         else:
             raise ValueError(
-                f"Unknown backend type: {backend_type}. "
-                "Supported: sqlite, postgresql, sqlserver"
+                f"Unknown backend type: {backend_type}. " "Supported: sqlite, postgresql, sqlserver"
             )

@@ -32,13 +32,17 @@ import asyncio
 import functools
 import inspect
 import json
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from glassbox.governance.models import (
-    DecisionContext, DecisionRequest, DecisionType, FinalStatus,
+    DecisionContext,
+    DecisionRequest,
+    DecisionType,
+    FinalStatus,
 )
 from glassbox.integrations.adapters import (
-    GovernanceBlockedError, _infer_decision_type,
+    GovernanceBlockedError,
+    _infer_decision_type,
 )
 
 if TYPE_CHECKING:
@@ -55,6 +59,7 @@ async def _await_or_run_sync(fn: Callable, *args, **kwargs) -> Any:
 # ══════════════════════════════════════════════════════════════════════════════
 # LLAMAINDEX ADAPTER
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class LlamaIndexAdapter:
     """
@@ -86,16 +91,16 @@ class LlamaIndexAdapter:
 
     def __init__(
         self,
-        pipeline:          "GovernancePipeline",
-        agent_id:          str = "llamaindex_agent",
+        pipeline: "GovernancePipeline",
+        agent_id: str = "llamaindex_agent",
         decision_type_map: Optional[Dict[str, DecisionType]] = None,
-        confidence:        float = 1.0,
+        confidence: float = 1.0,
         query_decision_type: DecisionType = DecisionType.CUSTOM,
     ):
-        self.pipeline           = pipeline
-        self.agent_id           = agent_id
-        self.decision_type_map  = decision_type_map or {}
-        self.confidence         = confidence
+        self.pipeline = pipeline
+        self.agent_id = agent_id
+        self.decision_type_map = decision_type_map or {}
+        self.confidence = confidence
         self.query_decision_type = query_decision_type
 
     def wrap_query_engine(self, engine) -> Any:
@@ -132,7 +137,7 @@ class LlamaIndexAdapter:
 
     def _wrap_tool(self, tool) -> Any:
         adapter = self
-        name    = getattr(tool, "metadata", None)
+        name = getattr(tool, "metadata", None)
         if name:
             name = getattr(name, "name", str(tool.__class__.__name__))
         else:
@@ -140,23 +145,23 @@ class LlamaIndexAdapter:
 
         original_call = getattr(tool, "__call__", None) or getattr(tool, "call", None)
         if original_call is None:
-            return tool   # cannot wrap
+            return tool  # cannot wrap
 
         @functools.wraps(original_call)
         def governed_call(*args, **kwargs):
             input_val = args[0] if args else kwargs.get("input", str(kwargs))
-            payload   = {"tool_name": name, "input": str(input_val)[:2000]}
-            dtype     = adapter.decision_type_map.get(name) or _infer_decision_type(name)
-            ctx       = DecisionContext(confidence=adapter.confidence,
-                                        source_system="llamaindex")
-            request   = DecisionRequest(
-                agent_id=adapter.agent_id, decision_type=dtype,
-                payload=payload, context=ctx,
+            payload = {"tool_name": name, "input": str(input_val)[:2000]}
+            dtype = adapter.decision_type_map.get(name) or _infer_decision_type(name)
+            ctx = DecisionContext(confidence=adapter.confidence, source_system="llamaindex")
+            request = DecisionRequest(
+                agent_id=adapter.agent_id,
+                decision_type=dtype,
+                payload=payload,
+                context=ctx,
             )
-            response  = adapter.pipeline.process(request)
+            response = adapter.pipeline.process(request)
             if response.final_status == FinalStatus.BLOCKED:
-                raise GovernanceBlockedError(
-                    name, response.policy_violations, response.decision_id)
+                raise GovernanceBlockedError(name, response.policy_violations, response.decision_id)
             return original_call(*args, **kwargs)
 
         if hasattr(tool, "__call__"):
@@ -168,33 +173,35 @@ class LlamaIndexAdapter:
 
     def _govern_query(self, query_str: str):
         """Governance check for a query string before retrieval."""
-        payload  = {"query": str(query_str)[:4096],
-                    "engine_type": "llamaindex_query_engine"}
-        ctx      = DecisionContext(confidence=self.confidence,
-                                   source_system="llamaindex_query")
-        request  = DecisionRequest(
-            agent_id=self.agent_id, decision_type=self.query_decision_type,
-            payload=payload, context=ctx,
+        payload = {"query": str(query_str)[:4096], "engine_type": "llamaindex_query_engine"}
+        ctx = DecisionContext(confidence=self.confidence, source_system="llamaindex_query")
+        request = DecisionRequest(
+            agent_id=self.agent_id,
+            decision_type=self.query_decision_type,
+            payload=payload,
+            context=ctx,
         )
         response = self.pipeline.process(request)
         if response.final_status == FinalStatus.BLOCKED:
             raise GovernanceBlockedError(
-                "query_engine", response.policy_violations, response.decision_id)
+                "query_engine", response.policy_violations, response.decision_id
+            )
 
     async def _govern_query_async(self, query_str: str):
         """Async governance check for a query string before retrieval."""
-        payload  = {"query": str(query_str)[:4096],
-                    "engine_type": "llamaindex_query_engine"}
-        ctx      = DecisionContext(confidence=self.confidence,
-                                   source_system="llamaindex_query_async")
-        request  = DecisionRequest(
-            agent_id=self.agent_id, decision_type=self.query_decision_type,
-            payload=payload, context=ctx,
+        payload = {"query": str(query_str)[:4096], "engine_type": "llamaindex_query_engine"}
+        ctx = DecisionContext(confidence=self.confidence, source_system="llamaindex_query_async")
+        request = DecisionRequest(
+            agent_id=self.agent_id,
+            decision_type=self.query_decision_type,
+            payload=payload,
+            context=ctx,
         )
         response = await self.pipeline.process_async(request)
         if response.final_status == FinalStatus.BLOCKED:
             raise GovernanceBlockedError(
-                "query_engine", response.policy_violations, response.decision_id)
+                "query_engine", response.policy_violations, response.decision_id
+            )
 
     async def wrap_query_engine_async(self, engine) -> Any:
         """Return an async-first governed query engine wrapper."""
@@ -204,6 +211,7 @@ class LlamaIndexAdapter:
 # ══════════════════════════════════════════════════════════════════════════════
 # CREWAI ADAPTER
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class CrewAIAdapter:
     """
@@ -238,15 +246,15 @@ class CrewAIAdapter:
 
     def __init__(
         self,
-        pipeline:          "GovernancePipeline",
-        agent_id:          str = "crewai_agent",
+        pipeline: "GovernancePipeline",
+        agent_id: str = "crewai_agent",
         decision_type_map: Optional[Dict[str, DecisionType]] = None,
-        confidence:        float = 1.0,
+        confidence: float = 1.0,
     ):
-        self.pipeline          = pipeline
-        self.agent_id          = agent_id
+        self.pipeline = pipeline
+        self.agent_id = agent_id
         self.decision_type_map = decision_type_map or {}
-        self.confidence        = confidence
+        self.confidence = confidence
 
     def wrap_tools(self, tools: List) -> List:
         """Wrap CrewAI BaseTool instances with governance."""
@@ -267,49 +275,53 @@ class CrewAIAdapter:
         @functools.wraps(original_execute)
         def governed_execute(*args, **kwargs):
             description = getattr(task, "description", "")
-            agent_role  = ""
+            agent_role = ""
             if hasattr(task, "agent") and task.agent:
                 agent_role = getattr(task.agent, "role", "")
             payload = {
                 "task_description": str(description)[:2000],
-                "agent_role":       str(agent_role),
-                "task_type":        "crewai_task",
+                "agent_role": str(agent_role),
+                "task_type": "crewai_task",
             }
-            dtype   = _infer_decision_type(description)
-            ctx     = DecisionContext(confidence=adapter.confidence,
-                                      source_system="crewai_task")
+            dtype = _infer_decision_type(description)
+            ctx = DecisionContext(confidence=adapter.confidence, source_system="crewai_task")
             request = DecisionRequest(
-                agent_id=adapter.agent_id, decision_type=dtype,
-                payload=payload, context=ctx,
+                agent_id=adapter.agent_id,
+                decision_type=dtype,
+                payload=payload,
+                context=ctx,
             )
             response = adapter.pipeline.process(request)
             if response.final_status == FinalStatus.BLOCKED:
                 raise GovernanceBlockedError(
-                    "crewai_task", response.policy_violations, response.decision_id)
+                    "crewai_task", response.policy_violations, response.decision_id
+                )
             return original_execute(*args, **kwargs)
 
         @functools.wraps(original_aexecute or original_execute)
         async def governed_aexecute(*args, **kwargs):
             description = getattr(task, "description", "")
-            agent_role  = ""
+            agent_role = ""
             if hasattr(task, "agent") and task.agent:
                 agent_role = getattr(task.agent, "role", "")
             payload = {
                 "task_description": str(description)[:2000],
-                "agent_role":       str(agent_role),
-                "task_type":        "crewai_task",
+                "agent_role": str(agent_role),
+                "task_type": "crewai_task",
             }
-            dtype   = _infer_decision_type(description)
-            ctx     = DecisionContext(confidence=adapter.confidence,
-                                      source_system="crewai_task_async")
+            dtype = _infer_decision_type(description)
+            ctx = DecisionContext(confidence=adapter.confidence, source_system="crewai_task_async")
             request = DecisionRequest(
-                agent_id=adapter.agent_id, decision_type=dtype,
-                payload=payload, context=ctx,
+                agent_id=adapter.agent_id,
+                decision_type=dtype,
+                payload=payload,
+                context=ctx,
             )
             response = await adapter.pipeline.process_async(request)
             if response.final_status == FinalStatus.BLOCKED:
                 raise GovernanceBlockedError(
-                    "crewai_task", response.policy_violations, response.decision_id)
+                    "crewai_task", response.policy_violations, response.decision_id
+                )
             return await _await_or_run_sync(original_aexecute or original_execute, *args, **kwargs)
 
         task.execute = governed_execute
@@ -336,21 +348,23 @@ class CrewAIAdapter:
             except (json.JSONDecodeError, AttributeError):
                 payload_data = {}
             payload = {
-                "tool_name":  tool_name,
+                "tool_name": tool_name,
                 "tool_input": str(tool_input)[:2000],
                 **payload_data,
             }
-            dtype   = adapter.decision_type_map.get(tool_name) or _infer_decision_type(tool_name)
-            ctx     = DecisionContext(confidence=adapter.confidence,
-                                      source_system="crewai_tool")
+            dtype = adapter.decision_type_map.get(tool_name) or _infer_decision_type(tool_name)
+            ctx = DecisionContext(confidence=adapter.confidence, source_system="crewai_tool")
             request = DecisionRequest(
-                agent_id=adapter.agent_id, decision_type=dtype,
-                payload=payload, context=ctx,
+                agent_id=adapter.agent_id,
+                decision_type=dtype,
+                payload=payload,
+                context=ctx,
             )
             response = adapter.pipeline.process(request)
             if response.final_status == FinalStatus.BLOCKED:
                 raise GovernanceBlockedError(
-                    tool_name, response.policy_violations, response.decision_id)
+                    tool_name, response.policy_violations, response.decision_id
+                )
             return original_run(tool_input, **kwargs)
 
         @functools.wraps(original_run)
@@ -360,24 +374,26 @@ class CrewAIAdapter:
             except (json.JSONDecodeError, AttributeError):
                 payload_data = {}
             payload = {
-                "tool_name":  tool_name,
+                "tool_name": tool_name,
                 "tool_input": str(tool_input)[:2000],
                 **payload_data,
             }
-            dtype    = adapter.decision_type_map.get(tool_name) or _infer_decision_type(tool_name)
-            ctx      = DecisionContext(confidence=adapter.confidence,
-                                       source_system="crewai_tool_async")
-            request  = DecisionRequest(
-                agent_id=adapter.agent_id, decision_type=dtype,
-                payload=payload, context=ctx,
+            dtype = adapter.decision_type_map.get(tool_name) or _infer_decision_type(tool_name)
+            ctx = DecisionContext(confidence=adapter.confidence, source_system="crewai_tool_async")
+            request = DecisionRequest(
+                agent_id=adapter.agent_id,
+                decision_type=dtype,
+                payload=payload,
+                context=ctx,
             )
             response = await adapter.pipeline.process_async(request)
             if response.final_status == FinalStatus.BLOCKED:
                 raise GovernanceBlockedError(
-                    tool_name, response.policy_violations, response.decision_id)
+                    tool_name, response.policy_violations, response.decision_id
+                )
             return await _await_or_run_sync(original_arun or original_run, tool_input, **kwargs)
 
-        tool._run  = governed_run
+        tool._run = governed_run
         if hasattr(tool, "_arun"):
             tool._arun = governed_arun
 
@@ -387,6 +403,7 @@ class CrewAIAdapter:
 # ══════════════════════════════════════════════════════════════════════════════
 # OPENAI AGENTS SDK ADAPTER
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class OpenAIAgentsAdapter:
     """
@@ -411,50 +428,58 @@ class OpenAIAgentsAdapter:
 
     def __init__(
         self,
-        pipeline:  "GovernancePipeline",
-        agent_id:  str = "openai_agent",
+        pipeline: "GovernancePipeline",
+        agent_id: str = "openai_agent",
         confidence: float = 1.0,
     ):
-        self.pipeline   = pipeline
-        self.agent_id   = agent_id
+        self.pipeline = pipeline
+        self.agent_id = agent_id
         self.confidence = confidence
 
     def govern(self, decision_type: DecisionType = DecisionType.CUSTOM):
         """Decorator: add governance to any function tool."""
+
         def decorator(fn):
             @functools.wraps(fn)
             def wrapper(*args, **kwargs):
                 payload = {"function_name": fn.__name__, **kwargs}
                 if args:
                     payload["args"] = list(args)
-                ctx     = DecisionContext(confidence=self.confidence,
-                                          source_system="openai_agents")
+                ctx = DecisionContext(confidence=self.confidence, source_system="openai_agents")
                 request = DecisionRequest(
-                    agent_id=self.agent_id, decision_type=decision_type,
-                    payload=payload, context=ctx,
+                    agent_id=self.agent_id,
+                    decision_type=decision_type,
+                    payload=payload,
+                    context=ctx,
                 )
                 response = self.pipeline.process(request)
                 if response.final_status == FinalStatus.BLOCKED:
                     raise GovernanceBlockedError(
-                        fn.__name__, response.policy_violations, response.decision_id)
+                        fn.__name__, response.policy_violations, response.decision_id
+                    )
                 return fn(*args, **kwargs)
 
             @functools.wraps(fn)
             async def async_wrapper(*args, **kwargs):
-                payload  = {"function_name": fn.__name__, **kwargs}
-                ctx      = DecisionContext(confidence=self.confidence,
-                                           source_system="openai_agents_async")
-                request  = DecisionRequest(
-                    agent_id=self.agent_id, decision_type=decision_type,
-                    payload=payload, context=ctx,
+                payload = {"function_name": fn.__name__, **kwargs}
+                ctx = DecisionContext(
+                    confidence=self.confidence, source_system="openai_agents_async"
+                )
+                request = DecisionRequest(
+                    agent_id=self.agent_id,
+                    decision_type=decision_type,
+                    payload=payload,
+                    context=ctx,
                 )
                 response = await self.pipeline.process_async(request)
                 if response.final_status == FinalStatus.BLOCKED:
                     raise GovernanceBlockedError(
-                        fn.__name__, response.policy_violations, response.decision_id)
+                        fn.__name__, response.policy_violations, response.decision_id
+                    )
                 return await _await_or_run_sync(fn, *args, **kwargs)
 
             return async_wrapper if inspect.iscoroutinefunction(fn) else wrapper
+
         return decorator
 
     def wrap_functions(self, functions: list) -> list:
@@ -465,6 +490,7 @@ class OpenAIAgentsAdapter:
 # ══════════════════════════════════════════════════════════════════════════════
 # PYDANTIC AI ADAPTER
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class PydanticAIAdapter:
     """
@@ -490,16 +516,17 @@ class PydanticAIAdapter:
 
     def __init__(
         self,
-        pipeline:  "GovernancePipeline",
-        agent_id:  str   = "pydantic_agent",
+        pipeline: "GovernancePipeline",
+        agent_id: str = "pydantic_agent",
         confidence: float = 1.0,
     ):
-        self.pipeline   = pipeline
-        self.agent_id   = agent_id
+        self.pipeline = pipeline
+        self.agent_id = agent_id
         self.confidence = confidence
 
     def govern(self, decision_type: DecisionType = DecisionType.CUSTOM):
         """Decorator: add governance to any PydanticAI tool function."""
+
         def decorator(fn):
             @functools.wraps(fn)
             async def async_wrapper(*args, **kwargs):
@@ -510,19 +537,25 @@ class PydanticAIAdapter:
                         payload.update(arg.model_dump())
                     elif hasattr(arg, "dict"):
                         payload.update(arg.dict())
-                payload.update({k: (v.model_dump() if hasattr(v, "model_dump") else v)
-                                for k, v in kwargs.items()})
+                payload.update(
+                    {
+                        k: (v.model_dump() if hasattr(v, "model_dump") else v)
+                        for k, v in kwargs.items()
+                    }
+                )
 
-                ctx     = DecisionContext(confidence=self.confidence,
-                                          source_system="pydanticai")
+                ctx = DecisionContext(confidence=self.confidence, source_system="pydanticai")
                 request = DecisionRequest(
-                    agent_id=self.agent_id, decision_type=decision_type,
-                    payload=payload, context=ctx,
+                    agent_id=self.agent_id,
+                    decision_type=decision_type,
+                    payload=payload,
+                    context=ctx,
                 )
                 response = await self.pipeline.process_async(request)
                 if response.final_status == FinalStatus.BLOCKED:
                     raise GovernanceBlockedError(
-                        fn.__name__, response.policy_violations, response.decision_id)
+                        fn.__name__, response.policy_violations, response.decision_id
+                    )
 
                 return await _await_or_run_sync(fn, *args, **kwargs)
 
@@ -534,21 +567,28 @@ class PydanticAIAdapter:
                         payload.update(arg.model_dump())
                     elif hasattr(arg, "dict"):
                         payload.update(arg.dict())
-                payload.update({k: (v.model_dump() if hasattr(v, "model_dump") else v)
-                                for k, v in kwargs.items()})
-                ctx     = DecisionContext(confidence=self.confidence,
-                                          source_system="pydanticai_sync")
+                payload.update(
+                    {
+                        k: (v.model_dump() if hasattr(v, "model_dump") else v)
+                        for k, v in kwargs.items()
+                    }
+                )
+                ctx = DecisionContext(confidence=self.confidence, source_system="pydanticai_sync")
                 request = DecisionRequest(
-                    agent_id=self.agent_id, decision_type=decision_type,
-                    payload=payload, context=ctx,
+                    agent_id=self.agent_id,
+                    decision_type=decision_type,
+                    payload=payload,
+                    context=ctx,
                 )
                 response = self.pipeline.process(request)
                 if response.final_status == FinalStatus.BLOCKED:
                     raise GovernanceBlockedError(
-                        fn.__name__, response.policy_violations, response.decision_id)
+                        fn.__name__, response.policy_violations, response.decision_id
+                    )
                 return fn(*args, **kwargs)
 
             return async_wrapper if inspect.iscoroutinefunction(fn) else sync_wrapper
+
         return decorator
 
     def wrap_tools(self, tools: list) -> list:

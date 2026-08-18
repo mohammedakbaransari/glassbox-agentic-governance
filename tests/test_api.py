@@ -7,6 +7,7 @@ prefix, the Prometheus /metrics endpoint, and the OpenAPI spec endpoint.
 
 Run: python -m pytest tests/test_api.py -v
 """
+
 from __future__ import annotations
 
 import json
@@ -22,8 +23,8 @@ from glassbox.api.app import create_app
 from glassbox.governance.models import DecisionType
 from glassbox.governance.pipeline import GovernancePipeline
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _make_app(**kw):
     """Create a test Flask app with auth and tenant-scoping disabled."""
@@ -43,9 +44,10 @@ def _proc_body(agent="api-test-agent", amount=5000, dtype="procurement"):
 # 1. HEALTH & READINESS
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestHealthReady(unittest.TestCase):
     def setUp(self):
-        self.app    = _make_app()
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def test_health_returns_200(self):
@@ -60,7 +62,9 @@ class TestHealthReady(unittest.TestCase):
     def test_health_version_is_not_hardcoded_old(self):
         resp = self.client.get("/health")
         data = resp.get_json()
-        self.assertNotEqual(data.get("version"), "1.0.0", "version must not be the old hardcoded value")
+        self.assertNotEqual(
+            data.get("version"), "1.0.0", "version must not be the old hardcoded value"
+        )
 
     def test_ready_returns_200(self):
         resp = self.client.get("/ready")
@@ -81,9 +85,10 @@ class TestHealthReady(unittest.TestCase):
 # 2. SUBMIT DECISION (POST /decisions)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSubmitDecision(unittest.TestCase):
     def setUp(self):
-        self.app    = _make_app()
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def _post(self, body, content_type="application/json"):
@@ -167,8 +172,14 @@ class TestSubmitDecision(unittest.TestCase):
             body = {
                 "agent_id": "type-test-agent",
                 "decision_type": dtype,
-                "payload": {"amount": 100, "action": "test", "target": "svc",
-                            "new_price": 10.0, "quantity": 1, "notional": 100},
+                "payload": {
+                    "amount": 100,
+                    "action": "test",
+                    "target": "svc",
+                    "new_price": 10.0,
+                    "quantity": 1,
+                    "notional": 100,
+                },
             }
             resp = self._post(body)
             self.assertIn(resp.status_code, [200], f"Failed for decision_type={dtype}")
@@ -178,9 +189,10 @@ class TestSubmitDecision(unittest.TestCase):
 # 3. BODY SIZE LIMIT
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestBodySizeLimit(unittest.TestCase):
     def setUp(self):
-        self.app    = _make_app()
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def test_oversized_single_decision_rejected(self):
@@ -212,11 +224,12 @@ class TestBodySizeLimit(unittest.TestCase):
 # 4. AUTH ENFORCEMENT
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestAuthEnforcement(unittest.TestCase):
     def setUp(self):
         os.environ["GLASSBOX_API_KEY"] = "test-key-secret"
-        pipeline    = GovernancePipeline(echo=False, environment="testing")
-        self.app    = create_app(pipeline=pipeline, testing=False, auth_required=True)
+        pipeline = GovernancePipeline(echo=False, environment="testing")
+        self.app = create_app(pipeline=pipeline, testing=False, auth_required=True)
         self.client = self.app.test_client()
 
     def tearDown(self):
@@ -247,9 +260,10 @@ class TestAuthEnforcement(unittest.TestCase):
 # 5. SIMULATE ENDPOINT
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSimulate(unittest.TestCase):
     def setUp(self):
-        self.app    = _make_app()
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def test_simulate_returns_200(self):
@@ -283,9 +297,10 @@ class TestSimulate(unittest.TestCase):
 # 6. PROMETHEUS METRICS
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestMetricsEndpoint(unittest.TestCase):
     def setUp(self):
-        self.app    = _make_app()
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def test_metrics_returns_200(self):
@@ -298,7 +313,9 @@ class TestMetricsEndpoint(unittest.TestCase):
 
     def test_metrics_contains_glassbox_decisions_total(self):
         # Submit a decision first
-        self.client.post("/decisions", data=json.dumps(_proc_body()), content_type="application/json")
+        self.client.post(
+            "/decisions", data=json.dumps(_proc_body()), content_type="application/json"
+        )
         resp = self.client.get("/metrics")
         self.assertIn("glassbox_decisions_total", resp.data.decode())
 
@@ -321,9 +338,10 @@ class TestMetricsEndpoint(unittest.TestCase):
 # 7. OPENAPI SPEC
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestOpenAPISpec(unittest.TestCase):
     def setUp(self):
-        self.app    = _make_app()
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def test_openapi_returns_200(self):
@@ -355,9 +373,10 @@ class TestOpenAPISpec(unittest.TestCase):
 # 8. /v1/ BLUEPRINT PREFIX
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestV1Blueprint(unittest.TestCase):
     def setUp(self):
-        self.app    = _make_app()
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def test_v1_health_returns_200(self):
@@ -398,9 +417,10 @@ class TestV1Blueprint(unittest.TestCase):
 # 9. POLICIES / CONTRACTS / ECOSYSTEM
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestPoliciesContractsEcosystem(unittest.TestCase):
     def setUp(self):
-        self.app    = _make_app()
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def test_policies_returns_200(self):
@@ -431,9 +451,10 @@ class TestPoliciesContractsEcosystem(unittest.TestCase):
 # 10. VELOCITY & ANOMALY ENDPOINTS
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestVelocityAnomalyEndpoints(unittest.TestCase):
     def setUp(self):
-        self.app    = _make_app()
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def test_velocity_returns_200(self):
@@ -457,9 +478,10 @@ class TestVelocityAnomalyEndpoints(unittest.TestCase):
 # 11. BATCH ENDPOINT
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestBatchEndpoint(unittest.TestCase):
     def setUp(self):
-        self.app    = _make_app()
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def _batch(self, decisions, **extra):
@@ -488,7 +510,10 @@ class TestBatchEndpoint(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
 
     def test_batch_invalid_entry_captured_as_error(self):
-        decisions = [_proc_body(), {"agent_id": "", "decision_type": "procurement", "payload": {"amount": 1}}]
+        decisions = [
+            _proc_body(),
+            {"agent_id": "", "decision_type": "procurement", "payload": {"amount": 1}},
+        ]
         resp = self._batch(decisions)
         data = resp.get_json()
         self.assertGreater(len(data["errors"]), 0)
@@ -498,9 +523,10 @@ class TestBatchEndpoint(unittest.TestCase):
 # 12. DECISION LOOKUP / REPLAY
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestDecisionLookup(unittest.TestCase):
     def setUp(self):
-        self.app    = _make_app()
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def test_get_nonexistent_decision_returns_404(self):
@@ -549,9 +575,10 @@ class TestDecisionLookup(unittest.TestCase):
 # 13. STATS
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestStats(unittest.TestCase):
     def setUp(self):
-        self.app    = _make_app()
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def test_stats_returns_200(self):
@@ -567,10 +594,13 @@ class TestStats(unittest.TestCase):
 # 14. CORS HEADERS
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestCORSHeaders(unittest.TestCase):
     def setUp(self):
-        os.environ["GLASSBOX_CORS_ORIGINS"] = "https://dashboard.example.com,https://admin.example.com"
-        self.app    = _make_app()
+        os.environ["GLASSBOX_CORS_ORIGINS"] = (
+            "https://dashboard.example.com,https://admin.example.com"
+        )
+        self.app = _make_app()
         self.client = self.app.test_client()
 
     def tearDown(self):

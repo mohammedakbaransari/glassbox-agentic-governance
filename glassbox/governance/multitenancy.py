@@ -35,15 +35,18 @@ import os
 import re
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from glassbox.governance.anomaly_detector import AnomalyDetector
-from glassbox.governance.audit_logger     import AuditLogger
-from glassbox.governance.models           import (
-    DecisionContext, DecisionRequest, DecisionResponse,
-    DecisionType, FinalStatus,
+from glassbox.governance.audit_logger import AuditLogger
+from glassbox.governance.models import (
+    DecisionContext,
+    DecisionRequest,
+    DecisionResponse,
+    DecisionType,
+    FinalStatus,
 )
-from glassbox.governance.policy_engine    import Policy, PolicyEngine
+from glassbox.governance.policy_engine import Policy, PolicyEngine
 from glassbox.governance.velocity_breaker import VelocityBreaker
 
 if TYPE_CHECKING:
@@ -72,15 +75,16 @@ def _resolve_tenant_log_dir(log_dir: Optional[str], tenant_id: str) -> Optional[
 
     try:
         candidate.relative_to(base)
-    except ValueError:
+    except ValueError as exc:
         raise ValueError(
             f"tenant_id {tenant_id!r} resolves to '{candidate}' which is outside "
             f"the configured log directory '{base}'"
-        )
+        ) from exc
     return str(candidate)
 
 
 # ── Per-tenant component bundle ────────────────────────────────────────────────
+
 
 class TenantComponents:
     """
@@ -90,30 +94,30 @@ class TenantComponents:
 
     def __init__(
         self,
-        tenant_id:         str,
-        base_policies:     Optional[List[Policy]] = None,
-        velocity_config:   Optional[Dict]         = None,
-        anomaly_config:    Optional[Dict]         = None,
-        log_dir:           Optional[str]          = None,
+        tenant_id: str,
+        base_policies: Optional[List[Policy]] = None,
+        velocity_config: Optional[Dict] = None,
+        anomaly_config: Optional[Dict] = None,
+        log_dir: Optional[str] = None,
     ):
-        self.tenant_id       = tenant_id
-        vel_cfg              = velocity_config or {}
-        anom_cfg             = anomaly_config  or {}
+        self.tenant_id = tenant_id
+        vel_cfg = velocity_config or {}
+        anom_cfg = anomaly_config or {}
 
         # Each tenant gets its own isolated instances
-        self.policy_engine    = PolicyEngine(policies=base_policies)
+        self.policy_engine = PolicyEngine(policies=base_policies)
         self.velocity_breaker = VelocityBreaker(
-            max_decisions        = vel_cfg.get("max_decisions", 100),
-            window_seconds       = vel_cfg.get("window_seconds", 60),
-            cooldown_seconds     = vel_cfg.get("cooldown_seconds", 300),
-            ecosystem_max        = vel_cfg.get("ecosystem_max", 1000),
-            ecosystem_window_seconds   = vel_cfg.get("ecosystem_window_seconds", 60),
-            ecosystem_cooldown_seconds = vel_cfg.get("ecosystem_cooldown_seconds", 120),
+            max_decisions=vel_cfg.get("max_decisions", 100),
+            window_seconds=vel_cfg.get("window_seconds", 60),
+            cooldown_seconds=vel_cfg.get("cooldown_seconds", 300),
+            ecosystem_max=vel_cfg.get("ecosystem_max", 1000),
+            ecosystem_window_seconds=vel_cfg.get("ecosystem_window_seconds", 60),
+            ecosystem_cooldown_seconds=vel_cfg.get("ecosystem_cooldown_seconds", 120),
         )
         self.anomaly_detector = AnomalyDetector(
-            z_threshold  = anom_cfg.get("z_threshold", 3.0),
-            min_samples  = anom_cfg.get("min_samples", 10),
-            window_size  = anom_cfg.get("window_size", 50),
+            z_threshold=anom_cfg.get("z_threshold", 3.0),
+            min_samples=anom_cfg.get("min_samples", 10),
+            window_size=anom_cfg.get("window_size", 50),
         )
         # Tenant-specific audit log directory
         tenant_log = _resolve_tenant_log_dir(log_dir, tenant_id)
@@ -125,6 +129,7 @@ class TenantComponents:
 
 
 # ── Tenant Registry ────────────────────────────────────────────────────────────
+
 
 class TenantRegistry:
     """
@@ -154,24 +159,22 @@ class TenantRegistry:
 
     def __init__(
         self,
-        base_policies:   Optional[List[Policy]] = None,
-        velocity_config: Optional[Dict]         = None,
-        anomaly_config:  Optional[Dict]         = None,
-        log_dir:         Optional[str]          = None,
-        max_tenants:     int                    = 10_000,
-        tenant_id_pattern: Optional[str]        = None,
+        base_policies: Optional[List[Policy]] = None,
+        velocity_config: Optional[Dict] = None,
+        anomaly_config: Optional[Dict] = None,
+        log_dir: Optional[str] = None,
+        max_tenants: int = 10_000,
+        tenant_id_pattern: Optional[str] = None,
     ):
-        self._base_policies   = base_policies
+        self._base_policies = base_policies
         self._velocity_config = velocity_config
-        self._anomaly_config  = anomaly_config
-        self._log_dir         = log_dir
-        self._max_tenants     = max_tenants
-        self._tenant_id_pattern = re.compile(
-            tenant_id_pattern or r'^[a-z0-9_-]{3,64}$'
-        )
+        self._anomaly_config = anomaly_config
+        self._log_dir = log_dir
+        self._max_tenants = max_tenants
+        self._tenant_id_pattern = re.compile(tenant_id_pattern or r"^[a-z0-9_-]{3,64}$")
         self._tenants: Dict[str, TenantComponents] = {}
         self._tenant_last_access: Dict[str, float] = {}
-        self._lock    = threading.RLock()
+        self._lock = threading.RLock()
 
         log_module = __import__("glassbox.governance.logging_manager", fromlist=["get_logger"])
         get_logger = log_module.get_logger
@@ -259,14 +262,15 @@ class TenantRegistry:
     def evict_inactive(self, inactive_after_sec: int = 3600) -> int:
         """
         Evict tenants that haven't been accessed recently (LRU eviction).
-        
+
         Returns:
             int: number of tenants evicted
         """
         now = time.time()
         with self._lock:
             inactive = [
-                tid for tid, last_access in self._tenant_last_access.items()
+                tid
+                for tid, last_access in self._tenant_last_access.items()
                 if now - last_access > inactive_after_sec
             ]
 
@@ -307,14 +311,15 @@ class TenantRegistry:
         comp = self.get(tenant_id)
         stats = comp.audit_logger.summary_stats()
         return {
-            "tenant_id":  tenant_id,
-            "decisions":  stats.get("total", 0),
+            "tenant_id": tenant_id,
+            "decisions": stats.get("total", 0),
             "block_rate": stats.get("block_rate_pct", 0),
-            "policies":   len(comp.policy_engine.policies),
+            "policies": len(comp.policy_engine.policies),
         }
 
 
 # ── Multi-Tenant Pipeline ─────────────────────────────────────────────────────
+
 
 class MultiTenantPipeline:
     """
@@ -338,11 +343,11 @@ class MultiTenantPipeline:
 
     def __init__(
         self,
-        registry:         TenantRegistry,
+        registry: TenantRegistry,
         base_pipeline_fn: Callable[[TenantComponents], "GovernancePipeline"],
     ):
-        self.registry          = registry
-        self._pipeline_fn      = base_pipeline_fn
+        self.registry = registry
+        self._pipeline_fn = base_pipeline_fn
         self._pipelines: Dict[str, "GovernancePipeline"] = {}
         self._lock = threading.RLock()
 
@@ -357,7 +362,7 @@ class MultiTenantPipeline:
 
     def process(
         self,
-        request:   DecisionRequest,
+        request: DecisionRequest,
         tenant_id: str,
     ) -> DecisionResponse:
         """
@@ -375,15 +380,14 @@ class MultiTenantPipeline:
             request.context.metadata = copy.deepcopy(request.context.metadata or {})
             request.context.metadata["tenant_id"] = tenant_id
         else:
-            request.context = DecisionContext(
-                metadata={"tenant_id": tenant_id})
+            request.context = DecisionContext(metadata={"tenant_id": tenant_id})
 
         pipeline = self._get_pipeline(tenant_id)
         return pipeline.process(request)
 
     async def process_async(
         self,
-        request:   DecisionRequest,
+        request: DecisionRequest,
         tenant_id: str,
     ) -> DecisionResponse:
         # Deep-copy — same isolation guarantee as the sync path above.
@@ -413,13 +417,14 @@ class MultiTenantPipeline:
     def health(self) -> Dict[str, Any]:
         tenants = self.list_tenants()
         return {
-            "status":       "healthy",
+            "status": "healthy",
             "active_tenants": len(tenants),
-            "tenant_ids":   tenants,
+            "tenant_ids": tenants,
         }
 
 
 # ── Context Isolation Validator ────────────────────────────────────────────────
+
 
 class ContextIsolationValidator:
     """
@@ -439,16 +444,16 @@ class ContextIsolationValidator:
         Verify that each tenant has its own component instances.
         Returns a report confirming (or denying) isolation.
         """
-        issues  = []
+        issues = []
         checked = {}
 
         for tid in tenant_ids:
             comps = self.registry.get(tid)
             checked[tid] = {
-                "policy_engine_id":    id(comps.policy_engine),
+                "policy_engine_id": id(comps.policy_engine),
                 "velocity_breaker_id": id(comps.velocity_breaker),
                 "anomaly_detector_id": id(comps.anomaly_detector),
-                "audit_logger_id":     id(comps.audit_logger),
+                "audit_logger_id": id(comps.audit_logger),
             }
 
         # Check no two tenants share the same component instance
@@ -460,13 +465,11 @@ class ContextIsolationValidator:
 
         for key, tids in all_ids.items():
             if len(tids) > 1:
-                issues.append(
-                    f"Shared {key.split(':')[0]} instance between tenants: {tids}"
-                )
+                issues.append(f"Shared {key.split(':')[0]} instance between tenants: {tids}")
 
         return {
-            "all_isolated":  len(issues) == 0,
-            "issues":        issues,
+            "all_isolated": len(issues) == 0,
+            "issues": issues,
             "tenants_checked": len(tenant_ids),
             "component_map": checked,
         }

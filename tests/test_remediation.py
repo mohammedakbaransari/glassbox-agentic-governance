@@ -85,7 +85,9 @@ class TestRemediationCoverage(unittest.TestCase):
         )
 
         self.assertEqual(response.final_status, FinalStatus.BLOCKED)
-        self.assertTrue(any("Custom stage blocked request" in v for v in response.policy_violations))
+        self.assertTrue(
+            any("Custom stage blocked request" in v for v in response.policy_violations)
+        )
         self.assertEqual(registry.stats()["execution_stats"].get("custom_guard:blocked"), 1)
 
     def test_async_queue_monitor_drains_completed_work(self):
@@ -117,7 +119,9 @@ class TestRemediationCoverage(unittest.TestCase):
                 )
             ).audit_record
             record.final_status = FinalStatus.PENDING_REVIEW
-            record.policy_result = PolicyResult(passed=True, violations=[], warnings=["needs review"])
+            record.policy_result = PolicyResult(
+                passed=True, violations=[], warnings=["needs review"]
+            )
             record.risk_result = RiskResult(
                 risk_score=55.0,
                 risk_level=RiskLevel.MEDIUM,
@@ -140,7 +144,9 @@ class TestRemediationCoverage(unittest.TestCase):
             )
 
             self.assertIsNotNone(recovered_wal.get_entry(entry.entry_id))
-            self.assertEqual(recovered_wal.get_entry(entry.entry_id).decision_id, record.decision_id)
+            self.assertEqual(
+                recovered_wal.get_entry(entry.entry_id).decision_id, record.decision_id
+            )
             self.assertEqual(recovered_wal.get_pending_entries(), [])
             self.assertEqual(replay_repo.records, [record.decision_id])
             self.assertEqual(len(workflow_engine.calls), 1)

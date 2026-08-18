@@ -50,9 +50,12 @@ For module READMEs, keep sections short and actionable.
 
 ## Versioning Guidance
 
-- Canonical version source is `pyproject.toml`.
-- Avoid embedding legacy version matrices unless actively maintained.
-- If version-specific docs are introduced, ensure each version folder is complete and link-checked.
+- This is a single, unreleased codebase — do not add version numbers,
+  version badges, or "as of vX.Y.Z" framing to documentation.
+- Do not describe current behavior as a change relative to an earlier
+  release; state what the code does today.
+- Canonical package version (for packaging/build purposes only) is
+  `pyproject.toml`; it should not appear in prose documentation.
 
 ## Link and Reference Rules
 
@@ -75,7 +78,7 @@ For module READMEs, keep sections short and actionable.
 
 - [ ] Commands are valid for current repo layout.
 - [ ] No stale file/test references.
-- [ ] Version mentions match `pyproject.toml`.
+- [ ] No version numbers, badges, or "vX.Y.Z" framing added to prose.
 - [ ] API docs match implemented routes.
 - [ ] Related links resolve.
 - [ ] Grammar/spelling pass completed.

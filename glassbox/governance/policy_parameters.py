@@ -71,9 +71,7 @@ class PolicyParameterStore:
         # For :memory: databases we must hold a single persistent connection
         # because each new sqlite3.connect(":memory:") creates a fresh database.
         self._conn: Optional[sqlite3.Connection] = (
-            sqlite3.connect(":memory:", check_same_thread=False)
-            if db_path == ":memory:"
-            else None
+            sqlite3.connect(":memory:", check_same_thread=False) if db_path == ":memory:" else None
         )
         self._init_db()
 
@@ -112,8 +110,7 @@ class PolicyParameterStore:
 
         conn = self._connect()
         row = conn.execute(
-            "SELECT value FROM policy_params "
-            "WHERE policy_id = ? AND param_name = ?",
+            "SELECT value FROM policy_params " "WHERE policy_id = ? AND param_name = ?",
             (policy_id, param_name),
         ).fetchone()
 
@@ -156,7 +153,10 @@ class PolicyParameterStore:
 
         log.info(
             "Policy parameter updated: %s.%s = %r  (by %s)",
-            policy_id, param_name, value, updated_by,
+            policy_id,
+            param_name,
+            value,
+            updated_by,
         )
 
     def list_params(self, policy_id: Optional[str] = None) -> list[dict]:

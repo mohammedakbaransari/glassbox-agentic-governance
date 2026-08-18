@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from glassbox.governance.models import (
-    AuditRecord, DecisionContext, DecisionRequest,
-    DecisionResponse, FinalStatus,
+    AuditRecord,
+    DecisionContext,
+    DecisionRequest,
+    DecisionResponse,
+    FinalStatus,
 )
 
 if TYPE_CHECKING:
@@ -59,10 +62,10 @@ class DecisionReplay:
 
     def replay_many(
         self,
-        records:         List[AuditRecord],
-        stop_on_change:  bool = False,
-        parallel:        bool = False,
-        max_workers:     int  = 4,
+        records: List[AuditRecord],
+        stop_on_change: bool = False,
+        parallel: bool = False,
+        max_workers: int = 4,
     ) -> List[Dict[str, Any]]:
         """
         Replay a batch of historical records.
@@ -82,7 +85,7 @@ class DecisionReplay:
 
     def _replay_sequential(
         self,
-        records:        List[AuditRecord],
+        records: List[AuditRecord],
         stop_on_change: bool,
     ) -> List[Dict[str, Any]]:
         results = []
@@ -99,17 +102,15 @@ class DecisionReplay:
 
     def _replay_parallel(
         self,
-        records:        List[AuditRecord],
+        records: List[AuditRecord],
         stop_on_change: bool,
-        max_workers:    int,
+        max_workers: int,
     ) -> List[Dict[str, Any]]:
         results: List[Optional[Dict]] = [None] * len(records)
-        with ThreadPoolExecutor(max_workers=max_workers,
-                                thread_name_prefix="glassbox-replay") as pool:
-            futures = {
-                pool.submit(self.replay_one, rec): i
-                for i, rec in enumerate(records)
-            }
+        with ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="glassbox-replay"
+        ) as pool:
+            futures = {pool.submit(self.replay_one, rec): i for i, rec in enumerate(records)}
             for fut in as_completed(futures):
                 idx = futures[fut]
                 try:
@@ -139,7 +140,7 @@ class DecisionReplay:
 
     async def async_replay_many(
         self,
-        records:    List[AuditRecord],
+        records: List[AuditRecord],
         max_concurrency: int = 8,
     ) -> List[Dict[str, Any]]:
         """
@@ -178,31 +179,31 @@ class DecisionReplay:
 
     def _tag_replay(self, response: DecisionResponse, original_id: str) -> None:
         if response.audit_record:
-            response.audit_record.replay_of    = original_id
+            response.audit_record.replay_of = original_id
             response.audit_record.final_status = FinalStatus.REPLAYED
 
     def _compare_entry(
         self,
-        record:   AuditRecord,
+        record: AuditRecord,
         response: DecisionResponse,
     ) -> Dict[str, Any]:
         return {
-            "decision_id":        record.decision_id,
-            "agent_id":           record.agent_id,
-            "decision_type":      record.decision_type.value,
-            "original_status":    record.final_status.value if record.final_status else None,
-            "replayed_status":    response.final_status.value,
-            "outcome_changed":    record.final_status != response.final_status,
-            "original_risk":      record.risk_result.risk_score if record.risk_result else None,
-            "replayed_risk":      response.risk_score,
+            "decision_id": record.decision_id,
+            "agent_id": record.agent_id,
+            "decision_type": record.decision_type.value,
+            "original_status": record.final_status.value if record.final_status else None,
+            "replayed_status": response.final_status.value,
+            "outcome_changed": record.final_status != response.final_status,
+            "original_risk": record.risk_result.risk_score if record.risk_result else None,
+            "replayed_risk": response.risk_score,
             "replay_decision_id": response.decision_id,
         }
 
     def compare_summary(self, replay_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Summarise a batch replay result with per-type breakdown."""
-        total   = len(replay_results)
+        total = len(replay_results)
         changed = sum(1 for r in replay_results if r.get("outcome_changed"))
-        errors  = sum(1 for r in replay_results if "error" in r)
+        errors = sum(1 for r in replay_results if "error" in r)
 
         by_type: Dict[str, Dict[str, int]] = {}
         for r in replay_results:
@@ -216,10 +217,10 @@ class DecisionReplay:
                 by_type[t]["errors"] += 1
 
         return {
-            "total_replayed":      total,
-            "outcomes_unchanged":  total - changed - errors,
-            "outcomes_changed":    changed,
-            "errors":              errors,
-            "change_rate_pct":     round(changed / max(total, 1) * 100, 1),
-            "by_decision_type":    by_type,
+            "total_replayed": total,
+            "outcomes_unchanged": total - changed - errors,
+            "outcomes_changed": changed,
+            "errors": errors,
+            "change_rate_pct": round(changed / max(total, 1) * 100, 1),
+            "by_decision_type": by_type,
         }

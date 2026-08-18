@@ -24,17 +24,18 @@ log = get_logger("event_dispatcher")
 
 class CircuitBreakerState:
     """State machine for circuit breaker: CLOSED → OPEN → HALF_OPEN → CLOSED."""
+
     CLOSED = "closed"  # Normal operation
-    OPEN = "open"      # Failing; reject requests
+    OPEN = "open"  # Failing; reject requests
     HALF_OPEN = "half_open"  # Testing if recovered
 
 
 class ResilientEventDispatcher:
     """
     Wraps event bus with circuit breaker + fallback + observability.
-    
+
     Ensures that event publication failures don't block decision processing.
-    
+
     State machine:
       CLOSED (normal)
         ↓ [failure_threshold breaches]
@@ -43,7 +44,7 @@ class ResilientEventDispatcher:
       HALF_OPEN (testing recovery)
         ↓ [recovery_attempt succeeds] → CLOSED
         ↓ [recovery_attempt fails] → OPEN
-    
+
     Usage:
         dispatcher = ResilientEventDispatcher(
             event_bus=eventbus,
@@ -51,7 +52,7 @@ class ResilientEventDispatcher:
             max_failures=10,
             failure_timeout_sec=60,
         )
-        
+
         dispatcher.publish(my_event, event_type="DecisionExecuted")
     """
 
@@ -168,8 +169,7 @@ class ResilientEventDispatcher:
             if self._failure_count >= self.max_failures:
                 self._state = CircuitBreakerState.OPEN
                 log.critical(
-                    f"EventBus circuit breaker: OPEN "
-                    f"(after {self._failure_count} failures)",
+                    f"EventBus circuit breaker: OPEN " f"(after {self._failure_count} failures)",
                     extra={
                         "component": "event_dispatcher",
                         "failure_count": self._failure_count,
@@ -189,11 +189,9 @@ class ResilientEventDispatcher:
 
         # Invoke fallback logger
         try:
-            self.fallback_log_fn(
-                f"EventBus fallback: [{event_type}] {type(exc).__name__}: {exc}"
-            )
-        except Exception:
-            pass
+            self.fallback_log_fn(f"EventBus fallback: [{event_type}] {type(exc).__name__}: {exc}")
+        except Exception as fallback_exc:
+            log.debug("Fallback log function itself failed: %s", fallback_exc)
 
         return False
 

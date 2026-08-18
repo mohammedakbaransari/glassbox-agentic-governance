@@ -11,7 +11,7 @@ Impact:
   - Benefit: ~95% faster stats calculation for 50-100 item windows
 
 Reference:
-  Welford, B. P. (1962). "Note on a method for calculating corrected sums of 
+  Welford, B. P. (1962). "Note on a method for calculating corrected sums of
   squares and products." Technometrics 4(3):419–420.
 
 Author: Mohammed Akbar Ansari
@@ -23,53 +23,52 @@ import threading
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional, Tuple
 
-
 # Numeric fields monitored per decision type
 MONITORED_FIELDS: Dict[str, List[str]] = {
     "procurement": ["amount"],
-    "pricing":     ["new_price", "previous_price"],
-    "financial":   ["amount"],
-    "inventory":   ["quantity"],
-    "clinical":    ["dose_mg", "dosage_mg"],
-    "trading":     ["quantity", "notional_value"],
-    "content":     ["confidence"],           # generative AI confidence score
-    "legal":       ["contract_value"],       # contract authority amounts
-    "logistics":   [],
-    "it_ops":      [],
-    "hr":          [],
-    "custom":      [],
+    "pricing": ["new_price", "previous_price"],
+    "financial": ["amount"],
+    "inventory": ["quantity"],
+    "clinical": ["dose_mg", "dosage_mg"],
+    "trading": ["quantity", "notional_value"],
+    "content": ["confidence"],  # generative AI confidence score
+    "legal": ["contract_value"],  # contract authority amounts
+    "logistics": [],
+    "it_ops": [],
+    "hr": [],
+    "custom": [],
 }
 
 CATEGORICAL_FIELDS: Dict[str, List[str]] = {
     "procurement": ["supplier_id", "category", "urgency"],
-    "pricing":     ["product_id", "reason"],
-    "financial":   ["destination_account", "reference", "payment_method"],
-    "inventory":   ["product_id", "warehouse_id", "supplier_id"],
-    "logistics":   ["origin", "destination"],
-    "it_ops":      ["action", "target", "service_id"],
-    "hr":          ["action", "employee_id"],
-    "clinical":    ["drug_name", "drug_class"],
-    "trading":     ["symbol"],
-    "content":     ["topic", "content_category"],
-    "legal":       ["action"],
-    "custom":      [],
+    "pricing": ["product_id", "reason"],
+    "financial": ["destination_account", "reference", "payment_method"],
+    "inventory": ["product_id", "warehouse_id", "supplier_id"],
+    "logistics": ["origin", "destination"],
+    "it_ops": ["action", "target", "service_id"],
+    "hr": ["action", "employee_id"],
+    "clinical": ["drug_name", "drug_class"],
+    "trading": ["symbol"],
+    "content": ["topic", "content_category"],
+    "legal": ["action"],
+    "custom": [],
 }
 
 
 class RollingStatsWelford:
     """
     Maintains rolling mean and standard deviation using Welford's algorithm.
-    
+
     Time complexity:
     - add(value): O(1)
     - mean/std properties: O(1)
     - z_score: O(1)
-    
+
     Before (O(n) on each property access):
         mean:    sum(_values) / len(_values)
         std:     sqrt(sum((v - mean)^2 for v in _values) / (n-1))
         z_score: (value - mean) / std  (triggers 2 O(n) operations)
-    
+
     After (O(1) using Welford):
         All statistics updated incrementally as values are added.
         Window eviction handled with moment adjustments.
@@ -78,41 +77,41 @@ class RollingStatsWelford:
     def __init__(self, window_size: int = 50):
         self.window_size = window_size
         self._values: deque = deque(maxlen=window_size)
-        
+
         # Welford state (all private)
-        self._n = 0          # Total values added (ever)
-        self._mean = 0.0     # Running mean
-        self._M2 = 0.0       # Sum of squared differences (for variance)
-        self._count = 0      # Current count in window
-        self._sum = 0.0      # Sum of window values (for eviction tracking)
+        self._n = 0  # Total values added (ever)
+        self._mean = 0.0  # Running mean
+        self._M2 = 0.0  # Sum of squared differences (for variance)
+        self._count = 0  # Current count in window
+        self._sum = 0.0  # Sum of window values (for eviction tracking)
 
     def add(self, value: float):
         """Add value to rolling window, updating Welford state in O(1)."""
         value = float(value)
-        
+
         # If window is at max and we're about to overflow, remove oldest value
         if len(self._values) == self.window_size:
             old_value = self._values[0]
             self._adjust_remove(old_value)
-        
+
         # Add new value
         self._values.append(value)
         self._adjust_add(value)
 
     def _adjust_add(self, value: float):
         """Add value to Welford running stats (online algorithm).
-        
+
         Welford's method for computing mean and variance incrementally:
         - delta  = value - old_mean
         - new_mean = old_mean + delta / n   (where n is window size after adding)
         - M2 = M2 + delta * (value - new_mean)
-        
+
         Key fix: Use self._count (effective window size) not self._n (total ever added).
         This maintains O(1) mean updates even as window slides and values are evicted.
         """
         self._count += 1
         self._sum += value
-        
+
         # Welford delta method: mean update based on window size
         delta = value - self._mean
         self._mean += delta / self._count  # Use count (current window size), not _n
@@ -166,8 +165,8 @@ class RollingStatsWelford:
     def summary(self) -> Dict[str, Any]:
         return {
             "count": self.count,
-            "mean":  round(self.mean, 4) if self.mean is not None else None,
-            "std":   round(self.std, 4)  if self.std  is not None else None,
+            "mean": round(self.mean, 4) if self.mean is not None else None,
+            "std": round(self.std, 4) if self.std is not None else None,
         }
 
 
@@ -177,10 +176,11 @@ class CategoricalTracker:
     Flags values that are new or extremely rare — catches novel suppliers,
     unusual action types, unexpected product categories entering the system.
     """
+
     def __init__(self, min_samples: int = 20):
         self.min_samples = min_samples
         self._counts: Dict[str, int] = {}
-        self._total:  int = 0
+        self._total: int = 0
 
     def update(self, value: str) -> None:
         self._counts[value] = self._counts.get(value, 0) + 1
@@ -208,7 +208,7 @@ class CategoricalTracker:
 class AnomalyDetectorOptimized:
     """
     Z-score anomaly detection with Welford's algorithm for O(1) stats.
-    
+
     Tracks rolling per-agent/decision_type/field statistics.
     Flags decisions where any numeric field has |z-score| > threshold.
 
@@ -222,15 +222,15 @@ class AnomalyDetectorOptimized:
 
     def __init__(
         self,
-        z_threshold:       float = 3.0,
-        min_samples:       int   = 10,
-        window_size:       int   = 50,
-        track_categorical: bool  = True,
-        lock_pool_size:    int   = 16,
+        z_threshold: float = 3.0,
+        min_samples: int = 10,
+        window_size: int = 50,
+        track_categorical: bool = True,
+        lock_pool_size: int = 16,
     ):
-        self.z_threshold       = z_threshold
-        self.min_samples       = min_samples
-        self._window_size      = window_size
+        self.z_threshold = z_threshold
+        self.min_samples = min_samples
+        self._window_size = window_size
         self.track_categorical = track_categorical
         # Numeric field stats: key (agent_id, decision_type, field) -> RollingStatsWelford
         self._stats: Dict[Tuple, RollingStatsWelford] = defaultdict(
@@ -251,7 +251,7 @@ class AnomalyDetectorOptimized:
 
     def _get_lock(self, agent_id: str, decision_type: str) -> threading.RLock:
         """Hash (agent_id, decision_type) to a partition lock."""
-        h = hashlib.md5(f"{agent_id}:{decision_type}".encode()).digest()
+        h = hashlib.md5(f"{agent_id}:{decision_type}".encode(), usedforsecurity=False).digest()
         idx = int.from_bytes(h[:2], "big") % self._lock_pool_size
         return self._lock_pool[idx]
 
@@ -266,7 +266,7 @@ class AnomalyDetectorOptimized:
 
         Returns:
             (is_anomalous: bool, max_abs_z_score: float, anomalous_field_descriptions: List[str])
-        
+
         Performance: O(fields_monitored) with Welford's algorithm.
         """
         fields = MONITORED_FIELDS.get(decision_type, [])
@@ -395,19 +395,21 @@ class AnomalyDetectorOptimized:
             for v in historical_values:
                 self._stats[key].add(v)
 
-    def reset_agent(self, agent_id: str, decision_type: str = None) -> None:
+    def reset_agent(self, agent_id: str, decision_type: Optional[str] = None) -> None:
         """Reset rolling baselines for an agent (or specific type)."""
         # Must acquire all locks when resetting by agent (different partition per decision_type).
         for lock in self._lock_pool:
             with lock:
                 keys_to_del = [
-                    k for k in self._stats
+                    k
+                    for k in self._stats
                     if k[0] == agent_id and (decision_type is None or k[1] == decision_type)
                 ]
                 for k in keys_to_del:
                     del self._stats[k]
                 cat_keys_to_del = [
-                    k for k in self._cat_stats
+                    k
+                    for k in self._cat_stats
                     if k[0] == agent_id and (decision_type is None or k[1] == decision_type)
                 ]
                 for k in cat_keys_to_del:
@@ -429,6 +431,7 @@ class AnomalyDetectorOptimized:
 # Drop-in usage:
 #     store = RedisAnomalyStore(redis.Redis(), namespace="glassbox:anomaly")
 #     detector = DistributedAnomalyDetector(z_threshold=3.0, store=store)
+
 
 class RedisAnomalyStore:
     """
@@ -481,45 +484,41 @@ return {tostring(count), tostring(mean), tostring(M2)}
     def __init__(
         self,
         redis_client,
-        namespace: str  = "glassbox:anomaly",
+        namespace: str = "glassbox:anomaly",
         window_size: int = 50,
     ):
-        self.redis      = redis_client
-        self.namespace  = namespace
+        self.redis = redis_client
+        self.namespace = namespace
         self.window_size = window_size
-        self._script    = self.redis.register_script(self._LUA_WELFORD_UPDATE)
+        self._script = self.redis.register_script(self._LUA_WELFORD_UPDATE)
 
     def _key(self, agent_id: str, decision_type: str, field: str) -> str:
         return f"{self.namespace}:{agent_id}:{decision_type}:{field}"
 
-    def update_and_get(
-        self, agent_id: str, decision_type: str, field: str, value: float
-    ) -> tuple:
+    def update_and_get(self, agent_id: str, decision_type: str, field: str, value: float) -> tuple:
         """
         Atomically update Welford stats and return (count, mean, M2).
 
         The Lua script runs server-side so concurrent replicas cannot corrupt
         each other's state.
         """
-        key    = self._key(agent_id, decision_type, field)
+        key = self._key(agent_id, decision_type, field)
         result = self._script(keys=[key], args=[value, self.window_size])
-        count  = int(float(result[0]))
-        mean   = float(result[1])
-        M2     = float(result[2])
+        count = int(float(result[0]))
+        mean = float(result[1])
+        M2 = float(result[2])
         return count, mean, M2
 
-    def get(
-        self, agent_id: str, decision_type: str, field: str
-    ) -> tuple:
+    def get(self, agent_id: str, decision_type: str, field: str) -> tuple:
         """Return current (count, mean, M2) without updating."""
-        key    = self._key(agent_id, decision_type, field)
-        raw    = self.redis.hmget(key, "count", "mean", "M2")
-        count  = int(float(raw[0])) if raw[0] else 0
-        mean   = float(raw[1])      if raw[1] else 0.0
-        M2     = float(raw[2])      if raw[2] else 0.0
+        key = self._key(agent_id, decision_type, field)
+        raw = self.redis.hmget(key, "count", "mean", "M2")
+        count = int(float(raw[0])) if raw[0] else 0
+        mean = float(raw[1]) if raw[1] else 0.0
+        M2 = float(raw[2]) if raw[2] else 0.0
         return count, mean, M2
 
-    def reset(self, agent_id: str, decision_type: str = None) -> None:
+    def reset(self, agent_id: str, decision_type: Optional[str] = None) -> None:
         """Delete all stats keys for an agent (optionally scoped to decision_type)."""
         pattern = (
             f"{self.namespace}:{agent_id}:{decision_type}:*"
@@ -550,11 +549,11 @@ class DistributedAnomalyDetector(AnomalyDetectorOptimized):
     def __init__(
         self,
         store: "RedisAnomalyStore",
-        z_threshold:       float = 3.0,
-        min_samples:       int   = 10,
-        window_size:       int   = 50,
-        track_categorical: bool  = True,
-        fallback_mode:     bool  = True,
+        z_threshold: float = 3.0,
+        min_samples: int = 10,
+        window_size: int = 50,
+        track_categorical: bool = True,
+        fallback_mode: bool = True,
     ):
         super().__init__(
             z_threshold=z_threshold,
@@ -562,13 +561,11 @@ class DistributedAnomalyDetector(AnomalyDetectorOptimized):
             window_size=window_size,
             track_categorical=track_categorical,
         )
-        self._store        = store
+        self._store = store
         self._fallback_mode = fallback_mode
-        self._store_ok     = True
+        self._store_ok = True
 
-    def _welford_update(
-        self, agent_id: str, decision_type: str, field: str, value: float
-    ) -> tuple:
+    def _welford_update(self, agent_id: str, decision_type: str, field: str, value: float) -> tuple:
         """
         Update Welford stats via Redis store; fall back to in-memory on error.
 
@@ -576,21 +573,20 @@ class DistributedAnomalyDetector(AnomalyDetectorOptimized):
         """
         if self._store_ok:
             try:
-                count, mean, M2 = self._store.update_and_get(
-                    agent_id, decision_type, field, value
-                )
+                count, mean, M2 = self._store.update_and_get(agent_id, decision_type, field, value)
                 std = math.sqrt(max(0.0, M2 / (count - 1))) if count >= 2 else None
                 return count, mean, std
             except Exception as exc:
                 import logging as _log
+
                 _log.getLogger("glassbox.anomaly_detector").warning(
                     "RedisAnomalyStore update failed, falling back to local: %s", exc
                 )
                 self._store_ok = False
 
         # Local fallback — delegates to parent's _stats dict
-        key   = self._key(agent_id, decision_type, field)
-        lock  = self._get_lock(agent_id, decision_type)
+        key = self._key(agent_id, decision_type, field)
+        lock = self._get_lock(agent_id, decision_type)
         with lock:
             stats = self._stats[key]
             stats.add(value)
@@ -609,10 +605,10 @@ class DistributedAnomalyDetector(AnomalyDetectorOptimized):
         see the same baseline.  Categorical tracking remains in-process
         (Redis-backing categorical trackers is left as a future enhancement).
         """
-        fields            = MONITORED_FIELDS.get(decision_type, [])
+        fields = MONITORED_FIELDS.get(decision_type, [])
         categorical_fields = CATEGORICAL_FIELDS.get(decision_type, [])
-        max_z     = 0.0
-        anomalous: list   = []
+        max_z = 0.0
+        anomalous: list = []
 
         lock = self._get_lock(agent_id, decision_type)
         with lock:
@@ -622,12 +618,10 @@ class DistributedAnomalyDetector(AnomalyDetectorOptimized):
                     continue
 
                 fval = float(value)
-                count, mean, std = self._welford_update(
-                    agent_id, decision_type, fname, fval
-                )
+                count, mean, std = self._welford_update(agent_id, decision_type, fname, fval)
 
                 if count >= self.min_samples and std is not None and std > 0:
-                    z     = (fval - mean) / std
+                    z = (fval - mean) / std
                     abs_z = abs(z)
                     if abs_z > max_z:
                         max_z = abs_z
@@ -644,7 +638,7 @@ class DistributedAnomalyDetector(AnomalyDetectorOptimized):
                     value = str(value).strip()
                     if not value:
                         continue
-                    key     = self._key(agent_id, decision_type, fname)
+                    key = self._key(agent_id, decision_type, fname)
                     tracker = self._cat_stats[key]
                     is_cat_anomalous, reason = tracker.is_anomalous(value)
                     if is_cat_anomalous:

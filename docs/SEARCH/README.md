@@ -9,7 +9,6 @@ The GlassBox documentation uses multiple search approaches:
 ### 1. **Built-in Search (Recommended)**
 Use your browser's built-in search (Ctrl+F / Cmd+F) on:
 - [docs/README.md](../README.md) - Main index with keyword listings
-- [docs/VERSIONS/README.md](../VERSIONS/README.md) - Version-based search
 
 ### 2. **Topic-Based Navigation**
 Navigate by topic through the search index sections in:

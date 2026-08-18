@@ -2,6 +2,13 @@
 
 Core governance runtime for decision evaluation.
 
+This is the original synchronous implementation. New governance logic is
+added to `glassbox/app` (`DecisionService`) and `glassbox/domain`; see
+[docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md#0-current-architecture).
+Several components here (`stage_registry.py`, `explainer.py`,
+`workflow/workflow_engine.py`, `compliance/catalogue.py`) remain in active
+use by that layer.
+
 ## Key Modules
 
 - `pipeline.py`: `GovernancePipeline` orchestration

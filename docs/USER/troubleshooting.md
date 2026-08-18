@@ -1,8 +1,8 @@
 # GlassBox Troubleshooting Guide
 
-Common issues, solutions, and debugging strategies across all GlassBox modules. Updated for v1.2.0.
+Common issues, solutions, and debugging strategies across all GlassBox modules.
 
-## v1.2.0 Known Issues
+## Known Issues
 
 | Issue | Workaround |
 |---|---|

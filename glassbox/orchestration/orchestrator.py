@@ -50,25 +50,29 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from glassbox.governance.models import (
-    AgentContract, DecisionContext, DecisionRequest, DecisionResponse,
-    DecisionType, FinalStatus,
-)
 from glassbox.governance.logging_manager import get_logger
+from glassbox.governance.models import (
+    AgentContract,
+    DecisionContext,
+    DecisionRequest,
+    DecisionResponse,
+    DecisionType,
+    FinalStatus,
+)
 
 log = get_logger("orchestrator")
 
 
-
 # ── Orchestration models ───────────────────────────────────────────────────────
 
+
 class NodeStatus(str, Enum):
-    PENDING  = "pending"
-    RUNNING  = "running"
+    PENDING = "pending"
+    RUNNING = "running"
     EXECUTED = "executed"
-    BLOCKED  = "blocked"
-    SKIPPED  = "skipped"
-    FAILED   = "failed"
+    BLOCKED = "blocked"
+    SKIPPED = "skipped"
+    FAILED = "failed"
     COMPENSATED = "compensated"
 
 
@@ -86,65 +90,67 @@ class AgentNode:
     compensate_fn: Optional: called if a downstream node fails (saga rollback)
     timeout_s:     Maximum seconds this node may run (default 30)
     """
-    node_id:       str
-    agent_id:      str
+
+    node_id: str
+    agent_id: str
     decision_type: DecisionType
-    payload_fn:    Callable[[Dict[str, Any]], Dict[str, Any]]
-    depends_on:    List[str]              = field(default_factory=list)
-    condition_fn:  Optional[Callable]    = None
-    compensate_fn: Optional[Callable]    = None
-    timeout_s:     float                 = 30.0
-    metadata:      Dict[str, Any]        = field(default_factory=dict)
+    payload_fn: Callable[[Dict[str, Any]], Dict[str, Any]]
+    depends_on: List[str] = field(default_factory=list)
+    condition_fn: Optional[Callable] = None
+    compensate_fn: Optional[Callable] = None
+    timeout_s: float = 30.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class NodeResult:
     """Result of executing one agent node."""
-    node_id:      str
-    agent_id:     str
-    status:       NodeStatus
-    response:     Optional[DecisionResponse] = None
-    output:       Dict[str, Any]             = field(default_factory=dict)
-    error:        Optional[str]              = None
-    duration_ms:  float                      = 0.0
-    compensated:  bool                       = False
+
+    node_id: str
+    agent_id: str
+    status: NodeStatus
+    response: Optional[DecisionResponse] = None
+    output: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[str] = None
+    duration_ms: float = 0.0
+    compensated: bool = False
 
 
 @dataclass
 class OrchestrationResult:
     """Result of a full chain/graph/saga execution."""
-    execution_id:   str
-    pattern:        str                      # "chain" | "graph" | "saga"
-    status:         str                      # "completed" | "aborted" | "partial"
-    node_results:   Dict[str, NodeResult]    = field(default_factory=dict)
-    aborted_at:     Optional[str]            = None
-    abort_reason:   Optional[str]            = None
-    total_ms:       float                    = 0.0
-    context:        Dict[str, Any]           = field(default_factory=dict)
+
+    execution_id: str
+    pattern: str  # "chain" | "graph" | "saga"
+    status: str  # "completed" | "aborted" | "partial"
+    node_results: Dict[str, NodeResult] = field(default_factory=dict)
+    aborted_at: Optional[str] = None
+    abort_reason: Optional[str] = None
+    total_ms: float = 0.0
+    context: Dict[str, Any] = field(default_factory=dict)
 
     def is_success(self) -> bool:
         return self.status == "completed"
 
     def blocked_nodes(self) -> List[str]:
-        return [nid for nid, r in self.node_results.items()
-                if r.status == NodeStatus.BLOCKED]
+        return [nid for nid, r in self.node_results.items() if r.status == NodeStatus.BLOCKED]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "execution_id": self.execution_id,
-            "pattern":      self.pattern,
-            "status":       self.status,
-            "aborted_at":   self.aborted_at,
+            "pattern": self.pattern,
+            "status": self.status,
+            "aborted_at": self.aborted_at,
             "abort_reason": self.abort_reason,
-            "total_ms":     round(self.total_ms, 3),
-            "nodes":        {
+            "total_ms": round(self.total_ms, 3),
+            "nodes": {
                 nid: {
-                    "status":      r.status.value,
+                    "status": r.status.value,
                     "decision_id": r.response.decision_id if r.response else None,
-                    "final_status":r.response.final_status.value if r.response else None,
-                    "risk_score":  r.response.risk_score if r.response else None,
+                    "final_status": r.response.final_status.value if r.response else None,
+                    "risk_score": r.response.risk_score if r.response else None,
                     "duration_ms": round(r.duration_ms, 3),
-                    "error":       r.error,
+                    "error": r.error,
                     "compensated": r.compensated,
                 }
                 for nid, r in self.node_results.items()
@@ -154,13 +160,15 @@ class OrchestrationResult:
 
 class ChainAbortError(Exception):
     """Raised when an agent chain is aborted due to a blocked node."""
+
     def __init__(self, node_id: str, reason: str):
         self.node_id = node_id
-        self.reason  = reason
+        self.reason = reason
         super().__init__(f"Chain aborted at node '{node_id}': {reason}")
 
 
 # ── Agent Orchestrator ─────────────────────────────────────────────────────────
+
 
 class AgentOrchestrator:
     """
@@ -196,12 +204,12 @@ class AgentOrchestrator:
 
     def __init__(
         self,
-        pipeline,                              # GovernancePipeline
+        pipeline,  # GovernancePipeline
         max_parallel_workers: int = 8,
         default_context: Optional[Dict] = None,
     ):
-        self.pipeline  = pipeline
-        self._pool     = ThreadPoolExecutor(
+        self.pipeline = pipeline
+        self._pool = ThreadPoolExecutor(
             max_workers=max_parallel_workers,
             thread_name_prefix="glassbox-orch",
         )
@@ -211,7 +219,7 @@ class AgentOrchestrator:
 
     def run_chain(
         self,
-        nodes:          List[AgentNode],
+        nodes: List[AgentNode],
         initial_context: Optional[Dict] = None,
         abort_on_block: bool = True,
     ) -> OrchestrationResult:
@@ -220,8 +228,8 @@ class AgentOrchestrator:
         If abort_on_block=True (default), a blocked decision stops the chain.
         """
         execution_id = str(uuid.uuid4())
-        context      = {**self._default_context, **(initial_context or {})}
-        t_start      = time.perf_counter()
+        context = {**self._default_context, **(initial_context or {})}
+        t_start = time.perf_counter()
         node_results: Dict[str, NodeResult] = {}
 
         # Build agent_chain for lineage tracking
@@ -231,23 +239,27 @@ class AgentOrchestrator:
             # Check condition gate
             if node.condition_fn and not node.condition_fn(context):
                 node_results[node.node_id] = NodeResult(
-                    node_id=node.node_id, agent_id=node.agent_id,
+                    node_id=node.node_id,
+                    agent_id=node.agent_id,
                     status=NodeStatus.SKIPPED,
                 )
                 continue
 
-            result  = self._execute_node(node, context, list(agent_chain))
+            result = self._execute_node(node, context, list(agent_chain))
             node_results[node.node_id] = result
             agent_chain.append(node.agent_id)
 
             if result.status == NodeStatus.BLOCKED and abort_on_block:
                 total_ms = (time.perf_counter() - t_start) * 1000
                 return OrchestrationResult(
-                    execution_id=execution_id, pattern="chain",
-                    status="aborted", node_results=node_results,
+                    execution_id=execution_id,
+                    pattern="chain",
+                    status="aborted",
+                    node_results=node_results,
                     aborted_at=node.node_id,
                     abort_reason=result.error or "Node blocked by governance",
-                    total_ms=total_ms, context=context,
+                    total_ms=total_ms,
+                    context=context,
                 )
 
             # Merge node output into shared context
@@ -255,20 +267,23 @@ class AgentOrchestrator:
                 context.update(result.output)
 
         total_ms = (time.perf_counter() - t_start) * 1000
-        all_ok   = all(r.status in (NodeStatus.EXECUTED, NodeStatus.SKIPPED)
-                       for r in node_results.values())
+        all_ok = all(
+            r.status in (NodeStatus.EXECUTED, NodeStatus.SKIPPED) for r in node_results.values()
+        )
         return OrchestrationResult(
-            execution_id=execution_id, pattern="chain",
+            execution_id=execution_id,
+            pattern="chain",
             status="completed" if all_ok else "partial",
             node_results=node_results,
-            total_ms=total_ms, context=context,
+            total_ms=total_ms,
+            context=context,
         )
 
     # ── Pattern 2: DAG Graph ──────────────────────────────────────────────────
 
     def run_graph(
         self,
-        nodes:          List[AgentNode],
+        nodes: List[AgentNode],
         initial_context: Optional[Dict] = None,
         abort_on_block: bool = True,
     ) -> OrchestrationResult:
@@ -277,16 +292,16 @@ class AgentOrchestrator:
         Nodes with no unsatisfied dependencies run in parallel.
         """
         execution_id = str(uuid.uuid4())
-        context      = {**self._default_context, **(initial_context or {})}
-        t_start      = time.perf_counter()
+        context = {**self._default_context, **(initial_context or {})}
+        t_start = time.perf_counter()
         node_results: Dict[str, NodeResult] = {}
-        node_map     = {n.node_id: n for n in nodes}
+        node_map = {n.node_id: n for n in nodes}
         context_lock = threading.Lock()
 
         completed: Set[str] = set()
-        aborted              = False
-        abort_node           = None
-        abort_reason         = None
+        aborted = False
+        abort_node = None
+        abort_reason = None
 
         def _can_run(node: AgentNode) -> bool:
             return all(d in completed for d in node.depends_on)
@@ -307,27 +322,29 @@ class AgentOrchestrator:
                 # to prevent nested dict mutations leaking between parallel nodes
                 with context_lock:
                     ctx_snapshot = copy.deepcopy(context)
-                agent_chain = [r.agent_id for r in node_results.values()
-                               if r.status == NodeStatus.EXECUTED]
-                fut = self._pool.submit(self._execute_node, node,
-                                        ctx_snapshot, agent_chain)
+                agent_chain = [
+                    r.agent_id for r in node_results.values() if r.status == NodeStatus.EXECUTED
+                ]
+                fut = self._pool.submit(self._execute_node, node, ctx_snapshot, agent_chain)
                 futures[fut] = node
 
             for fut in as_completed(futures):
-                node   = futures[fut]
+                node = futures[fut]
                 try:
                     result = fut.result(timeout=node.timeout_s)
                 except Exception as exc:
                     result = NodeResult(
-                        node_id=node.node_id, agent_id=node.agent_id,
-                        status=NodeStatus.FAILED, error=str(exc),
+                        node_id=node.node_id,
+                        agent_id=node.agent_id,
+                        status=NodeStatus.FAILED,
+                        error=str(exc),
                     )
                 node_results[node.node_id] = result
                 completed.add(node.node_id)
 
                 if result.status == NodeStatus.BLOCKED and abort_on_block:
-                    aborted     = True
-                    abort_node  = node.node_id
+                    aborted = True
+                    abort_node = node.node_id
                     abort_reason = result.error or "Node blocked"
                     break
 
@@ -337,19 +354,21 @@ class AgentOrchestrator:
 
         total_ms = (time.perf_counter() - t_start) * 1000
         return OrchestrationResult(
-            execution_id=execution_id, pattern="graph",
+            execution_id=execution_id,
+            pattern="graph",
             status="aborted" if aborted else "completed",
             node_results=node_results,
             aborted_at=abort_node,
             abort_reason=abort_reason,
-            total_ms=total_ms, context=context,
+            total_ms=total_ms,
+            context=context,
         )
 
     # ── Pattern 3: Saga (distributed with compensation) ───────────────────────
 
     def run_saga(
         self,
-        steps:           List[AgentNode],
+        steps: List[AgentNode],
         initial_context: Optional[Dict] = None,
     ) -> OrchestrationResult:
         """
@@ -360,13 +379,13 @@ class AgentOrchestrator:
         the current context. Compensation errors are logged but do not
         prevent other compensations from running.
         """
-        execution_id       = str(uuid.uuid4())
-        context            = {**self._default_context, **(initial_context or {})}
-        t_start            = time.perf_counter()
+        execution_id = str(uuid.uuid4())
+        context = {**self._default_context, **(initial_context or {})}
+        t_start = time.perf_counter()
         node_results: Dict[str, NodeResult] = {}
         completed_steps: List[Tuple[AgentNode, NodeResult]] = []  # for compensation
 
-        aborted    = False
+        aborted = False
         abort_node = None
 
         for step in steps:
@@ -374,7 +393,7 @@ class AgentOrchestrator:
             node_results[step.node_id] = result
 
             if result.status in (NodeStatus.BLOCKED, NodeStatus.FAILED):
-                aborted    = True
+                aborted = True
                 abort_node = step.node_id
                 # [v1.0.1 CRITICAL FIX] Compensate completed steps in reverse order
                 # HALT on first compensation failure to prevent partial rollbacks
@@ -385,23 +404,34 @@ class AgentOrchestrator:
                             comp_node.compensate_fn(comp_result, context)
                             node_results[comp_node.node_id].compensated = True
                             node_results[comp_node.node_id].status = NodeStatus.COMPENSATED
-                            log.info("Saga step %r compensated successfully", comp_node.node_id,
-                                   extra={"component": "orchestrator", "execution_id": execution_id})
+                            log.info(
+                                "Saga step %r compensated successfully",
+                                comp_node.node_id,
+                                extra={"component": "orchestrator", "execution_id": execution_id},
+                            )
                         except Exception as exc:
                             # [v1.0.1 CRITICAL] Stop compensation chain on first error
                             # Log as CRITICAL and return aborted status
                             compensation_error = exc
                             node_results[comp_node.node_id].error = f"Compensation failed: {exc}"
                             node_results[comp_node.node_id].status = NodeStatus.FAILED
-                            log.error("Saga compensation STOPPED at %r: %s", comp_node.node_id, exc,
-                                    extra={"component": "orchestrator", "execution_id": execution_id, 
-                                           "severity": "CRITICAL"})
+                            log.error(
+                                "Saga compensation STOPPED at %r: %s",
+                                comp_node.node_id,
+                                exc,
+                                extra={
+                                    "component": "orchestrator",
+                                    "execution_id": execution_id,
+                                    "severity": "CRITICAL",
+                                },
+                            )
                             break
-                
+
                 if compensation_error:
                     # Compensation failed—saga left in inconsistent state
                     return OrchestrationResult(
-                        execution_id=execution_id, pattern="saga",
+                        execution_id=execution_id,
+                        pattern="saga",
                         status="aborted",
                         node_results=node_results,
                         aborted_at=abort_node,
@@ -417,12 +447,14 @@ class AgentOrchestrator:
 
         total_ms = (time.perf_counter() - t_start) * 1000
         return OrchestrationResult(
-            execution_id=execution_id, pattern="saga",
+            execution_id=execution_id,
+            pattern="saga",
             status="aborted" if aborted else "completed",
             node_results=node_results,
             aborted_at=abort_node,
             abort_reason=node_results[abort_node].error if abort_node else None,
-            total_ms=total_ms, context=context,
+            total_ms=total_ms,
+            context=context,
         )
 
     # ── Async variants ─────────────────────────────────────────────────────────
@@ -454,8 +486,8 @@ class AgentOrchestrator:
 
     def _execute_node(
         self,
-        node:        AgentNode,
-        context:     Dict[str, Any],
+        node: AgentNode,
+        context: Dict[str, Any],
         agent_chain: List[str],
     ) -> NodeResult:
         """Execute one agent node through the governance pipeline."""
@@ -464,7 +496,8 @@ class AgentOrchestrator:
             payload = node.payload_fn(context)
         except Exception as exc:
             return NodeResult(
-                node_id=node.node_id, agent_id=node.agent_id,
+                node_id=node.node_id,
+                agent_id=node.agent_id,
                 status=NodeStatus.FAILED,
                 error=f"payload_fn raised: {exc}",
                 duration_ms=(time.perf_counter() - t_start) * 1000,
@@ -486,18 +519,20 @@ class AgentOrchestrator:
             response = self.pipeline.process(request)
         except Exception as exc:
             return NodeResult(
-                node_id=node.node_id, agent_id=node.agent_id,
+                node_id=node.node_id,
+                agent_id=node.agent_id,
                 status=NodeStatus.FAILED,
                 error=f"Pipeline error: {exc}",
                 duration_ms=(time.perf_counter() - t_start) * 1000,
             )
 
         if response.final_status == FinalStatus.BLOCKED:
-            reason = (response.policy_violations[0]
-                      if response.policy_violations
-                      else response.message)
+            reason = (
+                response.policy_violations[0] if response.policy_violations else response.message
+            )
             return NodeResult(
-                node_id=node.node_id, agent_id=node.agent_id,
+                node_id=node.node_id,
+                agent_id=node.agent_id,
                 status=NodeStatus.BLOCKED,
                 response=response,
                 error=reason,
@@ -506,14 +541,15 @@ class AgentOrchestrator:
 
         # Extract output from response for next nodes
         output = {
-            f"{node.node_id}.decision_id":  response.decision_id,
-            f"{node.node_id}.status":       response.final_status.value,
-            f"{node.node_id}.risk_score":   response.risk_score,
-            f"{node.node_id}.payload":      payload,
+            f"{node.node_id}.decision_id": response.decision_id,
+            f"{node.node_id}.status": response.final_status.value,
+            f"{node.node_id}.risk_score": response.risk_score,
+            f"{node.node_id}.payload": payload,
         }
 
         return NodeResult(
-            node_id=node.node_id, agent_id=node.agent_id,
+            node_id=node.node_id,
+            agent_id=node.agent_id,
             status=NodeStatus.EXECUTED,
             response=response,
             output=output,

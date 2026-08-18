@@ -1,4 +1,4 @@
-# Deployment Guide (v1.2.0)
+# Deployment Guide
 
 This guide is the practical runbook for getting GlassBox into a stable deployment.
 

@@ -1,4 +1,4 @@
-# Deployment Reference (v1.2.0)
+# Deployment Reference
 
 Reference-oriented deployment details aligned with current implementation.
 

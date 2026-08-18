@@ -50,8 +50,11 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from glassbox.governance.models import (
-    DecisionContext, DecisionRequest, DecisionResponse,
-    DecisionType, FinalStatus,
+    DecisionContext,
+    DecisionRequest,
+    DecisionResponse,
+    DecisionType,
+    FinalStatus,
 )
 from glassbox.security.sanitizer import PayloadSanitizer
 
@@ -65,46 +68,53 @@ async def _await_or_run_sync(fn: Callable, *args, **kwargs) -> Any:
 
 # ── RAG Data Models ────────────────────────────────────────────────────────────
 
+
 @dataclass
 class RetrievedChunk:
     """
     A single document chunk returned by a retriever.
     Populate as many fields as your retriever provides.
     """
-    chunk_id:        str
-    content:         str
-    source:          str                     # document ID, URL, filename
-    source_type:     str = "unknown"         # "pdf" | "web" | "database" | "wiki"
-    relevance_score: float = 1.0            # 0.0 = irrelevant, 1.0 = exact match
-    created_at:      Optional[str] = None   # ISO timestamp of source document
-    metadata:        Dict[str, Any] = field(default_factory=dict)
+
+    chunk_id: str
+    content: str
+    source: str  # document ID, URL, filename
+    source_type: str = "unknown"  # "pdf" | "web" | "database" | "wiki"
+    relevance_score: float = 1.0  # 0.0 = irrelevant, 1.0 = exact match
+    created_at: Optional[str] = None  # ISO timestamp of source document
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class RAGQueryResult:
     """Result of governing a RAG query before retrieval."""
-    allowed:       bool
-    query:         str
-    cleaned_query: Optional[str]   = None   # sanitised version if allowed
-    blocked_reason: Optional[str]  = None
-    warnings:      List[str]       = field(default_factory=list)
+
+    allowed: bool
+    query: str
+    cleaned_query: Optional[str] = None  # sanitised version if allowed
+    blocked_reason: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"allowed": self.allowed, "query": self.query,
-                "cleaned_query": self.cleaned_query,
-                "blocked_reason": self.blocked_reason,
-                "warnings": self.warnings}
+        return {
+            "allowed": self.allowed,
+            "query": self.query,
+            "cleaned_query": self.cleaned_query,
+            "blocked_reason": self.blocked_reason,
+            "warnings": self.warnings,
+        }
 
 
 @dataclass
 class RAGRetrievalResult:
     """Result of governing retrieved chunks before they reach an agent."""
-    allowed_chunks:  List[RetrievedChunk]
-    blocked_chunks:  List[Tuple[RetrievedChunk, str]]  # (chunk, reason)
-    warnings:        List[str]
+
+    allowed_chunks: List[RetrievedChunk]
+    blocked_chunks: List[Tuple[RetrievedChunk, str]]  # (chunk, reason)
+    warnings: List[str]
     total_retrieved: int
-    passed_count:    int
-    blocked_count:   int
+    passed_count: int
+    blocked_count: int
 
     @property
     def all_blocked(self) -> bool:
@@ -113,15 +123,16 @@ class RAGRetrievalResult:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "total_retrieved": self.total_retrieved,
-            "passed":          self.passed_count,
-            "blocked":         self.blocked_count,
-            "all_blocked":     self.all_blocked,
-            "warnings":        self.warnings,
+            "passed": self.passed_count,
+            "blocked": self.blocked_count,
+            "all_blocked": self.all_blocked,
+            "warnings": self.warnings,
             "blocked_sources": [c.source for c, _ in self.blocked_chunks],
         }
 
 
 # ── Approved Sources Registry ─────────────────────────────────────────────────
+
 
 class ApprovedSourceRegistry:
     """
@@ -131,7 +142,7 @@ class ApprovedSourceRegistry:
 
     def __init__(self, approved_sources: Optional[List[str]] = None):
         self._approved: set = set(approved_sources or [])
-        self._blocked:  set = set()
+        self._blocked: set = set()
         self._lock = threading.Lock()
 
     def add_approved(self, source: str) -> None:
@@ -150,7 +161,7 @@ class ApprovedSourceRegistry:
             if source.lower() in self._blocked:
                 return False
             if not self._approved:
-                return True   # open registry — allow all unless explicitly blocked
+                return True  # open registry — allow all unless explicitly blocked
             return source.lower() in self._approved
 
     def is_blocked(self, source: str) -> bool:
@@ -159,6 +170,7 @@ class ApprovedSourceRegistry:
 
 
 # ── RAG Query Governor ─────────────────────────────────────────────────────────
+
 
 class RAGQueryGovernor:
     """
@@ -180,7 +192,9 @@ class RAGQueryGovernor:
 
     _SENSITIVE_PATTERNS = [
         re.compile(r"(?i)(password|passwd|secret|api.?key|token|credential)", re.I),
-        re.compile(r"(?i)(override|bypass|disable|ignore).*(safety|policy|governance|control)", re.I),
+        re.compile(
+            r"(?i)(override|bypass|disable|ignore).*(safety|policy|governance|control)", re.I
+        ),
         re.compile(r"(?i)(jailbreak|prompt.inject|ignore.previous|forget.instruction)", re.I),
         re.compile(r"(?i)(social.security|ssn|credit.card|bank.account)\s*\d", re.I),
         re.compile(r"(?i)(how.to.hack|how.to.exploit|vulnerability.in|0.?day)", re.I),
@@ -188,44 +202,46 @@ class RAGQueryGovernor:
 
     def __init__(
         self,
-        max_query_length:      int         = 2048,
-        allowed_topics:        Optional[List[str]] = None,   # None = all topics allowed
-        block_on_out_of_scope: bool        = False,
-        sanitizer:             Optional[PayloadSanitizer] = None,
+        max_query_length: int = 2048,
+        allowed_topics: Optional[List[str]] = None,  # None = all topics allowed
+        block_on_out_of_scope: bool = False,
+        sanitizer: Optional[PayloadSanitizer] = None,
     ):
-        self.max_query_length      = max_query_length
-        self.allowed_topics        = [t.lower() for t in allowed_topics] if allowed_topics else None
+        self.max_query_length = max_query_length
+        self.allowed_topics = [t.lower() for t in allowed_topics] if allowed_topics else None
         self.block_on_out_of_scope = block_on_out_of_scope
-        self.sanitizer             = sanitizer or PayloadSanitizer()
+        self.sanitizer = sanitizer or PayloadSanitizer()
 
     def check(self, query: str, agent_id: str = "") -> RAGQueryResult:
         """Govern a RAG query before it reaches the retriever."""
         if not query or not isinstance(query, str):
-            return RAGQueryResult(allowed=False, query=str(query),
-                                  blocked_reason="Query must be a non-empty string")
+            return RAGQueryResult(
+                allowed=False, query=str(query), blocked_reason="Query must be a non-empty string"
+            )
 
         # Length check
         if len(query) > self.max_query_length:
             return RAGQueryResult(
-                allowed=False, query=query,
-                blocked_reason=f"Query length {len(query)} exceeds maximum {self.max_query_length}"
+                allowed=False,
+                query=query,
+                blocked_reason=f"Query length {len(query)} exceeds maximum {self.max_query_length}",
             )
 
         # Injection check via payload sanitizer
         sec = self.sanitizer.check({"query": query}, agent_id=agent_id)
         if sec.blocked:
-            findings = [f.detail for f in sec.findings if f.severity in ("critical","high")]
+            findings = [f.detail for f in sec.findings if f.severity in ("critical", "high")]
             return RAGQueryResult(
-                allowed=False, query=query,
-                blocked_reason=f"Security: {'; '.join(findings[:2])}"
+                allowed=False, query=query, blocked_reason=f"Security: {'; '.join(findings[:2])}"
             )
 
         # Sensitive pattern check
         for pattern in self._SENSITIVE_PATTERNS:
             if pattern.search(query):
                 return RAGQueryResult(
-                    allowed=False, query=query,
-                    blocked_reason=f"Query matches sensitive pattern: {pattern.pattern[:60]}"
+                    allowed=False,
+                    query=query,
+                    blocked_reason=f"Query matches sensitive pattern: {pattern.pattern[:60]}",
                 )
 
         # Topic scope check
@@ -233,27 +249,32 @@ class RAGQueryGovernor:
         if self.allowed_topics:
             query_lower = query.lower()
             in_scope = any(
-                re.search(r'\b' + re.escape(topic) + r'\b', query_lower)
+                re.search(r"\b" + re.escape(topic) + r"\b", query_lower)
                 for topic in self.allowed_topics
             )
             if not in_scope:
                 if self.block_on_out_of_scope:
                     return RAGQueryResult(
-                        allowed=False, query=query,
-                        blocked_reason=f"Query out of scope. Allowed topics: {self.allowed_topics[:5]}"
+                        allowed=False,
+                        query=query,
+                        blocked_reason=f"Query out of scope. Allowed topics: {self.allowed_topics[:5]}",
                     )
                 warnings.append(
-                    f"Query may be out of scope. Allowed topics: {self.allowed_topics[:5]}")
+                    f"Query may be out of scope. Allowed topics: {self.allowed_topics[:5]}"
+                )
 
         # Return clean query (sanitised string)
         cleaned = (sec.clean_payload or {}).get("query", query)
         return RAGQueryResult(
-            allowed=True, query=query,
-            cleaned_query=cleaned, warnings=warnings,
+            allowed=True,
+            query=query,
+            cleaned_query=cleaned,
+            warnings=warnings,
         )
 
 
 # ── RAG Retrieval Governor ──────────────────────────────────────────────────────
+
 
 class RAGRetrievalGovernor:
     """
@@ -278,30 +299,30 @@ class RAGRetrievalGovernor:
 
     def __init__(
         self,
-        source_registry:    Optional[ApprovedSourceRegistry] = None,
-        min_relevance:      float = 0.3,
-        max_age_days:       Optional[int] = None,
-        deduplicate:        bool = True,
-        content_sanitizer:  Optional[PayloadSanitizer] = None,
+        source_registry: Optional[ApprovedSourceRegistry] = None,
+        min_relevance: float = 0.3,
+        max_age_days: Optional[int] = None,
+        deduplicate: bool = True,
+        content_sanitizer: Optional[PayloadSanitizer] = None,
         max_chunks_to_pass: int = 10,
     ):
-        self.source_registry  = source_registry or ApprovedSourceRegistry()
-        self.min_relevance    = min_relevance
-        self.max_age_days     = max_age_days
-        self.deduplicate      = deduplicate
-        self.sanitizer        = content_sanitizer or PayloadSanitizer(
+        self.source_registry = source_registry or ApprovedSourceRegistry()
+        self.min_relevance = min_relevance
+        self.max_age_days = max_age_days
+        self.deduplicate = deduplicate
+        self.sanitizer = content_sanitizer or PayloadSanitizer(
             block_on_sql=False, block_on_script=False  # retrieval content is less strict
         )
-        self.max_chunks       = max_chunks_to_pass
+        self.max_chunks = max_chunks_to_pass
 
     def check(
         self,
-        chunks:  List[RetrievedChunk],
-        query:   str = "",
+        chunks: List[RetrievedChunk],
+        query: str = "",
     ) -> RAGRetrievalResult:
         """Filter retrieved chunks, returning only safe and relevant ones."""
-        allowed  = []
-        blocked  = []
+        allowed = []
+        blocked = []
         warnings = []
         seen_hashes: set = set()
 
@@ -324,7 +345,7 @@ class RAGRetrievalGovernor:
             )
 
         # Apply max_chunks cap
-        allowed = allowed[:self.max_chunks]
+        allowed = allowed[: self.max_chunks]
 
         return RAGRetrievalResult(
             allowed_chunks=allowed,
@@ -337,9 +358,9 @@ class RAGRetrievalGovernor:
 
     def _check_chunk(
         self,
-        chunk:        RetrievedChunk,
-        seen_hashes:  set,
-        query:        str,
+        chunk: RetrievedChunk,
+        seen_hashes: set,
+        query: str,
     ) -> Optional[str]:
         """Return a reason string if the chunk should be blocked, else None."""
 
@@ -352,8 +373,10 @@ class RAGRetrievalGovernor:
 
         # Relevance threshold
         if chunk.relevance_score < self.min_relevance:
-            return (f"Relevance score {chunk.relevance_score:.2f} below "
-                    f"minimum {self.min_relevance:.2f}")
+            return (
+                f"Relevance score {chunk.relevance_score:.2f} below "
+                f"minimum {self.min_relevance:.2f}"
+            )
 
         # Freshness check
         if self.max_age_days and chunk.created_at:
@@ -361,8 +384,9 @@ class RAGRetrievalGovernor:
                 created = datetime.fromisoformat(chunk.created_at.replace("Z", "+00:00"))
                 age_days = (datetime.now(timezone.utc) - created).days
                 if age_days > self.max_age_days:
-                    return (f"Document age {age_days} days exceeds "
-                            f"maximum {self.max_age_days} days")
+                    return (
+                        f"Document age {age_days} days exceeds " f"maximum {self.max_age_days} days"
+                    )
             except (ValueError, TypeError):
                 pass  # cannot parse date — allow through with warning
 
@@ -382,6 +406,7 @@ class RAGRetrievalGovernor:
 
 
 # ── Agentic RAG Orchestrator ────────────────────────────────────────────────────
+
 
 class AgenticRAGOrchestrator:
     """
@@ -414,27 +439,27 @@ class AgenticRAGOrchestrator:
     def __init__(
         self,
         pipeline,
-        query_governor:     Optional[RAGQueryGovernor]     = None,
+        query_governor: Optional[RAGQueryGovernor] = None,
         retrieval_governor: Optional[RAGRetrievalGovernor] = None,
-        retriever_fn:       Optional[Callable]             = None,
-        max_iterations:     int                            = 5,
+        retriever_fn: Optional[Callable] = None,
+        max_iterations: int = 5,
     ):
-        self.pipeline           = pipeline
-        self.query_governor     = query_governor or RAGQueryGovernor()
+        self.pipeline = pipeline
+        self.query_governor = query_governor or RAGQueryGovernor()
         self.retrieval_governor = retrieval_governor or RAGRetrievalGovernor()
-        self.retriever_fn       = retriever_fn
-        self.max_iterations     = max_iterations
+        self.retriever_fn = retriever_fn
+        self.max_iterations = max_iterations
 
     def run(
         self,
-        agent_id:            str,
-        initial_query:       str,
-        action_fn:           Callable[[Dict], Any],
+        agent_id: str,
+        initial_query: str,
+        action_fn: Callable[[Dict], Any],
         action_decision_type: DecisionType = DecisionType.CUSTOM,
-        action_payload_fn:   Optional[Callable[[Dict], Dict]] = None,
-        confidence:          float = 1.0,
-        should_continue_fn:  Optional[Callable[[Dict], bool]] = None,
-        next_query_fn:       Optional[Callable[[Dict], str]] = None,
+        action_payload_fn: Optional[Callable[[Dict], Dict]] = None,
+        confidence: float = 1.0,
+        should_continue_fn: Optional[Callable[[Dict], bool]] = None,
+        next_query_fn: Optional[Callable[[Dict], str]] = None,
     ) -> Dict[str, Any]:
         """
         Execute one or more Agentic RAG iterations:
@@ -448,7 +473,8 @@ class AgenticRAGOrchestrator:
         Returns a result dict with governance outcome and action result.
         """
         async_callables = [
-            fn_name for fn_name, fn in {
+            fn_name
+            for fn_name, fn in {
                 "retriever_fn": self.retriever_fn,
                 "action_fn": action_fn,
                 "action_payload_fn": action_payload_fn,
@@ -463,16 +489,16 @@ class AgenticRAGOrchestrator:
                 f"use run_async instead for: {', '.join(async_callables)}"
             )
 
-        result = {
-            "agent_id":         agent_id,
-            "query":            initial_query,
-            "query_gov":        None,
-            "retrieval_gov":    None,
-            "decision_id":      None,
-            "final_status":     "unknown",
-            "action_result":    None,
-            "blocked_reason":   None,
-            "iterations":       0,
+        result: Dict[str, Any] = {
+            "agent_id": agent_id,
+            "query": initial_query,
+            "query_gov": None,
+            "retrieval_gov": None,
+            "decision_id": None,
+            "final_status": "unknown",
+            "action_result": None,
+            "blocked_reason": None,
+            "iterations": 0,
         }
 
         working_query = initial_query
@@ -486,7 +512,7 @@ class AgenticRAGOrchestrator:
             result["query_gov"] = query_result.to_dict()
 
             if not query_result.allowed:
-                result["final_status"]   = "blocked_at_query"
+                result["final_status"] = "blocked_at_query"
                 result["blocked_reason"] = query_result.blocked_reason
                 return result
 
@@ -500,18 +526,21 @@ class AgenticRAGOrchestrator:
                     if isinstance(raw_chunks, list):
                         retrieved_chunks = raw_chunks
                 except Exception as exc:
-                    result["final_status"]   = "retrieval_error"
+                    result["final_status"] = "retrieval_error"
                     result["blocked_reason"] = f"Retriever error: {exc}"
                     return result
 
                 # Step 3: Govern the retrieval result
                 retrieval_result = self.retrieval_governor.check(
-                    retrieved_chunks, query=governed_query)
+                    retrieved_chunks, query=governed_query
+                )
                 result["retrieval_gov"] = retrieval_result.to_dict()
 
                 if retrieval_result.all_blocked:
-                    result["final_status"]   = "blocked_at_retrieval"
-                    result["blocked_reason"] = "All retrieved chunks were blocked by retrieval governance"
+                    result["final_status"] = "blocked_at_retrieval"
+                    result["blocked_reason"] = (
+                        "All retrieved chunks were blocked by retrieval governance"
+                    )
                     return result
 
                 working_chunks = retrieval_result.allowed_chunks
@@ -520,10 +549,9 @@ class AgenticRAGOrchestrator:
 
             # Build context for action
             context_for_action: Dict[str, Any] = {
-                "query":           governed_query,
+                "query": governed_query,
                 "retrieved_chunks": [
-                    {"content": c.content[:500], "source": c.source,
-                     "relevance": c.relevance_score}
+                    {"content": c.content[:500], "source": c.source, "relevance": c.relevance_score}
                     for c in working_chunks
                 ],
             }
@@ -533,28 +561,31 @@ class AgenticRAGOrchestrator:
                 action_payload = action_payload_fn(context_for_action)
             else:
                 action_payload = {
-                    "query":        governed_query,
-                    "chunk_count":  len(working_chunks),
-                    "sources":      list({c.source for c in working_chunks}),
-                    "action_type":  "rag_response",
+                    "query": governed_query,
+                    "chunk_count": len(working_chunks),
+                    "sources": list({c.source for c in working_chunks}),
+                    "action_type": "rag_response",
                 }
 
-            ctx     = DecisionContext(
-                confidence=confidence, source_system="agentic_rag",
-                metadata={"query": governed_query[:200],
-                          "chunk_count": len(working_chunks)},
+            ctx = DecisionContext(
+                confidence=confidence,
+                source_system="agentic_rag",
+                metadata={"query": governed_query[:200], "chunk_count": len(working_chunks)},
             )
             request = DecisionRequest(
-                agent_id=agent_id, decision_type=action_decision_type,
-                payload=action_payload, context=ctx,
+                agent_id=agent_id,
+                decision_type=action_decision_type,
+                payload=action_payload,
+                context=ctx,
             )
             response = self.pipeline.process(request)
-            result["decision_id"]  = response.decision_id
+            result["decision_id"] = response.decision_id
             result["final_status"] = response.final_status.value
 
             if response.final_status == FinalStatus.BLOCKED:
                 result["blocked_reason"] = (
-                    response.policy_violations[0] if response.policy_violations
+                    response.policy_violations[0]
+                    if response.policy_violations
                     else response.message
                 )
                 return result
@@ -576,26 +607,26 @@ class AgenticRAGOrchestrator:
 
     async def run_async(
         self,
-        agent_id:            str,
-        initial_query:       str,
-        action_fn:           Callable[[Dict], Any],
+        agent_id: str,
+        initial_query: str,
+        action_fn: Callable[[Dict], Any],
         action_decision_type: DecisionType = DecisionType.CUSTOM,
-        action_payload_fn:   Optional[Callable[[Dict], Dict]] = None,
-        confidence:          float = 1.0,
-        should_continue_fn:  Optional[Callable[[Dict], bool]] = None,
-        next_query_fn:       Optional[Callable[[Dict], str]] = None,
+        action_payload_fn: Optional[Callable[[Dict], Dict]] = None,
+        confidence: float = 1.0,
+        should_continue_fn: Optional[Callable[[Dict], bool]] = None,
+        next_query_fn: Optional[Callable[[Dict], str]] = None,
     ) -> Dict[str, Any]:
         """Async variant of the full Agentic RAG loop."""
-        result = {
-            "agent_id":         agent_id,
-            "query":            initial_query,
-            "query_gov":        None,
-            "retrieval_gov":    None,
-            "decision_id":      None,
-            "final_status":     "unknown",
-            "action_result":    None,
-            "blocked_reason":   None,
-            "iterations":       0,
+        result: Dict[str, Any] = {
+            "agent_id": agent_id,
+            "query": initial_query,
+            "query_gov": None,
+            "retrieval_gov": None,
+            "decision_id": None,
+            "final_status": "unknown",
+            "action_result": None,
+            "blocked_reason": None,
+            "iterations": 0,
         }
 
         working_query = initial_query
@@ -626,12 +657,15 @@ class AgenticRAGOrchestrator:
                     return result
 
                 retrieval_result = self.retrieval_governor.check(
-                    retrieved_chunks, query=governed_query)
+                    retrieved_chunks, query=governed_query
+                )
                 result["retrieval_gov"] = retrieval_result.to_dict()
 
                 if retrieval_result.all_blocked:
                     result["final_status"] = "blocked_at_retrieval"
-                    result["blocked_reason"] = "All retrieved chunks were blocked by retrieval governance"
+                    result["blocked_reason"] = (
+                        "All retrieved chunks were blocked by retrieval governance"
+                    )
                     return result
 
                 working_chunks = retrieval_result.allowed_chunks
@@ -641,8 +675,7 @@ class AgenticRAGOrchestrator:
             context_for_action: Dict[str, Any] = {
                 "query": governed_query,
                 "retrieved_chunks": [
-                    {"content": c.content[:500], "source": c.source,
-                     "relevance": c.relevance_score}
+                    {"content": c.content[:500], "source": c.source, "relevance": c.relevance_score}
                     for c in working_chunks
                 ],
             }
@@ -658,13 +691,15 @@ class AgenticRAGOrchestrator:
                 }
 
             ctx = DecisionContext(
-                confidence=confidence, source_system="agentic_rag",
-                metadata={"query": governed_query[:200],
-                          "chunk_count": len(working_chunks)},
+                confidence=confidence,
+                source_system="agentic_rag",
+                metadata={"query": governed_query[:200], "chunk_count": len(working_chunks)},
             )
             request = DecisionRequest(
-                agent_id=agent_id, decision_type=action_decision_type,
-                payload=action_payload, context=ctx,
+                agent_id=agent_id,
+                decision_type=action_decision_type,
+                payload=action_payload,
+                context=ctx,
             )
             response = await self.pipeline.process_async(request)
             result["decision_id"] = response.decision_id
@@ -672,7 +707,8 @@ class AgenticRAGOrchestrator:
 
             if response.final_status == FinalStatus.BLOCKED:
                 result["blocked_reason"] = (
-                    response.policy_violations[0] if response.policy_violations
+                    response.policy_violations[0]
+                    if response.policy_violations
                     else response.message
                 )
                 return result

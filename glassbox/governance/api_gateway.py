@@ -32,15 +32,15 @@ Design:
 
 Usage:
     from glassbox.governance.api_gateway import APIGateway, Middleware
-    
+
     # Create gateway
     gateway = APIGateway()
-    
+
     # Add middleware
     gateway.add_middleware(AuthenticationMiddleware())
     gateway.add_middleware(RateLimitMiddleware(requests_per_minute=100))
     gateway.add_middleware(RequestValidationMiddleware())
-    
+
     # Route request
     response = gateway.handle_request(
         method="POST",
@@ -52,15 +52,15 @@ Usage:
 Author: Mohammed Akbar Ansari
 """
 
-import json
-import time
-import threading
 import hmac
+import json
+import threading
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
-from typing import Any, Callable, Dict, List, Optional
 from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, List, Optional
 
 from glassbox.governance.logging_manager import get_logger
 from glassbox.governance.request_context import RequestContext
@@ -119,27 +119,18 @@ class AuthenticationMiddleware(Middleware):
         auth_header = request.headers.get("Authorization", "")
 
         if not auth_header:
-            return Response(
-                status_code=401,
-                error="Missing Authorization header"
-            )
+            return Response(status_code=401, error="Missing Authorization header")
 
         # Simple token validation (in production, use JWT)
         if not auth_header.startswith("Bearer "):
-            return Response(
-                status_code=401,
-                error="Invalid Authorization header format"
-            )
+            return Response(status_code=401, error="Invalid Authorization header format")
 
         token = auth_header[7:]  # Remove "Bearer "
 
         # Validate token (simplified; use JWT in production)
         # Use constant-time comparison to prevent timing oracle attacks
         if not self._validate_token(token):
-            return Response(
-                status_code=401,
-                error="Invalid token"
-            )
+            return Response(status_code=401, error="Invalid token")
 
         # Extract user info from token (mock). Preserve existing context user_id
         # when upstream middleware/context manager already set it.
@@ -187,7 +178,7 @@ class RateLimitMiddleware(Middleware):
             if len(self.request_history[user_id]) >= self.requests_per_minute:
                 return Response(
                     status_code=429,
-                    error=f"Rate limit exceeded (max {self.requests_per_minute}/min)"
+                    error=f"Rate limit exceeded (max {self.requests_per_minute}/min)",
                 )
 
             # Record request
@@ -222,19 +213,13 @@ class RequestValidationMiddleware(Middleware):
                 try:
                     json.loads(request.body)
                 except json.JSONDecodeError:
-                    return Response(
-                        status_code=400,
-                        error="Invalid JSON body"
-                    )
+                    return Response(status_code=400, error="Invalid JSON body")
 
         # Run registered validators
         for pattern, validator in self.validators.items():
             if pattern in request.path:
                 if not validator(request):
-                    return Response(
-                        status_code=400,
-                        error=f"Validation failed for {pattern}"
-                    )
+                    return Response(status_code=400, error=f"Validation failed for {pattern}")
 
         return None  # Continue
 
@@ -252,7 +237,11 @@ class RequestLoggingMiddleware(Middleware):
 
         log.info(
             "Incoming request: %s %s [user=%s, tenant=%s, req_id=%s]",
-            request.method, request.path, ctx.user_id, ctx.tenant_id, ctx.request_id
+            request.method,
+            request.path,
+            ctx.user_id,
+            ctx.tenant_id,
+            ctx.request_id,
         )
 
         return None
@@ -263,7 +252,10 @@ class RequestLoggingMiddleware(Middleware):
 
         log.info(
             "Outgoing response: %s %s -> %d [req_id=%s]",
-            request.method, request.path, response.status_code, ctx.request_id
+            request.method,
+            request.path,
+            response.status_code,
+            ctx.request_id,
         )
 
         return response
@@ -280,11 +272,14 @@ class CORSMiddleware(Middleware):
     ):
         self.allowed_origins = allowed_origins or ["*"]
         self.allowed_methods = allowed_methods or [
-            "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE",
+            "PATCH",
+            "OPTIONS",
         ]
-        self.allowed_headers = allowed_headers or [
-            "Content-Type", "Authorization", "X-Request-ID"
-        ]
+        self.allowed_headers = allowed_headers or ["Content-Type", "Authorization", "X-Request-ID"]
 
     def process_request(self, request: Request) -> Optional[Response]:
         """Handle CORS preflight requests."""
@@ -366,19 +361,14 @@ class APIGateway:
 
         ctx = RequestContext.get_current()
         ctx.request_id = request.headers.get("X-Request-ID", ctx.request_id)
-        ctx.correlation_id = request.headers.get(
-            "X-Correlation-ID", ctx.correlation_id
-        )
+        ctx.correlation_id = request.headers.get("X-Correlation-ID", ctx.correlation_id)
 
         # Run request middleware
         for middleware in self.middleware_stack:
             response = middleware.process_request(request)
             if response:
                 # Short-circuit
-                log.info(
-                    "Middleware short-circuited: %s",
-                    middleware.__class__.__name__
-                )
+                log.info("Middleware short-circuited: %s", middleware.__class__.__name__)
                 return response
 
         # Find and execute route handler

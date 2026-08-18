@@ -51,14 +51,15 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Literal, Optional, Protocol, Tuple
 
 from glassbox.governance.models import AuditRecord, DecisionType, FinalStatus
 
 log = logging.getLogger("glassbox.db")
 
-_VALID_IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+_VALID_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # ── Schema version and DDL migrations ─────────────────────────────────────────
 
@@ -67,16 +68,16 @@ CURRENT_SCHEMA_VERSION = 4
 # Each migration is (version, sql_statements_list)
 # Applied in order, never re-applied once recorded in schema_version table.
 MIGRATIONS: List[Tuple[int, List[str]]] = [
-
-    (1, [
-        # Core tables
-        """CREATE TABLE IF NOT EXISTS schema_version (
+    (
+        1,
+        [
+            # Core tables
+            """CREATE TABLE IF NOT EXISTS schema_version (
             version     INTEGER PRIMARY KEY,
             applied_at  TEXT    NOT NULL,
             description TEXT
         )""",
-
-        """CREATE TABLE IF NOT EXISTS policies (
+            """CREATE TABLE IF NOT EXISTS policies (
             policy_id      TEXT NOT NULL,
             version        TEXT NOT NULL,
             policy_name    TEXT NOT NULL,
@@ -91,8 +92,7 @@ MIGRATIONS: List[Tuple[int, List[str]]] = [
             updated_at     TEXT NOT NULL,
             PRIMARY KEY (policy_id, version)
         )""",
-
-        """CREATE TABLE IF NOT EXISTS audit_records (
+            """CREATE TABLE IF NOT EXISTS audit_records (
             decision_id          TEXT PRIMARY KEY,
             agent_id             TEXT NOT NULL,
             decision_type        TEXT NOT NULL,
@@ -110,8 +110,7 @@ MIGRATIONS: List[Tuple[int, List[str]]] = [
             tenant_id            TEXT,
             full_record_json     TEXT NOT NULL
         )""",
-
-        """CREATE TABLE IF NOT EXISTS workflows (
+            """CREATE TABLE IF NOT EXISTS workflows (
             workflow_id    TEXT PRIMARY KEY,
             decision_id    TEXT NOT NULL REFERENCES audit_records(decision_id),
             agent_id       TEXT NOT NULL,
@@ -126,8 +125,7 @@ MIGRATIONS: List[Tuple[int, List[str]]] = [
             resolved_at    TEXT,
             full_json      TEXT NOT NULL
         )""",
-
-        """CREATE TABLE IF NOT EXISTS workflow_steps (
+            """CREATE TABLE IF NOT EXISTS workflow_steps (
             step_id      TEXT PRIMARY KEY,
             workflow_id  TEXT NOT NULL REFERENCES workflows(workflow_id),
             step_type    TEXT NOT NULL,   -- review|approve|reject|escalate|comment
@@ -137,8 +135,7 @@ MIGRATIONS: List[Tuple[int, List[str]]] = [
             created_at   TEXT NOT NULL,
             completed_at TEXT
         )""",
-
-        """CREATE TABLE IF NOT EXISTS compliance_evidence (
+            """CREATE TABLE IF NOT EXISTS compliance_evidence (
             evidence_id    TEXT PRIMARY KEY,
             control_id     TEXT NOT NULL,
             decision_id    TEXT REFERENCES audit_records(decision_id),
@@ -147,45 +144,53 @@ MIGRATIONS: List[Tuple[int, List[str]]] = [
             evidence_data  TEXT,
             collected_at   TEXT NOT NULL
         )""",
-    ]),
-
-    (2, [
-        # Indexes for hot query paths
-        "CREATE INDEX IF NOT EXISTS idx_pol_status    ON policies(status)",
-        "CREATE INDEX IF NOT EXISTS idx_pol_id        ON policies(policy_id)",
-        "CREATE INDEX IF NOT EXISTS idx_aud_agent     ON audit_records(agent_id)",
-        "CREATE INDEX IF NOT EXISTS idx_aud_type      ON audit_records(decision_type)",
-        "CREATE INDEX IF NOT EXISTS idx_aud_status    ON audit_records(final_status)",
-        "CREATE INDEX IF NOT EXISTS idx_aud_ts        ON audit_records(timestamp)",
-        "CREATE INDEX IF NOT EXISTS idx_aud_risk      ON audit_records(risk_score)",
-        "CREATE INDEX IF NOT EXISTS idx_aud_tenant    ON audit_records(tenant_id)",
-        "CREATE INDEX IF NOT EXISTS idx_wf_state      ON workflows(state)",
-        "CREATE INDEX IF NOT EXISTS idx_wf_decision   ON workflows(decision_id)",
-        "CREATE INDEX IF NOT EXISTS idx_wf_ts         ON workflows(created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_wfs_workflow  ON workflow_steps(workflow_id)",
-        "CREATE INDEX IF NOT EXISTS idx_ev_control    ON compliance_evidence(control_id)",
-        "CREATE INDEX IF NOT EXISTS idx_ev_decision   ON compliance_evidence(decision_id)",
-        "CREATE INDEX IF NOT EXISTS idx_ev_ts         ON compliance_evidence(collected_at)",
-    ]),
-
-    (3, [
-        # Covering index for AGG-001 fleet budget query (hot path)
-        """CREATE INDEX IF NOT EXISTS idx_aud_spend
+        ],
+    ),
+    (
+        2,
+        [
+            # Indexes for hot query paths
+            "CREATE INDEX IF NOT EXISTS idx_pol_status    ON policies(status)",
+            "CREATE INDEX IF NOT EXISTS idx_pol_id        ON policies(policy_id)",
+            "CREATE INDEX IF NOT EXISTS idx_aud_agent     ON audit_records(agent_id)",
+            "CREATE INDEX IF NOT EXISTS idx_aud_type      ON audit_records(decision_type)",
+            "CREATE INDEX IF NOT EXISTS idx_aud_status    ON audit_records(final_status)",
+            "CREATE INDEX IF NOT EXISTS idx_aud_ts        ON audit_records(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_aud_risk      ON audit_records(risk_score)",
+            "CREATE INDEX IF NOT EXISTS idx_aud_tenant    ON audit_records(tenant_id)",
+            "CREATE INDEX IF NOT EXISTS idx_wf_state      ON workflows(state)",
+            "CREATE INDEX IF NOT EXISTS idx_wf_decision   ON workflows(decision_id)",
+            "CREATE INDEX IF NOT EXISTS idx_wf_ts         ON workflows(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_wfs_workflow  ON workflow_steps(workflow_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ev_control    ON compliance_evidence(control_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ev_decision   ON compliance_evidence(decision_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ev_ts         ON compliance_evidence(collected_at)",
+        ],
+    ),
+    (
+        3,
+        [
+            # Covering index for AGG-001 fleet budget query (hot path)
+            """CREATE INDEX IF NOT EXISTS idx_aud_spend
            ON audit_records(decision_type, final_status, timestamp, payload_amount)""",
-        # Partial index for pending workflows (common dashboard query)
-        """CREATE INDEX IF NOT EXISTS idx_wf_pending
+            # Partial index for pending workflows (common dashboard query)
+            """CREATE INDEX IF NOT EXISTS idx_wf_pending
            ON workflows(created_at) WHERE state IN ('pending','in_review')""",
-    ]),
-
-    (4, [
-        # Add tenant_id to compliance_evidence for row-level tenant isolation
-        "ALTER TABLE compliance_evidence ADD COLUMN tenant_id TEXT",
-        "CREATE INDEX IF NOT EXISTS idx_ev_tenant ON compliance_evidence(tenant_id)",
-    ]),
+        ],
+    ),
+    (
+        4,
+        [
+            # Add tenant_id to compliance_evidence for row-level tenant isolation
+            "ALTER TABLE compliance_evidence ADD COLUMN tenant_id TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_ev_tenant ON compliance_evidence(tenant_id)",
+        ],
+    ),
 ]
 
 
 # ── Connection Pool (thread-local) ─────────────────────────────────────────────
+
 
 class ThreadLocalConnectionPool:
     """
@@ -208,55 +213,75 @@ class ThreadLocalConnectionPool:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._local  = threading.local()
-        # For :memory: databases every thread-local connection is a separate empty DB.
+        self._local: ContextVar[Optional[sqlite3.Connection]] = ContextVar(
+            f"db_conn_{id(self)}", default=None
+        )
+        # For :memory: databases every context-local connection is a separate empty DB.
         # Share one connection so all threads see the same data.
+        self._memory_conn: Optional[sqlite3.Connection]
         if db_path == ":memory:":
             self._memory_conn = self._make_conn()
         else:
             self._memory_conn = None
 
     def _make_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, check_same_thread=False,
-                               timeout=30.0, isolation_level=None)
+        conn = sqlite3.connect(
+            self.db_path, check_same_thread=False, timeout=30.0, isolation_level=None
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")   # safe with WAL
+        conn.execute("PRAGMA synchronous=NORMAL")  # safe with WAL
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA cache_size=-8000")     # 8MB page cache
+        conn.execute("PRAGMA cache_size=-8000")  # 8MB page cache
         conn.execute("PRAGMA temp_store=MEMORY")
         return conn
 
     def get(self) -> sqlite3.Connection:
-        """Return this thread's connection, creating it if needed."""
+        """Return this context's connection, creating it if needed."""
         if self._memory_conn is not None:
             return self._memory_conn
-        if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = self._make_conn()
-        return self._local.conn
+        conn = self._local.get()
+        if conn is None:
+            conn = self._make_conn()
+            self._local.set(conn)
+        return conn
 
     def close_thread(self) -> None:
-        """Close this thread's connection (call at thread end)."""
+        """Close this context's connection (call at thread/task end)."""
         if self._memory_conn is not None:
             return  # shared connection — do not close per-thread
-        if hasattr(self._local, "conn") and self._local.conn:
-            self._local.conn.close()
-            self._local.conn = None
+        conn = self._local.get()
+        if conn:
+            conn.close()
+            self._local.set(None)
 
 
 # ── Transaction Pool shim ──────────────────────────────────────────────────────────
 
+
+class ConnectionPoolLike(Protocol):
+    """Structural type shared by ThreadLocalConnectionPool and _TransactionPool."""
+
+    def get(self) -> sqlite3.Connection: ...
+
+    def close_thread(self) -> None: ...
+
+
 class _TransactionPool:
     """Thin pool shim that returns a fixed connection, used inside Transaction."""
+
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn_obj = conn
+
     def get(self) -> sqlite3.Connection:
         return self._conn_obj
+
     def close_thread(self) -> None:
         pass
 
 
 # ── Transaction Context Manager ────────────────────────────────────────────────
+
 
 class Transaction:
     """
@@ -282,13 +307,14 @@ class Transaction:
         self._conn = self._pool.get()
         self._conn.execute("BEGIN IMMEDIATE")
         _tx_pool = _TransactionPool(self._conn)
-        self.policies   = RelationalPolicyRepository(_tx_pool)
-        self.audit      = RelationalAuditRepository(_tx_pool)
-        self.workflows  = RelationalWorkflowRepository(_tx_pool)
+        self.policies = RelationalPolicyRepository(_tx_pool)
+        self.audit = RelationalAuditRepository(_tx_pool)
+        self.workflows = RelationalWorkflowRepository(_tx_pool)
         self.compliance = RelationalComplianceRepository(_tx_pool)
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+    def __exit__(self, exc_type, exc_val, exc_tb) -> Literal[False]:
+        assert self._conn is not None
         if exc_type is None:
             self._conn.execute("COMMIT")
         else:
@@ -297,13 +323,16 @@ class Transaction:
         return False  # never suppress exceptions
 
     def _execute(self, sql: str, params=()) -> sqlite3.Cursor:
+        assert self._conn is not None
         return self._conn.execute(sql, params)
 
     def _executemany(self, sql: str, params_list) -> None:
+        assert self._conn is not None
         self._conn.executemany(sql, params_list)
 
 
 # ── Query Builder ─────────────────────────────────────────────────────────────
+
 
 class QueryBuilder:
     """
@@ -313,13 +342,13 @@ class QueryBuilder:
     """
 
     def __init__(self, table: str):
-        self._table  = table
-        self._where:  List[str]  = []
-        self._params: List[Any]  = []
-        self._order:  str        = ""
-        self._limit:  int        = 1000
-        self._offset: int        = 0
-        self._cols:   str        = "*"
+        self._table = table
+        self._where: List[str] = []
+        self._params: List[Any] = []
+        self._order: str = ""
+        self._limit: int = 1000
+        self._offset: int = 0
+        self._cols: str = "*"
 
     def select(self, *cols: str) -> "QueryBuilder":
         self._cols = ", ".join(cols)
@@ -401,6 +430,7 @@ class QueryBuilder:
 
 # ── Relational Repositories (production versions) ─────────────────────────────
 
+
 class RelationalPolicyRepository:
     """
     Full transactional policy repository.
@@ -409,7 +439,7 @@ class RelationalPolicyRepository:
 
     _ACTIVE_CACHE_TTL = 30.0
 
-    def __init__(self, pool: ThreadLocalConnectionPool):
+    def __init__(self, pool: ConnectionPoolLike):
         self._pool = pool
         self._active_cache: Optional[List] = None
         self._active_cache_ts: float = 0.0
@@ -426,36 +456,47 @@ class RelationalPolicyRepository:
     def save(self, record) -> None:
         """Upsert — safe under concurrent access."""
         record.updated_at = datetime.now(timezone.utc).isoformat()
-        self._conn().execute("""
+        self._conn().execute(
+            """
             INSERT OR REPLACE INTO policies
             (policy_id, version, policy_name, decision_types, rule_type,
              rule_body, status, description, created_by, tags, created_at, updated_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (
-            record.policy_id, record.version, record.policy_name,
-            json.dumps(record.decision_types), record.rule_type, record.rule_body,
-            record.status, record.description, record.created_by,
-            json.dumps(record.tags), record.created_at, record.updated_at,
-        ))
+        """,
+            (
+                record.policy_id,
+                record.version,
+                record.policy_name,
+                json.dumps(record.decision_types),
+                record.rule_type,
+                record.rule_body,
+                record.status,
+                record.description,
+                record.created_by,
+                json.dumps(record.tags),
+                record.created_at,
+                record.updated_at,
+            ),
+        )
         self._invalidate_active_cache()
 
-    def get(self, policy_id: str, version: str = None):
+    def get(self, policy_id: str, version: Optional[str] = None):
         """Get active (or specific version) policy."""
         conn = self._conn()
         if version:
             row = conn.execute(
-                "SELECT * FROM policies WHERE policy_id=? AND version=?",
-                (policy_id, version)
+                "SELECT * FROM policies WHERE policy_id=? AND version=?", (policy_id, version)
             ).fetchone()
         else:
             row = conn.execute(
                 "SELECT * FROM policies WHERE policy_id=? AND status='active' "
-                "ORDER BY updated_at DESC LIMIT 1", (policy_id,)
+                "ORDER BY updated_at DESC LIMIT 1",
+                (policy_id,),
             ).fetchone()
             if not row:
                 row = conn.execute(
                     "SELECT * FROM policies WHERE policy_id=? ORDER BY updated_at DESC LIMIT 1",
-                    (policy_id,)
+                    (policy_id,),
                 ).fetchone()
         return self._from_row(row) if row else None
 
@@ -463,7 +504,10 @@ class RelationalPolicyRepository:
         """All currently active policies (latest version per policy_id). Cached with 30s TTL."""
         now = time.monotonic()
         with self._active_cache_lock:
-            if self._active_cache is not None and (now - self._active_cache_ts) < self._ACTIVE_CACHE_TTL:
+            if (
+                self._active_cache is not None
+                and (now - self._active_cache_ts) < self._ACTIVE_CACHE_TTL
+            ):
                 return list(self._active_cache)
         rows = self._conn().execute("""
             SELECT p.* FROM policies p
@@ -480,7 +524,7 @@ class RelationalPolicyRepository:
             self._active_cache_ts = now
         return list(result)
 
-    def list_all(self, status: str = None) -> List:
+    def list_all(self, status: Optional[str] = None) -> List:
         qb = QueryBuilder("policies").order_by("policy_id", desc=False)
         if status:
             qb.where_eq("status", status)
@@ -492,8 +536,7 @@ class RelationalPolicyRepository:
         """Atomic status transition with timestamp."""
         now = datetime.now(timezone.utc).isoformat()
         cur = self._conn().execute(
-            "UPDATE policies SET status=?, updated_at=? WHERE policy_id=?",
-            (status, now, policy_id)
+            "UPDATE policies SET status=?, updated_at=? WHERE policy_id=?", (status, now, policy_id)
         )
         self._invalidate_active_cache()
         return cur.rowcount > 0
@@ -504,7 +547,7 @@ class RelationalPolicyRepository:
         Both operations in one transaction — no window where both or neither are active.
         """
         conn = self._conn()
-        now  = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         began = not conn.in_transaction
         if began:
             conn.execute("BEGIN IMMEDIATE")
@@ -512,22 +555,32 @@ class RelationalPolicyRepository:
             # Deprecate current active
             conn.execute(
                 "UPDATE policies SET status='deprecated', updated_at=? WHERE policy_id=? AND status='active'",
-                (now, policy_id)
+                (now, policy_id),
             )
             # Insert new active version
             new_record.updated_at = now
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO policies
                 (policy_id, version, policy_name, decision_types, rule_type,
                  rule_body, status, description, created_by, tags, created_at, updated_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                new_record.policy_id, new_record.version, new_record.policy_name,
-                json.dumps(new_record.decision_types), new_record.rule_type,
-                new_record.rule_body, 'active', new_record.description,
-                new_record.created_by, json.dumps(new_record.tags),
-                new_record.created_at, now,
-            ))
+            """,
+                (
+                    new_record.policy_id,
+                    new_record.version,
+                    new_record.policy_name,
+                    json.dumps(new_record.decision_types),
+                    new_record.rule_type,
+                    new_record.rule_body,
+                    "active",
+                    new_record.description,
+                    new_record.created_by,
+                    json.dumps(new_record.tags),
+                    new_record.created_at,
+                    now,
+                ),
+            )
             if began:
                 conn.execute("COMMIT")
         except Exception:
@@ -537,10 +590,11 @@ class RelationalPolicyRepository:
         self._invalidate_active_cache()
 
     def list_versions(self, policy_id: str) -> List:
-        rows = self._conn().execute(
-            "SELECT * FROM policies WHERE policy_id=? ORDER BY created_at",
-            (policy_id,)
-        ).fetchall()
+        rows = (
+            self._conn()
+            .execute("SELECT * FROM policies WHERE policy_id=? ORDER BY created_at", (policy_id,))
+            .fetchall()
+        )
         return [self._from_row(r) for r in rows]
 
     def delete(self, policy_id: str) -> bool:
@@ -550,11 +604,15 @@ class RelationalPolicyRepository:
 
     def _from_row(self, row: sqlite3.Row):
         from glassbox.store.repository import PolicyRecord
+
         rec = PolicyRecord(
-            policy_id=row["policy_id"], policy_name=row["policy_name"],
+            policy_id=row["policy_id"],
+            policy_name=row["policy_name"],
             decision_types=json.loads(row["decision_types"]),
-            rule_type=row["rule_type"], rule_body=row["rule_body"],
-            version=row["version"], status=row["status"],
+            rule_type=row["rule_type"],
+            rule_body=row["rule_body"],
+            version=row["version"],
+            status=row["status"],
             description=row["description"] or "",
             created_by=row["created_by"] or "system",
             tags=json.loads(row["tags"] or "[]"),
@@ -570,78 +628,99 @@ class RelationalAuditRepository:
     Replaces the O(n) in-memory scan with indexed SQL.
     """
 
-    def __init__(self, pool: ThreadLocalConnectionPool):
+    def __init__(self, pool: ConnectionPoolLike):
         self._pool = pool
 
     def _conn(self) -> sqlite3.Connection:
         return self._pool.get()
 
-    def save(self, record: AuditRecord, tenant_id: str = None) -> None:
+    def save(self, record: AuditRecord, tenant_id: Optional[str] = None) -> None:
         """Persist an AuditRecord atomically."""
-        record_dict  = record.to_dict()
-        violations   = len(record.policy_result.violations) if record.policy_result else 0
-        warnings     = len(record.policy_result.warnings)   if record.policy_result else 0
-        risk_score   = record.risk_result.risk_score         if record.risk_result   else None
-        risk_level   = record.risk_result.risk_level.value   if record.risk_result   else None
-        pay_amount   = float(record.payload.get("amount") or 0) if record.payload else 0.0
-        cb_triggered = bool(record.circuit_breaker_result and record.circuit_breaker_result.triggered)
-        effective_tenant = tenant_id or record.context.metadata.get("tenant_id") if record.context else None
+        record_dict = record.to_dict()
+        violations = len(record.policy_result.violations) if record.policy_result else 0
+        warnings = len(record.policy_result.warnings) if record.policy_result else 0
+        risk_score = record.risk_result.risk_score if record.risk_result else None
+        risk_level = record.risk_result.risk_level.value if record.risk_result else None
+        pay_amount = float(record.payload.get("amount") or 0) if record.payload else 0.0
+        cb_triggered = bool(
+            record.circuit_breaker_result and record.circuit_breaker_result.triggered
+        )
+        effective_tenant = (
+            tenant_id or record.context.metadata.get("tenant_id") if record.context else None
+        )
 
-        self._conn().execute("""
+        self._conn().execute(
+            """
             INSERT OR REPLACE INTO audit_records
             (decision_id, agent_id, decision_type, final_status, risk_score, risk_level,
              violations_count, warnings_count, pipeline_latency_ms, payload_amount,
              timestamp, replay_of, contract_validated, circuit_breaker,
              tenant_id, full_record_json)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (
-            record.decision_id, record.agent_id, record.decision_type.value,
-            record.final_status.value if record.final_status else None,
-            risk_score, risk_level, violations, warnings,
-            record.pipeline_latency_ms, pay_amount,
-            record.timestamp, record.replay_of,
-            int(record.contract_validated), int(cb_triggered),
-            effective_tenant,
-            json.dumps(record_dict, default=str),
-        ))
+        """,
+            (
+                record.decision_id,
+                record.agent_id,
+                record.decision_type.value,
+                record.final_status.value if record.final_status else None,
+                risk_score,
+                risk_level,
+                violations,
+                warnings,
+                record.pipeline_latency_ms,
+                pay_amount,
+                record.timestamp,
+                record.replay_of,
+                int(record.contract_validated),
+                int(cb_triggered),
+                effective_tenant,
+                json.dumps(record_dict, default=str),
+            ),
+        )
 
     def get_by_id(self, decision_id: str) -> Optional[Dict[str, Any]]:
-        row = self._conn().execute(
-            "SELECT full_record_json FROM audit_records WHERE decision_id=?",
-            (decision_id,)
-        ).fetchone()
+        row = (
+            self._conn()
+            .execute(
+                "SELECT full_record_json FROM audit_records WHERE decision_id=?", (decision_id,)
+            )
+            .fetchone()
+        )
         return json.loads(row[0]) if row else None
 
     def query(
         self,
-        agent_id:       Optional[str]   = None,
-        decision_type:  Optional[str]   = None,
-        final_status:   Optional[str]   = None,
-        from_ts:        Optional[str]   = None,
-        to_ts:          Optional[str]   = None,
+        agent_id: Optional[str] = None,
+        decision_type: Optional[str] = None,
+        final_status: Optional[str] = None,
+        from_ts: Optional[str] = None,
+        to_ts: Optional[str] = None,
         min_risk_score: Optional[float] = None,
         max_risk_score: Optional[float] = None,
-        has_violations: Optional[bool]  = None,
-        tenant_id:      str             = "",  # [v1.0.1 BREAKING] Now MANDATORY (required str, not Optional)
+        has_violations: Optional[bool] = None,
+        tenant_id: str = "",  # [v1.0.1 BREAKING] Now MANDATORY (required str, not Optional)
         circuit_breaker_triggered: Optional[bool] = None,
-        limit:          int             = 100,
-        offset:         int             = 0,
+        limit: int = 100,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         # [v1.0.1 SECURITY] tenant_id is MANDATORY to prevent cross-tenant data leakage
         if not tenant_id or not isinstance(tenant_id, str):
             raise ValueError("tenant_id is required and must be a non-empty string")
-        qb = (QueryBuilder("audit_records")
-              .select("full_record_json")
-              .where_eq("agent_id", agent_id)
-              .where_eq("decision_type", decision_type)
-              .where_eq("final_status", final_status)
-              .where_gte("timestamp", from_ts)
-              .where_lte("timestamp", to_ts)
-              .where_gte("risk_score", min_risk_score)
-              .where_lte("risk_score", max_risk_score)
-              .where_eq("tenant_id", tenant_id)
-              .order_by("timestamp", desc=True)
-              .limit(limit).offset(offset))
+        qb = (
+            QueryBuilder("audit_records")
+            .select("full_record_json")
+            .where_eq("agent_id", agent_id)
+            .where_eq("decision_type", decision_type)
+            .where_eq("final_status", final_status)
+            .where_gte("timestamp", from_ts)
+            .where_lte("timestamp", to_ts)
+            .where_gte("risk_score", min_risk_score)
+            .where_lte("risk_score", max_risk_score)
+            .where_eq("tenant_id", tenant_id)
+            .order_by("timestamp", desc=True)
+            .limit(limit)
+            .offset(offset)
+        )
         if has_violations is True:
             qb.where("violations_count > 0")
         elif has_violations is False:
@@ -655,65 +734,73 @@ class RelationalAuditRepository:
 
     def count(
         self,
-        final_status:  Optional[str] = None,
+        final_status: Optional[str] = None,
         decision_type: Optional[str] = None,
-        agent_id:      Optional[str] = None,
-        tenant_id:     str = "",  # [v1.0.1 BREAKING] Now MANDATORY
+        agent_id: Optional[str] = None,
+        tenant_id: str = "",  # [v1.0.1 BREAKING] Now MANDATORY
     ) -> int:
         # [v1.0.1 SECURITY] tenant_id is MANDATORY to prevent cross-tenant data leakage
         if not tenant_id or not isinstance(tenant_id, str):
             raise ValueError("tenant_id is required and must be a non-empty string")
-        qb = (QueryBuilder("audit_records")
-              .where_eq("final_status", final_status)
-              .where_eq("decision_type", decision_type)
-              .where_eq("agent_id", agent_id)
-              .where_eq("tenant_id", tenant_id))
+        qb = (
+            QueryBuilder("audit_records")
+            .where_eq("final_status", final_status)
+            .where_eq("decision_type", decision_type)
+            .where_eq("agent_id", agent_id)
+            .where_eq("tenant_id", tenant_id)
+        )
         sql, params = qb.build_count()
         return self._conn().execute(sql, params).fetchone()[0]
 
     def aggregate_spend(
         self,
         decision_type: str,
-        final_status:  str          = "executed",
-        from_ts:       Optional[str] = None,
-        tenant_id:     str = "",  # [v1.0.1 BREAKING] Now MANDATORY
+        final_status: str = "executed",
+        from_ts: Optional[str] = None,
+        tenant_id: str = "",  # [v1.0.1 BREAKING] Now MANDATORY
     ) -> float:
         """Uses the covering index idx_aud_spend — fast even on millions of rows."""
         # [v1.0.1 SECURITY] tenant_id is MANDATORY to prevent cross-tenant data leakage
         if not tenant_id or not isinstance(tenant_id, str):
             raise ValueError("tenant_id is required and must be a non-empty string")
-        qb = (QueryBuilder("audit_records")
-              .where_eq("decision_type", decision_type)
-              .where_eq("final_status", final_status)
-              .where_gte("timestamp", from_ts)
-              .where_eq("tenant_id", tenant_id))
+        qb = (
+            QueryBuilder("audit_records")
+            .where_eq("decision_type", decision_type)
+            .where_eq("final_status", final_status)
+            .where_gte("timestamp", from_ts)
+            .where_eq("tenant_id", tenant_id)
+        )
         sql, params = qb.build_sum("payload_amount")
         return float(self._conn().execute(sql, params).fetchone()[0])
 
-    def block_rate_by_type(self, tenant_id: str = "") -> Dict[str, float]:  # [v1.0.1 BREAKING] Now MANDATORY
+    def block_rate_by_type(
+        self, tenant_id: str = ""
+    ) -> Dict[str, float]:  # [v1.0.1 BREAKING] Now MANDATORY
         """Block rate per decision type — for compliance reporting."""
         # [v1.0.1 SECURITY] tenant_id is MANDATORY to prevent cross-tenant data leakage
         if not tenant_id or not isinstance(tenant_id, str):
             raise ValueError("tenant_id is required and must be a non-empty string")
         params = []
-        where  = "WHERE tenant_id=?"
+        where = "WHERE tenant_id=?"
         params.append(tenant_id)
-        rows = self._conn().execute(f"""
-            SELECT decision_type,
-                   COUNT(*) as total,
-                   SUM(CASE WHEN final_status='blocked' THEN 1 ELSE 0 END) as blocked
-            FROM audit_records {where}
-            GROUP BY decision_type
-        """, params).fetchall()
-        return {
-            r["decision_type"]: round(r["blocked"] / max(r["total"], 1) * 100, 1)
-            for r in rows
-        }
+        rows = (
+            self._conn()
+            .execute(
+                "SELECT decision_type, COUNT(*) as total, "
+                "SUM(CASE WHEN final_status='blocked' THEN 1 ELSE 0 END) as blocked "
+                # `where` is a hardcoded literal; tenant_id is bound via the `?` placeholder.
+                f"FROM audit_records {where} "  # nosec B608
+                "GROUP BY decision_type",
+                params,
+            )
+            .fetchall()
+        )
+        return {r["decision_type"]: round(r["blocked"] / max(r["total"], 1) * 100, 1) for r in rows}
 
     def latency_percentiles(
         self,
         decision_type: Optional[str] = None,
-        tenant_id:     str           = "",
+        tenant_id: str = "",
     ) -> Dict[str, float]:
         """P50/P90/P99 latency via 3 offset-based queries — no full-table Python sort."""
         if not tenant_id or not isinstance(tenant_id, str):
@@ -724,56 +811,74 @@ class RelationalAuditRepository:
             where_parts.append("decision_type=?")
             params.append(decision_type)
         where = "WHERE " + " AND ".join(where_parts)
-        n = self._conn().execute(
-            f"SELECT COUNT(*) FROM audit_records {where}", params
-        ).fetchone()[0]
+        n = (
+            self._conn()
+            # `where` is built only from a hardcoded literal list above.
+            .execute(
+                f"SELECT COUNT(*) FROM audit_records {where}", params
+            ).fetchone()[  # nosec B608
+                0
+            ]
+        )
         if not n:
             return {}
 
         def _percentile(pct: float) -> float:
             idx = int(n * pct)
-            row = self._conn().execute(
-                f"SELECT pipeline_latency_ms FROM audit_records"
-                f" {where} ORDER BY pipeline_latency_ms"
-                f" LIMIT 1 OFFSET ?",
-                params + [min(idx, n - 1)],
-            ).fetchone()
+            row = (
+                self._conn()
+                .execute(
+                    # `where` is built only from a hardcoded literal list.
+                    f"SELECT pipeline_latency_ms FROM audit_records"  # nosec B608
+                    f" {where} ORDER BY pipeline_latency_ms"
+                    f" LIMIT 1 OFFSET ?",
+                    params + [min(idx, n - 1)],
+                )
+                .fetchone()
+            )
             return round(row[0], 3) if row else 0.0
 
         return {
-            "p50":   _percentile(0.50),
-            "p90":   _percentile(0.90),
-            "p99":   _percentile(0.99),
+            "p50": _percentile(0.50),
+            "p90": _percentile(0.90),
+            "p99": _percentile(0.99),
             "count": n,
         }
 
     def decision_timeline(
         self,
         bucket_minutes: int = 60,
-        last_hours:     int = 24,
-        tenant_id:      str = "",  # [v1.0.1 BREAKING] Now MANDATORY
+        last_hours: int = 24,
+        tenant_id: str = "",  # [v1.0.1 BREAKING] Now MANDATORY
     ) -> List[Dict[str, Any]]:
         """Time-bucketed decision volume — for dashboards."""
         # [v1.0.1 SECURITY] tenant_id is MANDATORY to prevent cross-tenant data leakage
         if not tenant_id or not isinstance(tenant_id, str):
             raise ValueError("tenant_id is required and must be a non-empty string")
-        params = [last_hours * 60 * 60, bucket_minutes * 60]
-        where  = "AND tenant_id=?"
+        params: List[Any] = [last_hours * 60 * 60, bucket_minutes * 60]
+        where = "AND tenant_id=?"
         params.append(tenant_id)
-        rows = self._conn().execute(f"""
-            SELECT
-                CAST(strftime('%s', timestamp) / ? * ? AS INTEGER) as bucket_ts,
-                COUNT(*) as total,
-                SUM(CASE WHEN final_status='executed' THEN 1 ELSE 0 END) as executed,
-                SUM(CASE WHEN final_status='blocked'  THEN 1 ELSE 0 END) as blocked,
-                AVG(risk_score) as avg_risk
-            FROM audit_records
-            WHERE (strftime('%s','now') - strftime('%s', timestamp)) <= ?
-            {where}
-            GROUP BY bucket_ts
-            ORDER BY bucket_ts
-        """, [bucket_minutes * 60, bucket_minutes * 60, last_hours * 3600] +
-             ([tenant_id] if tenant_id else [])).fetchall()
+        rows = (
+            self._conn()
+            .execute(
+                "SELECT "
+                "CAST(strftime('%s', timestamp) / ? * ? AS INTEGER) as bucket_ts, "
+                "COUNT(*) as total, "
+                "SUM(CASE WHEN final_status='executed' THEN 1 ELSE 0 END) as executed, "
+                "SUM(CASE WHEN final_status='blocked'  THEN 1 ELSE 0 END) as blocked, "
+                "AVG(risk_score) as avg_risk "
+                "FROM audit_records "
+                "WHERE (strftime('%s','now') - strftime('%s', timestamp)) <= ? "
+                # `where` is a hardcoded literal ("AND tenant_id=?"); tenant_id is
+                # bound via the `?` placeholder, never interpolated.
+                f"{where} "  # nosec B608
+                "GROUP BY bucket_ts "
+                "ORDER BY bucket_ts",
+                [bucket_minutes * 60, bucket_minutes * 60, last_hours * 3600]
+                + ([tenant_id] if tenant_id else []),
+            )
+            .fetchall()
+        )
         return [dict(r) for r in rows]
 
 
@@ -783,7 +888,7 @@ class RelationalWorkflowRepository:
     Steps stored as separate rows for complete audit trail.
     """
 
-    def __init__(self, pool: ThreadLocalConnectionPool):
+    def __init__(self, pool: ConnectionPoolLike):
         self._pool = pool
 
     def _conn(self) -> sqlite3.Connection:
@@ -796,27 +901,47 @@ class RelationalWorkflowRepository:
         if began:
             conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO workflows
                 (workflow_id, decision_id, agent_id, decision_type, risk_score,
                  state, sla_minutes, assigned_to, escalate_to,
                  created_at, updated_at, resolved_at, full_json)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                instance.workflow_id, instance.decision_id, instance.agent_id,
-                instance.decision_type, instance.risk_score, instance.state,
-                instance.sla_minutes, instance.assigned_to, instance.escalate_to,
-                instance.created_at, instance.updated_at, instance.resolved_at,
-                json.dumps(instance.to_dict(), default=str),
-            ))
+            """,
+                (
+                    instance.workflow_id,
+                    instance.decision_id,
+                    instance.agent_id,
+                    instance.decision_type,
+                    instance.risk_score,
+                    instance.state,
+                    instance.sla_minutes,
+                    instance.assigned_to,
+                    instance.escalate_to,
+                    instance.created_at,
+                    instance.updated_at,
+                    instance.resolved_at,
+                    json.dumps(instance.to_dict(), default=str),
+                ),
+            )
             # Record creation as first step
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO workflow_steps
                 (step_id, workflow_id, step_type, actor, notes, outcome, created_at)
                 VALUES (?,?,?,?,?,?,?)
-            """, (str(uuid.uuid4()), instance.workflow_id, "created",
-                  "system", "Workflow created", "pending",
-                  instance.created_at))
+            """,
+                (
+                    str(uuid.uuid4()),
+                    instance.workflow_id,
+                    "created",
+                    "system",
+                    "Workflow created",
+                    "pending",
+                    instance.created_at,
+                ),
+            )
             if began:
                 conn.execute("COMMIT")
         except Exception:
@@ -825,50 +950,72 @@ class RelationalWorkflowRepository:
             raise
 
     def get(self, workflow_id: str):
-        row = self._conn().execute(
-            "SELECT full_json FROM workflows WHERE workflow_id=?", (workflow_id,)
-        ).fetchone()
+        row = (
+            self._conn()
+            .execute("SELECT full_json FROM workflows WHERE workflow_id=?", (workflow_id,))
+            .fetchone()
+        )
         return self._from_json(row[0]) if row else None
 
     def get_by_decision(self, decision_id: str):
-        row = self._conn().execute(
-            "SELECT full_json FROM workflows WHERE decision_id=?", (decision_id,)
-        ).fetchone()
+        row = (
+            self._conn()
+            .execute("SELECT full_json FROM workflows WHERE decision_id=?", (decision_id,))
+            .fetchone()
+        )
         return self._from_json(row[0]) if row else None
 
     def update(self, instance) -> None:
         """Atomic workflow update + step append."""
-        now  = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         instance.updated_at = now
         conn = self._conn()
         began = not conn.in_transaction
         if began:
             conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute("""
+            conn.execute(
+                """
                 UPDATE workflows
                 SET state=?, assigned_to=?, updated_at=?, resolved_at=?, full_json=?
                 WHERE workflow_id=?
-            """, (
-                instance.state, instance.assigned_to,
-                now, instance.resolved_at,
-                json.dumps(instance.to_dict(), default=str),
-                instance.workflow_id,
-            ))
+            """,
+                (
+                    instance.state,
+                    instance.assigned_to,
+                    now,
+                    instance.resolved_at,
+                    json.dumps(instance.to_dict(), default=str),
+                    instance.workflow_id,
+                ),
+            )
             # Persist any new steps that weren't already in the DB
-            existing = {r[0] for r in conn.execute(
-                "SELECT step_id FROM workflow_steps WHERE workflow_id=?",
-                (instance.workflow_id,)
-            ).fetchall()}
+            existing = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT step_id FROM workflow_steps WHERE workflow_id=?",
+                    (instance.workflow_id,),
+                ).fetchall()
+            }
             for step in instance.steps:
                 if step.step_id not in existing:
-                    conn.execute("""
+                    conn.execute(
+                        """
                         INSERT INTO workflow_steps
                         (step_id, workflow_id, step_type, actor, notes, outcome, created_at, completed_at)
                         VALUES (?,?,?,?,?,?,?,?)
-                    """, (step.step_id, instance.workflow_id, step.step_type,
-                          step.actor, step.notes, step.outcome,
-                          step.created_at, step.completed_at))
+                    """,
+                        (
+                            step.step_id,
+                            instance.workflow_id,
+                            step.step_type,
+                            step.actor,
+                            step.notes,
+                            step.outcome,
+                            step.created_at,
+                            step.completed_at,
+                        ),
+                    )
             if began:
                 conn.execute("COMMIT")
         except Exception:
@@ -877,10 +1024,14 @@ class RelationalWorkflowRepository:
             raise
 
     def list_pending(self) -> List:
-        rows = self._conn().execute(
-            "SELECT full_json FROM workflows WHERE state IN ('pending','in_review') "
-            "ORDER BY created_at"
-        ).fetchall()
+        rows = (
+            self._conn()
+            .execute(
+                "SELECT full_json FROM workflows WHERE state IN ('pending','in_review') "
+                "ORDER BY created_at"
+            )
+            .fetchall()
+        )
         return [self._from_json(r[0]) for r in rows]
 
     def list_sla_breached(self) -> List:
@@ -888,10 +1039,14 @@ class RelationalWorkflowRepository:
 
     def get_step_history(self, workflow_id: str) -> List[Dict[str, Any]]:
         """Complete step audit trail for a workflow."""
-        rows = self._conn().execute(
-            "SELECT * FROM workflow_steps WHERE workflow_id=? ORDER BY created_at",
-            (workflow_id,)
-        ).fetchall()
+        rows = (
+            self._conn()
+            .execute(
+                "SELECT * FROM workflow_steps WHERE workflow_id=? ORDER BY created_at",
+                (workflow_id,),
+            )
+            .fetchall()
+        )
         return [dict(r) for r in rows]
 
     def sla_summary(self) -> Dict[str, Any]:
@@ -910,23 +1065,30 @@ class RelationalWorkflowRepository:
 
     def _from_json(self, raw: str):
         from glassbox.store.repository import WorkflowInstance, WorkflowStep
-        d    = json.loads(raw)
+
+        d = json.loads(raw)
         inst = WorkflowInstance(
-            workflow_id=d["workflow_id"], decision_id=d["decision_id"],
-            agent_id=d["agent_id"], decision_type=d["decision_type"],
+            workflow_id=d["workflow_id"],
+            decision_id=d["decision_id"],
+            agent_id=d["agent_id"],
+            decision_type=d["decision_type"],
             risk_score=d.get("risk_score", 0.0),
             violations=d.get("violations", []),
             sla_minutes=d.get("sla_minutes", 60),
             assigned_to=d.get("assigned_to"),
             escalate_to=d.get("escalate_to"),
         )
-        inst.state       = d.get("state", "pending")
-        inst.created_at  = d.get("created_at", inst.created_at)
-        inst.updated_at  = d.get("updated_at", inst.updated_at)
+        inst.state = d.get("state", "pending")
+        inst.created_at = d.get("created_at", inst.created_at)
+        inst.updated_at = d.get("updated_at", inst.updated_at)
         inst.resolved_at = d.get("resolved_at")
-        inst.steps       = [
-            WorkflowStep(**{k: s[k] for k in
-                            ["step_id","workflow_id","step_type","actor","notes","outcome"]})
+        inst.steps = [
+            WorkflowStep(
+                **{
+                    k: s[k]
+                    for k in ["step_id", "workflow_id", "step_type", "actor", "notes", "outcome"]
+                }
+            )
             for s in d.get("steps", [])
         ]
         return inst
@@ -938,7 +1100,7 @@ class RelationalComplianceRepository:
     Supports joins between evidence and controls for gap analysis.
     """
 
-    def __init__(self, pool: ThreadLocalConnectionPool):
+    def __init__(self, pool: ConnectionPoolLike):
         self._pool = pool
 
     def _conn(self) -> sqlite3.Connection:
@@ -946,60 +1108,84 @@ class RelationalComplianceRepository:
 
     def save_evidence(
         self,
-        control_id:    str,
+        control_id: str,
         evidence_type: str,
-        decision_id:   Optional[str] = None,
-        agent_id:      Optional[str] = None,
+        decision_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
         evidence_data: Optional[Dict] = None,
-        tenant_id:     str = "",
+        tenant_id: str = "",
     ) -> str:
         evidence_id = str(uuid.uuid4())
-        now         = datetime.now(timezone.utc).isoformat()
-        self._conn().execute("""
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn().execute(
+            """
             INSERT INTO compliance_evidence
             (evidence_id, control_id, decision_id, agent_id,
              evidence_type, evidence_data, collected_at, tenant_id)
             VALUES (?,?,?,?,?,?,?,?)
-        """, (
-            evidence_id, control_id, decision_id, agent_id,
-            evidence_type,
-            json.dumps(evidence_data or {}, default=str),
-            now,
-            tenant_id or None,
-        ))
+        """,
+            (
+                evidence_id,
+                control_id,
+                decision_id,
+                agent_id,
+                evidence_type,
+                json.dumps(evidence_data or {}, default=str),
+                now,
+                tenant_id or None,
+            ),
+        )
         return evidence_id
 
     def get_evidence(self, control_id: str, tenant_id: str = "") -> List[Dict[str, Any]]:
         if not tenant_id or not isinstance(tenant_id, str):
             raise ValueError("tenant_id is required and must be a non-empty string")
-        rows = self._conn().execute(
-            "SELECT * FROM compliance_evidence WHERE control_id=? AND tenant_id=? ORDER BY collected_at DESC",
-            (control_id, tenant_id)
-        ).fetchall()
+        rows = (
+            self._conn()
+            .execute(
+                "SELECT * FROM compliance_evidence WHERE control_id=? AND tenant_id=? ORDER BY collected_at DESC",
+                (control_id, tenant_id),
+            )
+            .fetchall()
+        )
         return [dict(r) for r in rows]
 
     def evidence_count_by_control(self, tenant_id: str = "") -> Dict[str, int]:
         if not tenant_id or not isinstance(tenant_id, str):
             raise ValueError("tenant_id is required and must be a non-empty string")
-        rows = self._conn().execute(
-            "SELECT control_id, COUNT(*) as cnt FROM compliance_evidence WHERE tenant_id=? GROUP BY control_id",
-            (tenant_id,)
-        ).fetchall()
+        rows = (
+            self._conn()
+            .execute(
+                "SELECT control_id, COUNT(*) as cnt FROM compliance_evidence WHERE tenant_id=? GROUP BY control_id",
+                (tenant_id,),
+            )
+            .fetchall()
+        )
         return {r["control_id"]: r["cnt"] for r in rows}
 
-    def recent_evidence(self, hours: int = 24, limit: int = 100, tenant_id: str = "") -> List[Dict[str, Any]]:
+    def recent_evidence(
+        self, hours: int = 24, limit: int = 100, tenant_id: str = ""
+    ) -> List[Dict[str, Any]]:
         if not tenant_id or not isinstance(tenant_id, str):
             raise ValueError("tenant_id is required and must be a non-empty string")
-        rows = self._conn().execute("""
+        rows = (
+            self._conn()
+            .execute(
+                """
             SELECT * FROM compliance_evidence
             WHERE (julianday('now') - julianday(collected_at)) * 24 <= ?
               AND tenant_id=?
             ORDER BY collected_at DESC LIMIT ?
-        """, (hours, tenant_id, limit)).fetchall()
+        """,
+                (hours, tenant_id, limit),
+            )
+            .fetchall()
+        )
         return [dict(r) for r in rows]
 
 
 # ── Main Database Class ────────────────────────────────────────────────────────
+
 
 class GlassBoxDatabase:
     """
@@ -1029,16 +1215,16 @@ class GlassBoxDatabase:
     """
 
     def __init__(self, db_path: str = "glassbox.db"):
-        self.db_path  = db_path
+        self.db_path = db_path
         if db_path != ":memory:":
             os.makedirs(os.path.dirname(os.path.abspath(db_path)) or ".", exist_ok=True)
-        self._pool    = ThreadLocalConnectionPool(db_path)
+        self._pool = ThreadLocalConnectionPool(db_path)
         self._apply_migrations()
 
         # Public repository API
-        self.policies   = RelationalPolicyRepository(self._pool)
-        self.audit      = RelationalAuditRepository(self._pool)
-        self.workflows  = RelationalWorkflowRepository(self._pool)
+        self.policies = RelationalPolicyRepository(self._pool)
+        self.audit = RelationalAuditRepository(self._pool)
+        self.workflows = RelationalWorkflowRepository(self._pool)
         self.compliance = RelationalComplianceRepository(self._pool)
 
     # ── Convenience repository accessors ────────────────────────────────────────
@@ -1083,8 +1269,7 @@ class GlassBoxDatabase:
                     conn.execute(stmt)
                 conn.execute(
                     "INSERT INTO schema_version (version, applied_at, description) VALUES (?,?,?)",
-                    (version, datetime.now(timezone.utc).isoformat(),
-                     f"Migration v{version}")
+                    (version, datetime.now(timezone.utc).isoformat(), f"Migration v{version}"),
                 )
                 conn.execute("COMMIT")
                 log.info("Applied DB migration v%d", version)
@@ -1110,7 +1295,7 @@ class GlassBoxDatabase:
         if self.db_path == ":memory:":
             raise ValueError("Cannot backup an in-memory database")
         dest_conn = sqlite3.connect(dest_path)
-        src_conn  = self._pool.get()
+        src_conn = self._pool.get()
         src_conn.backup(dest_conn)
         dest_conn.close()
         if sys.platform != "win32":
@@ -1128,23 +1313,23 @@ class GlassBoxDatabase:
 
     def stats(self) -> Dict[str, Any]:
         """Database statistics for monitoring."""
-        conn   = self._pool.get()
-        tables = ["policies", "audit_records", "workflows",
-                  "workflow_steps", "compliance_evidence"]
+        conn = self._pool.get()
+        tables = ["policies", "audit_records", "workflows", "workflow_steps", "compliance_evidence"]
         counts = {}
         for t in tables:
             try:
-                counts[t] = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                # `t` iterates a hardcoded literal list, never external input.
+                counts[t] = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]  # nosec B608
             except sqlite3.OperationalError:
                 counts[t] = 0
-        page_size  = conn.execute("PRAGMA page_size").fetchone()[0]
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
         page_count = conn.execute("PRAGMA page_count").fetchone()[0]
         return {
-            "db_path":       self.db_path,
-            "row_counts":    counts,
-            "size_bytes":    page_size * page_count,
+            "db_path": self.db_path,
+            "row_counts": counts,
+            "size_bytes": page_size * page_count,
             "schema_version": CURRENT_SCHEMA_VERSION,
-            "integrity":     "ok",
+            "integrity": "ok",
         }
 
     def close(self) -> None:
@@ -1153,6 +1338,7 @@ class GlassBoxDatabase:
 
 
 # ── Factory ────────────────────────────────────────────────────────────────────
+
 
 class DatabaseFactory:
     """

@@ -220,7 +220,7 @@ The human-readable summary now includes a compact comparison line, while `run_an
 
 ## Performance Optimization
 
-Key performance optimizations in v1.2.0:
+Key performance optimizations:
 
 | Optimization | Impact | Location |
 |--------------|--------|----------|

@@ -49,104 +49,153 @@ log = get_logger("events")
 
 # ── Domain Events ─────────────────────────────────────────────────────────────
 
+
 @dataclass
 class GlassBoxEvent:
     """Base class for all GlassBox domain events."""
-    event_type:  str
-    event_id:    str                  = field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp:   str                  = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    source:      str                  = "glassbox.pipeline"
-    payload:     Dict[str, Any]       = field(default_factory=dict)
+
+    event_type: str
+    event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    source: str = "glassbox.pipeline"
+    payload: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "event_id":   self.event_id,
+            "event_id": self.event_id,
             "event_type": self.event_type,
-            "timestamp":  self.timestamp,
-            "source":     self.source,
-            "payload":    self.payload,
+            "timestamp": self.timestamp,
+            "source": self.source,
+            "payload": self.payload,
         }
 
 
-def DecisionExecuted(decision_id: str, agent_id: str, decision_type: str,
-                     risk_score: float, latency_ms: float) -> GlassBoxEvent:
+def DecisionExecuted(
+    decision_id: str, agent_id: str, decision_type: str, risk_score: float, latency_ms: float
+) -> GlassBoxEvent:
     return GlassBoxEvent(
         event_type="decision.executed",
-        payload={"decision_id": decision_id, "agent_id": agent_id,
-                 "decision_type": decision_type, "risk_score": risk_score,
-                 "latency_ms": latency_ms},
+        payload={
+            "decision_id": decision_id,
+            "agent_id": agent_id,
+            "decision_type": decision_type,
+            "risk_score": risk_score,
+            "latency_ms": latency_ms,
+        },
     )
 
 
-def DecisionBlocked(decision_id: str, agent_id: str, decision_type: str,
-                    violations: List[str], risk_score: Optional[float]) -> GlassBoxEvent:
+def DecisionBlocked(
+    decision_id: str,
+    agent_id: str,
+    decision_type: str,
+    violations: List[str],
+    risk_score: Optional[float],
+) -> GlassBoxEvent:
     return GlassBoxEvent(
         event_type="decision.blocked",
-        payload={"decision_id": decision_id, "agent_id": agent_id,
-                 "decision_type": decision_type, "violations": violations,
-                 "risk_score": risk_score},
+        payload={
+            "decision_id": decision_id,
+            "agent_id": agent_id,
+            "decision_type": decision_type,
+            "violations": violations,
+            "risk_score": risk_score,
+        },
     )
 
 
-def DecisionPendingReview(decision_id: str, agent_id: str, decision_type: str,
-                           risk_score: float, workflow_id: Optional[str] = None) -> GlassBoxEvent:
+def DecisionPendingReview(
+    decision_id: str,
+    agent_id: str,
+    decision_type: str,
+    risk_score: float,
+    workflow_id: Optional[str] = None,
+) -> GlassBoxEvent:
     return GlassBoxEvent(
         event_type="decision.pending_review",
-        payload={"decision_id": decision_id, "agent_id": agent_id,
-                 "decision_type": decision_type, "risk_score": risk_score,
-                 "workflow_id": workflow_id},
+        payload={
+            "decision_id": decision_id,
+            "agent_id": agent_id,
+            "decision_type": decision_type,
+            "risk_score": risk_score,
+            "workflow_id": workflow_id,
+        },
     )
 
 
-def PolicyViolated(decision_id: str, agent_id: str,
-                   violations: List[str], warnings: List[str]) -> GlassBoxEvent:
+def PolicyViolated(
+    decision_id: str, agent_id: str, violations: List[str], warnings: List[str]
+) -> GlassBoxEvent:
     return GlassBoxEvent(
         event_type="policy.violated",
-        payload={"decision_id": decision_id, "agent_id": agent_id,
-                 "violations": violations, "warnings": warnings,
-                 "violation_count": len(violations)},
+        payload={
+            "decision_id": decision_id,
+            "agent_id": agent_id,
+            "violations": violations,
+            "warnings": warnings,
+            "violation_count": len(violations),
+        },
     )
 
 
-def CircuitBreakerTripped(agent_id: str, breaker_name: str,
-                           reason: str, is_ecosystem: bool) -> GlassBoxEvent:
+def CircuitBreakerTripped(
+    agent_id: str, breaker_name: str, reason: str, is_ecosystem: bool
+) -> GlassBoxEvent:
     return GlassBoxEvent(
         event_type="circuit_breaker.tripped",
-        payload={"agent_id": agent_id, "breaker_name": breaker_name,
-                 "reason": reason, "is_ecosystem": is_ecosystem},
+        payload={
+            "agent_id": agent_id,
+            "breaker_name": breaker_name,
+            "reason": reason,
+            "is_ecosystem": is_ecosystem,
+        },
     )
 
 
-def AnomalyDetected(decision_id: str, agent_id: str, decision_type: str,
-                     anomalous_fields: List[str], z_score: float) -> GlassBoxEvent:
+def AnomalyDetected(
+    decision_id: str, agent_id: str, decision_type: str, anomalous_fields: List[str], z_score: float
+) -> GlassBoxEvent:
     return GlassBoxEvent(
         event_type="anomaly.detected",
-        payload={"decision_id": decision_id, "agent_id": agent_id,
-                 "decision_type": decision_type, "anomalous_fields": anomalous_fields,
-                 "z_score": z_score},
+        payload={
+            "decision_id": decision_id,
+            "agent_id": agent_id,
+            "decision_type": decision_type,
+            "anomalous_fields": anomalous_fields,
+            "z_score": z_score,
+        },
     )
 
 
-def SecurityViolation(agent_id: str, decision_type: str,
-                       findings: List[str]) -> GlassBoxEvent:
+def SecurityViolation(agent_id: str, decision_type: str, findings: List[str]) -> GlassBoxEvent:
     return GlassBoxEvent(
         event_type="security.violation",
-        payload={"agent_id": agent_id, "decision_type": decision_type,
-                 "findings": findings, "severity": "critical"},
+        payload={
+            "agent_id": agent_id,
+            "decision_type": decision_type,
+            "findings": findings,
+            "severity": "critical",
+        },
     )
 
 
-def SLABreached(workflow_id: str, decision_id: str, agent_id: str,
-                 sla_minutes: int, elapsed_minutes: float) -> GlassBoxEvent:
+def SLABreached(
+    workflow_id: str, decision_id: str, agent_id: str, sla_minutes: int, elapsed_minutes: float
+) -> GlassBoxEvent:
     return GlassBoxEvent(
         event_type="workflow.sla_breached",
-        payload={"workflow_id": workflow_id, "decision_id": decision_id,
-                 "agent_id": agent_id, "sla_minutes": sla_minutes,
-                 "elapsed_minutes": round(elapsed_minutes, 1)},
+        payload={
+            "workflow_id": workflow_id,
+            "decision_id": decision_id,
+            "agent_id": agent_id,
+            "sla_minutes": sla_minutes,
+            "elapsed_minutes": round(elapsed_minutes, 1),
+        },
     )
 
 
 # ── Event Bus ──────────────────────────────────────────────────────────────────
+
 
 class EventBus:
     """
@@ -173,9 +222,10 @@ class EventBus:
 
     def __init__(self, max_workers: int = 4, max_pending_dispatches: int = 5000):
         self._handlers: Dict[str, List[Callable]] = defaultdict(list)
-        self._lock    = threading.Lock()
-        self._pool    = ThreadPoolExecutor(max_workers=max_workers,
-                                           thread_name_prefix="glassbox-events")
+        self._lock = threading.Lock()
+        self._pool = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="glassbox-events"
+        )
         self._max_pending_dispatches = max(1, int(max_pending_dispatches))
         self._pending = threading.Semaphore(self._max_pending_dispatches)
         self._history: deque = deque(maxlen=1000)
@@ -210,8 +260,8 @@ class EventBus:
             self._history.append(event)
 
         with self._lock:
-            specific  = list(self._handlers.get(event.event_type, []))
-            wildcard  = list(self._handlers.get("*", []))
+            specific = list(self._handlers.get(event.event_type, []))
+            wildcard = list(self._handlers.get("*", []))
         all_handlers = specific + wildcard
 
         for handler in all_handlers:
@@ -281,6 +331,7 @@ class EventBus:
 
 # ── Built-in handlers ─────────────────────────────────────────────────────────
 
+
 class LoggingEventHandler:
     """
     Built-in handler: logs all events using the GlassBox logging manager.
@@ -289,13 +340,19 @@ class LoggingEventHandler:
 
     def __init__(self):
         from glassbox.governance.logging_manager import get_logger
+
         self.log = get_logger("events")
 
     def handle(self, event: GlassBoxEvent) -> None:
         self.log.info(
-            "event:%s", event.event_type,
-            extra={"component": "events", "event_id": event.event_id,
-                   "event_type": event.event_type, **event.payload},
+            "event:%s",
+            event.event_type,
+            extra={
+                "component": "events",
+                "event_id": event.event_id,
+                "event_type": event.event_type,
+                **event.payload,
+            },
         )
 
 
@@ -310,30 +367,30 @@ class WebhookEventHandler:
 
     def __init__(
         self,
-        url:      str,
-        headers:  Optional[Dict[str, str]] = None,
-        timeout:  int = 5,
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: int = 5,
         on_types: Optional[List[str]] = None,
     ):
-        self.url      = url
-        self.headers  = headers or {"Content-Type": "application/json"}
-        self.timeout  = timeout
+        self.url = url
+        self.headers = headers or {"Content-Type": "application/json"}
+        self.timeout = timeout
         self.on_types = set(on_types) if on_types else None
 
     def handle(self, event: GlassBoxEvent) -> None:
         if self.on_types and event.event_type not in self.on_types:
             return
         try:
+            import urllib.parse
             import urllib.request
+
             data = json.dumps(event.to_dict()).encode()
-            req  = urllib.request.Request(
-                self.url, data=data, headers=self.headers, method="POST"
-            )
-            urllib.request.urlopen(req, timeout=self.timeout)
+            if urllib.parse.urlparse(self.url).scheme not in ("http", "https"):
+                raise ValueError(f"WebhookHandler: unsupported URL scheme in {self.url!r}")
+            req = urllib.request.Request(self.url, data=data, headers=self.headers, method="POST")
+            urllib.request.urlopen(req, timeout=self.timeout)  # nosec B310 -- scheme checked above
         except Exception as exc:
-            log.warning(
-                "WebhookHandler: POST to %s failed: %s", self.url, exc
-            )
+            log.warning("WebhookHandler: POST to %s failed: %s", self.url, exc)
 
 
 # ── Global default event bus ──────────────────────────────────────────────────

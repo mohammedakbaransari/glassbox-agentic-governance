@@ -34,7 +34,7 @@ Author: Mohammed Akbar Ansari — Independent Researcher
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 
@@ -103,16 +103,16 @@ class ComplianceReporter:
             frameworks_out[fw] = entry
             applicable = data["total"] - data.get("not_applicable", 0)
             total_controls += applicable
-            total_covered  += data.get("implemented", 0) + data.get("partial", 0) * 0.5
+            total_covered += data.get("implemented", 0) + data.get("partial", 0) * 0.5
 
         overall_pct = round(total_covered / max(total_controls, 1) * 100, 1)
 
         return {
-            "generated_at":         datetime.now(timezone.utc).isoformat(),
-            "report_type":          "framework_coverage",
-            "frameworks":           frameworks_out,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "report_type": "framework_coverage",
+            "frameworks": frameworks_out,
             "overall_coverage_pct": overall_pct,
-            "total_controls":       total_controls,
+            "total_controls": total_controls,
         }
 
     def gap_analysis(
@@ -136,7 +136,7 @@ class ComplianceReporter:
               }
             }
         """
-        gaps        = self.cat.gap_analysis(framework=framework)
+        gaps = self.cat.gap_analysis(framework=framework)
         by_framework: Dict[str, List] = {}
 
         for ctrl in gaps:
@@ -144,34 +144,34 @@ class ComplianceReporter:
             by_framework.setdefault(fw, [])
             entry = {
                 "control_id": ctrl["control_id"],
-                "category":   ctrl["category"],
-                "title":      ctrl["title"],
-                "description":ctrl["description"],
+                "category": ctrl["category"],
+                "title": ctrl["title"],
+                "description": ctrl["description"],
             }
             if include_mapping:
                 entry["glassbox_mapping"] = ctrl.get("glassbox_mapping", "")
             # Assign remediation priority based on framework importance
             high_priority_frameworks = {
-                "NIST AI RMF", "EU AI Act", "OWASP Agentic Top 10",
-                "ASD Essential Eight"
+                "NIST AI RMF",
+                "EU AI Act",
+                "OWASP Agentic Top 10",
+                "ASD Essential Eight",
             }
-            entry["remediation_priority"] = (
-                "high" if fw in high_priority_frameworks else "medium"
-            )
+            entry["remediation_priority"] = "high" if fw in high_priority_frameworks else "medium"
             by_framework[fw].append(entry)
 
         return {
-            "generated_at":       datetime.now(timezone.utc).isoformat(),
-            "report_type":        "gap_analysis",
-            "framework_filter":   framework or "all",
-            "total_gaps":         len(gaps),
-            "gaps_by_framework":  by_framework,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "report_type": "gap_analysis",
+            "framework_filter": framework or "all",
+            "total_gaps": len(gaps),
+            "gaps_by_framework": by_framework,
         }
 
     def evidence_audit_trail(
         self,
         control_id: str,
-        limit:      int = 100,
+        limit: int = 100,
     ) -> Dict[str, Any]:
         """
         Full evidence audit trail for a specific control.
@@ -193,7 +193,7 @@ class ComplianceReporter:
               ]
             }
         """
-        ctrl     = self.cat.get_control(control_id)
+        ctrl = self.cat.get_control(control_id)
         evidence = self.cat.get_evidence(control_id)
 
         items = []
@@ -201,34 +201,49 @@ class ComplianceReporter:
             ev_data = {}
             if ev.get("evidence_data"):
                 try:
-                    ev_data = json.loads(ev["evidence_data"]) if isinstance(ev["evidence_data"], str) else ev["evidence_data"]
+                    ev_data = (
+                        json.loads(ev["evidence_data"])
+                        if isinstance(ev["evidence_data"], str)
+                        else ev["evidence_data"]
+                    )
                 except (json.JSONDecodeError, TypeError):
                     pass
 
-            summary = " - ".join(filter(None, [
-                ev_data.get("decision_type"),
-                ev_data.get("final_status"),
-                f"risk {ev_data['risk_score']:.1f}" if ev_data.get("risk_score") is not None else None,
-            ]))
+            summary = " - ".join(
+                filter(
+                    None,
+                    [
+                        ev_data.get("decision_type"),
+                        ev_data.get("final_status"),
+                        (
+                            f"risk {ev_data['risk_score']:.1f}"
+                            if ev_data.get("risk_score") is not None
+                            else None
+                        ),
+                    ],
+                )
+            )
 
-            items.append({
-                "evidence_id":   ev.get("evidence_id"),
-                "decision_id":   ev.get("decision_id"),
-                "agent_id":      ev.get("agent_id"),
-                "evidence_type": ev.get("evidence_type"),
-                "collected_at":  ev.get("collected_at"),
-                "summary":       summary or "governed decision",
-            })
+            items.append(
+                {
+                    "evidence_id": ev.get("evidence_id"),
+                    "decision_id": ev.get("decision_id"),
+                    "agent_id": ev.get("agent_id"),
+                    "evidence_type": ev.get("evidence_type"),
+                    "collected_at": ev.get("collected_at"),
+                    "summary": summary or "governed decision",
+                }
+            )
 
         return {
-            "generated_at":    datetime.now(timezone.utc).isoformat(),
-            "report_type":     "evidence_audit_trail",
-            "control_id":      control_id,
-            "control_title":   ctrl.get("title", "") if ctrl else "",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "report_type": "evidence_audit_trail",
+            "control_id": control_id,
+            "control_title": ctrl.get("title", "") if ctrl else "",
             "control_framework": ctrl.get("framework", "") if ctrl else "",
-            "evidence_count":  len(evidence),
-            "showing":         min(limit, len(evidence)),
-            "evidence":        items,
+            "evidence_count": len(evidence),
+            "showing": min(limit, len(evidence)),
+            "evidence": items,
         }
 
     def executive_summary(self, lookback_days: int = 30) -> Dict[str, Any]:
@@ -249,11 +264,11 @@ class ComplianceReporter:
               ...
             }
         """
-        coverage   = self.framework_coverage(include_evidence_counts=True)
+        coverage = self.framework_coverage(include_evidence_counts=True)
         all_frameworks = coverage["frameworks"]
 
-        fully_covered  = []
-        critical_gaps  = []
+        fully_covered = []
+        critical_gaps = []
         total_evidence = 0
 
         for fw, data in all_frameworks.items():
@@ -265,35 +280,37 @@ class ComplianceReporter:
                 critical_gaps.append(fw)
 
         # Count gaps
-        gaps   = self.gap_analysis()
+        gaps = self.gap_analysis()
         n_gaps = gaps["total_gaps"]
 
         return {
-            "generated_at":           datetime.now(timezone.utc).isoformat(),
-            "report_type":            "executive_summary",
-            "lookback_days":          lookback_days,
-            "overall_coverage_pct":   coverage["overall_coverage_pct"],
-            "total_frameworks":       len(all_frameworks),
-            "total_controls":         coverage["total_controls"],
-            "controls_with_gaps":     n_gaps,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "report_type": "executive_summary",
+            "lookback_days": lookback_days,
+            "overall_coverage_pct": coverage["overall_coverage_pct"],
+            "total_frameworks": len(all_frameworks),
+            "total_controls": coverage["total_controls"],
+            "controls_with_gaps": n_gaps,
             "fully_covered_frameworks": fully_covered,
-            "critical_gap_frameworks":  critical_gaps,
-            "evidence_volume_total":  total_evidence,
-            "frameworks_detail":      {
-                fw: {"coverage_pct": d.get("coverage_pct", 0),
-                     "evidence_count": d.get("evidence_count", 0),
-                     "gap_count": d.get("gap", 0)}
+            "critical_gap_frameworks": critical_gaps,
+            "evidence_volume_total": total_evidence,
+            "frameworks_detail": {
+                fw: {
+                    "coverage_pct": d.get("coverage_pct", 0),
+                    "evidence_count": d.get("evidence_count", 0),
+                    "gap_count": d.get("gap", 0),
+                }
                 for fw, d in all_frameworks.items()
-            }
+            },
         }
 
     def full_report(self) -> Dict[str, Any]:
         """Generate all four report types in a single call."""
         return {
-            "executive_summary":   self.executive_summary(),
-            "framework_coverage":  self.framework_coverage(),
-            "gap_analysis":        self.gap_analysis(),
-            "frameworks":          self.cat.frameworks_list(),
+            "executive_summary": self.executive_summary(),
+            "framework_coverage": self.framework_coverage(),
+            "gap_analysis": self.gap_analysis(),
+            "frameworks": self.cat.frameworks_list(),
         }
 
 
@@ -377,10 +394,10 @@ def create_compliance_blueprint(catalogue, url_prefix: str = "/compliance"):
     """
     try:
         from flask import Blueprint, jsonify, request
-    except ImportError:
-        raise ImportError("Flask is required for compliance blueprint: pip install flask")
+    except ImportError as exc:
+        raise ImportError("Flask is required for compliance blueprint: pip install flask") from exc
 
-    bp       = Blueprint("compliance", __name__, url_prefix=url_prefix)
+    bp = Blueprint("compliance", __name__, url_prefix=url_prefix)
     reporter = ComplianceReporter(catalogue)
 
     @bp.route("/summary")

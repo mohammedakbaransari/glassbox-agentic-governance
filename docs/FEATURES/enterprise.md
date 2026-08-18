@@ -1,7 +1,4 @@
-# GlassBox Framework v1.2.0 — Enterprise Features Reference Guide
-
-**Author:** Mohammed Akbar Ansari  
-**Status:** Production Ready
+# GlassBox Framework — Enterprise Features Reference Guide
 
 ---
 
@@ -22,7 +19,7 @@
 
 ## Overview
 
-GlassBox v1.2.0 features **enterprise-grade modules** for large-scale, regulated deployments plus **distributed governance components** for multi-replica correctness:
+GlassBox features **enterprise-grade modules** for large-scale, regulated deployments plus **distributed governance components** for multi-replica correctness:
 
 | Module | Purpose | Key Features |
 |--------|---------|--------------|
@@ -615,13 +612,19 @@ csv_export = logger.export_records(
 
 ### Retention Policies
 
-```python
-# Auto-delete records older than 7 years (default)
-logger = AuditLogger(retention_days=2555)
+> **`purge_old_records()` is not implemented as a hard delete.** An unconditional
+> `DELETE` would permanently break `verify_hash_chain()` for every record after
+> the deleted range (see `docs/CLAIMS.md`). Calling it raises
+> `NotImplementedError`. Use `glassbox.app.sealer.SegmentSealer` instead, which
+> publishes a signed WORM anchor of a segment's Merkle root *before* purging,
+> so purged records remain provable and verification stays sound:
 
-# Manually purge old records
-deleted_count = logger.purge_old_records(days=730)  # Purge > 2 years
-print(f"Deleted {deleted_count} old records")
+```python
+from glassbox.app.sealer import SegmentSealer
+
+sealer = SegmentSealer(retention_store=retention_store, signer=signer, anchor_store=anchor_store)
+seal_result = sealer.seal_up_to(tenant_id="acme", before=cutoff)
+purge_result = sealer.purge(tenant_id="acme", before=cutoff)  # only after the seal
 ```
 
 ### Audit Statistics
@@ -1186,14 +1189,10 @@ ac.clear_cache()
 
 ### Audit Log Optimization
 
-**Purge old records:**
-```python
-logger = AuditLogger(retention_days=2555)
-
-# Manually purge older records
-deleted = logger.purge_old_records(days=730)
-print(f"Purged {deleted} records")
-```
+**Purge old records:** `purge_old_records()` is not implemented as a hard
+delete (an unconditional `DELETE` would permanently break hash-chain
+verification). Use `glassbox.app.sealer.SegmentSealer` -- see
+[Retention Policies](#retention-policies) above.
 
 **Batch logging:**
 ```python
@@ -1232,7 +1231,7 @@ version: '3.8'
 
 services:
   glassbox-api:
-    image: glassbox:v1.2.0
+    image: glassbox:latest
     environment:
       GLASSBOX_DB_BACKEND: postgresql
       GLASSBOX_DB_HOST: postgres
@@ -1298,7 +1297,7 @@ export GLASSBOX_CONFIG_PATH=/etc/glassbox/config.yaml
 
 ---
 
-## Distributed Governance Components (v1.2.0)
+## Distributed Governance Components
 
 ### DistributedFleetBudgetPolicy
 
@@ -1399,7 +1398,7 @@ rollback()          → ROLLED_BACK
 
 ## Summary
 
-GlassBox v1.2.0 provides **production-ready enterprise features**:
+GlassBox provides **production-ready enterprise features**:
 
 | Feature | Module | Benefit |
 |---------|--------|---------|
@@ -1423,16 +1422,14 @@ GlassBox v1.2.0 provides **production-ready enterprise features**:
 
 ---
 
-## Known Limitations (v1.2.0)
+## Known Limitations
 
 | Module | Issue | Workaround |
 |---|---|---|
-| `access_control.py` | Role cycle detection: `set_parent()` allows circular role inheritance; `get_all_permissions()` returns an incomplete set if A→B→A | Validate role hierarchy at configuration time; cycle resolution is non-destructive |
 | `multitenancy.py` | `tenant_id` path validation does not assert that the resolved path stays inside `GLASSBOX_LOG_DIR` | Restrict tenant IDs to alphanumeric via `[a-z0-9_-]+` regex before calling API |
 | `advanced_audit.py` | `GENESIS_SENTINEL = "0"*64` is hardcoded; a partial genesis record in WAL on crash could break chain verification | Enable `recover_wal_on_startup=True` to replay before reading chain |
 | `api_gateway.py` | Rate limiter evicts oldest shard key without timestamp awareness under sustained attack | Tune `_max_keys_per_shard` upward; back with Redis for distributed deployments |
 
 ---
 
-**Author:** Mohammed Akbar Ansari  
 **License:** Apache 2.0

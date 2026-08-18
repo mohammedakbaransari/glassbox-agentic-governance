@@ -78,6 +78,7 @@ log = get_logger("stage_registry")
 
 class StagePosition(Enum):
     """Built-in stage positions in pipeline."""
+
     PRE_AGENT_ID_VALIDATION = 0.1
     PRE_SECURITY_SANITIZER = 0.2
     STAGE_AGENT_CONTRACT = 1
@@ -94,6 +95,7 @@ class StagePosition(Enum):
 @dataclass
 class PipelineStageConfig:
     """Configuration for a single pipeline stage."""
+
     name: str
     enabled: bool = True
     position: float = 0.0
@@ -108,9 +110,15 @@ class PipelineStageConfig:
 
 class StageExecutionResult:
     """Result of single stage execution."""
+
     __slots__ = (
-        'stage_name', 'passed', 'blocked_reason', 'error', 'latency_ms',
-        'skipped', 'skip_reason',
+        "stage_name",
+        "passed",
+        "blocked_reason",
+        "error",
+        "latency_ms",
+        "skipped",
+        "skip_reason",
     )
 
     def __init__(
@@ -233,14 +241,18 @@ class StageRegistry:
                     if dep not in self._stages:
                         log.warning(
                             "StageRegistry: stage '%s' depends on '%s' which not registered",
-                            name, dep,
+                            name,
+                            dep,
                         )
 
             self._stages[name] = (config, stage_impl)
 
         log.info(
             "StageRegistry: registered stage '%s' at position %.1f (enabled=%s, canary=%d%%)",
-            name, config.position, config.enabled, config.canary_percent,
+            name,
+            config.position,
+            config.enabled,
+            config.canary_percent,
         )
 
     def unregister_stage(self, name: str) -> None:
@@ -289,9 +301,7 @@ class StageRegistry:
             for stage_name, (config, impl) in self._stages.items():
                 # Check if stage is enabled
                 if not config.enabled:
-                    log.debug(
-                        "StageRegistry: stage '%s' disabled, skipping", stage_name
-                    )
+                    log.debug("StageRegistry: stage '%s' disabled, skipping", stage_name)
                     continue
 
                 # Check feature flag
@@ -300,7 +310,8 @@ class StageRegistry:
                     if not flag_enabled:
                         log.debug(
                             "StageRegistry: stage '%s' requires flag '%s' (disabled)",
-                            stage_name, config.feature_flag,
+                            stage_name,
+                            config.feature_flag,
                         )
                         continue
 
@@ -309,7 +320,8 @@ class StageRegistry:
                     if not self._is_agent_in_canary(agent_id, config.canary_percent):
                         log.debug(
                             "StageRegistry: stage '%s' canary excluded agent '%s'",
-                            stage_name, agent_id,
+                            stage_name,
+                            agent_id,
                         )
                         continue
 
@@ -319,7 +331,9 @@ class StageRegistry:
                     if cohort != config.cohort:
                         log.debug(
                             "StageRegistry: stage '%s' cohort mismatch (want=%s, got=%s)",
-                            stage_name, config.cohort, cohort,
+                            stage_name,
+                            config.cohort,
+                            cohort,
                         )
                         continue
 
@@ -330,7 +344,8 @@ class StageRegistry:
 
         log.debug(
             "StageRegistry: execution plan for agent_id=%s has %d stages",
-            agent_id, len(plan),
+            agent_id,
+            len(plan),
         )
 
         return plan
@@ -349,7 +364,7 @@ class StageRegistry:
                 if len(samples) > self._LATENCY_WINDOW:
                     # Drop the oldest half to avoid O(n) list shifts every call;
                     # this keeps memory bounded while preserving recent data.
-                    self._stage_latencies[stage_name] = samples[self._LATENCY_WINDOW // 2:]
+                    self._stage_latencies[stage_name] = samples[self._LATENCY_WINDOW // 2 :]
 
     def get_stage_latency_stats(self) -> Dict[str, Dict[str, float]]:
         """
@@ -375,8 +390,8 @@ class StageRegistry:
                     continue
                 sorted_s = sorted(samples)
                 result[stage_name] = {
-                    "p50_ms":  round(_percentile(sorted_s, 50), 3),
-                    "p99_ms":  round(_percentile(sorted_s, 99), 3),
+                    "p50_ms": round(_percentile(sorted_s, 50), 3),
+                    "p99_ms": round(_percentile(sorted_s, 99), 3),
                     "samples": len(sorted_s),
                 }
         return result
@@ -390,8 +405,7 @@ class StageRegistry:
         configs = self.get_execution_plan(agent_id, request_metadata=request_metadata)
         with self._stages_lock:
             return [
-                (config, self._stages.get(config.name, (config, None))[1])
-                for config in configs
+                (config, self._stages.get(config.name, (config, None))[1]) for config in configs
             ]
 
     def stats(self) -> Dict[str, Any]:
@@ -421,7 +435,7 @@ class StageRegistry:
             return False
 
         # Hash agent_id to 0-100 range
-        hash_obj = hashlib.md5(agent_id.encode())
+        hash_obj = hashlib.md5(agent_id.encode(), usedforsecurity=False)
         hash_int = int(hash_obj.hexdigest(), 16)
         hash_pct = (hash_int % 100) + 1  # 1-100 range
 
@@ -464,7 +478,9 @@ class StageRegistry:
 
             log.info(
                 "StageRegistry: loaded config from %s (%d stages, %d flags)",
-                config_file, len(stages_cfg), len(feature_flags_cfg),
+                config_file,
+                len(stages_cfg),
+                len(feature_flags_cfg),
             )
         except Exception as exc:
             log.error("StageRegistry._load_config_file failed: %s", exc, exc_info=True)

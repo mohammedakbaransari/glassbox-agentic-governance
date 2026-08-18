@@ -12,7 +12,6 @@ import shutil
 import tempfile
 import uuid
 
-
 _TEMP_ROOT = os.path.join(os.getcwd(), ".pytest-tmp")
 
 
@@ -28,7 +27,9 @@ def _temp_path(suffix: str = "", prefix: str = "tmp", dir: str | None = None) ->
 
 
 class _RepoTemporaryDirectory:
-    def __init__(self, suffix: str | None = None, prefix: str | None = None, dir: str | None = None):
+    def __init__(
+        self, suffix: str | None = None, prefix: str | None = None, dir: str | None = None
+    ):
         self.name = _temp_path(suffix or "", prefix or "tmp", dir)
         os.makedirs(self.name, exist_ok=False)
 
@@ -76,7 +77,9 @@ class _RepoNamedTemporaryFile:
                 pass
 
 
-def _repo_mkdtemp(suffix: str | None = None, prefix: str | None = None, dir: str | None = None) -> str:
+def _repo_mkdtemp(
+    suffix: str | None = None, prefix: str | None = None, dir: str | None = None
+) -> str:
     path = _temp_path(suffix or "", prefix or "tmp", dir)
     os.makedirs(path, exist_ok=False)
     return path

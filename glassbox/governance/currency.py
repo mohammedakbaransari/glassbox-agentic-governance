@@ -27,49 +27,49 @@ Usage:
 
 Author: Mohammed Akbar Ansari — Independent Researcher
 """
+
 from __future__ import annotations
 
 import threading
 from typing import Any, Dict, Optional
-
 
 # Default approximate rates relative to USD (1 USD = X units of foreign currency)
 # These are approximations; update via configure_rates() for production use.
 _DEFAULT_RATES_TO_USD: Dict[str, float] = {
     # Major currencies
     "USD": 1.0000,
-    "EUR": 1.0850,    # 1 EUR = 1.0850 USD
-    "GBP": 1.2700,    # 1 GBP = 1.2700 USD
-    "JPY": 0.0067,    # 1 JPY = 0.0067 USD
-    "CHF": 1.1200,    # 1 CHF = 1.1200 USD
-    "CAD": 0.7350,    # 1 CAD = 0.7350 USD
-    "AUD": 0.6500,    # 1 AUD = 0.6500 USD
-    "NZD": 0.6000,    # 1 NZD = 0.6000 USD
-    "CNY": 0.1390,    # 1 CNY = 0.1390 USD
-    "HKD": 0.1280,    # 1 HKD = 0.1280 USD
-    "SGD": 0.7500,    # 1 SGD = 0.7500 USD
+    "EUR": 1.0850,  # 1 EUR = 1.0850 USD
+    "GBP": 1.2700,  # 1 GBP = 1.2700 USD
+    "JPY": 0.0067,  # 1 JPY = 0.0067 USD
+    "CHF": 1.1200,  # 1 CHF = 1.1200 USD
+    "CAD": 0.7350,  # 1 CAD = 0.7350 USD
+    "AUD": 0.6500,  # 1 AUD = 0.6500 USD
+    "NZD": 0.6000,  # 1 NZD = 0.6000 USD
+    "CNY": 0.1390,  # 1 CNY = 0.1390 USD
+    "HKD": 0.1280,  # 1 HKD = 0.1280 USD
+    "SGD": 0.7500,  # 1 SGD = 0.7500 USD
     # South Asian
-    "INR": 0.0120,    # 1 INR = 0.0120 USD
-    "PKR": 0.0036,    # 1 PKR = 0.0036 USD
-    "BDT": 0.0091,    # 1 BDT = 0.0091 USD
-    "LKR": 0.0031,    # 1 LKR = 0.0031 USD
+    "INR": 0.0120,  # 1 INR = 0.0120 USD
+    "PKR": 0.0036,  # 1 PKR = 0.0036 USD
+    "BDT": 0.0091,  # 1 BDT = 0.0091 USD
+    "LKR": 0.0031,  # 1 LKR = 0.0031 USD
     # Middle East / Africa
-    "AED": 0.2723,    # 1 AED = 0.2723 USD
-    "SAR": 0.2667,    # 1 SAR = 0.2667 USD
-    "QAR": 0.2747,    # 1 QAR = 0.2747 USD
-    "ZAR": 0.0540,    # 1 ZAR = 0.0540 USD
+    "AED": 0.2723,  # 1 AED = 0.2723 USD
+    "SAR": 0.2667,  # 1 SAR = 0.2667 USD
+    "QAR": 0.2747,  # 1 QAR = 0.2747 USD
+    "ZAR": 0.0540,  # 1 ZAR = 0.0540 USD
     # Latin America
-    "BRL": 0.2000,    # 1 BRL = 0.2000 USD
-    "MXN": 0.0580,    # 1 MXN = 0.0580 USD
-    "ARS": 0.0011,    # 1 ARS = 0.0011 USD
+    "BRL": 0.2000,  # 1 BRL = 0.2000 USD
+    "MXN": 0.0580,  # 1 MXN = 0.0580 USD
+    "ARS": 0.0011,  # 1 ARS = 0.0011 USD
     # Other
-    "KRW": 0.00075,   # 1 KRW = 0.00075 USD
-    "SEK": 0.0960,    # 1 SEK = 0.0960 USD
-    "NOK": 0.0940,    # 1 NOK = 0.0940 USD
-    "DKK": 0.1450,    # 1 DKK = 0.1450 USD
-    "PLN": 0.2500,    # 1 PLN = 0.2500 USD
-    "CZK": 0.0440,    # 1 CZK = 0.0440 USD
-    "HUF": 0.0028,    # 1 HUF = 0.0028 USD
+    "KRW": 0.00075,  # 1 KRW = 0.00075 USD
+    "SEK": 0.0960,  # 1 SEK = 0.0960 USD
+    "NOK": 0.0940,  # 1 NOK = 0.0940 USD
+    "DKK": 0.1450,  # 1 DKK = 0.1450 USD
+    "PLN": 0.2500,  # 1 PLN = 0.2500 USD
+    "CZK": 0.0440,  # 1 CZK = 0.0440 USD
+    "HUF": 0.0028,  # 1 HUF = 0.0028 USD
 }
 
 
@@ -115,12 +115,12 @@ class CurrencyNormalizer:
         with self._lock:
             rate = self._rates.get(code)
         if rate is None:
-            return float(amount)   # unknown currency — pass through unchanged
+            return float(amount)  # unknown currency — pass through unchanged
         return float(amount) * rate
 
     def normalise_payload_amount(
         self,
-        payload:  Dict[str, Any],
+        payload: Dict[str, Any],
         currency: str = "USD",
     ) -> float:
         """

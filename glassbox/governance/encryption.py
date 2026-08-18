@@ -18,31 +18,31 @@ Design:
 
 Usage:
     from glassbox.governance.encryption import CryptoManager, EncryptedField
-    
+
     # Initialize with auto-generated key
     crypto = CryptoManager()
-    
+
     # Encrypt sensitive data
     encrypted = crypto.encrypt(b"sensitive_data")
-    
+
     # Decrypt
     decrypted = crypto.decrypt(encrypted)
-    
+
     # Work with field-encrypted objects
     field = EncryptedField(name="password", plaintext="secret123")
     encrypted_field = crypto.encrypt_field(field)
     decrypted_field = crypto.decrypt_field(encrypted_field)
-    
+
     # Use derived keys from passphrases
     crypto_derived = CryptoManager.from_passphrase("my_secure_passphrase")
-    
+
 Author: Mohammed Akbar Ansari
 """
 
-import os
 import hashlib
 import hmac
 import json
+import os
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -50,9 +50,10 @@ from typing import Any, Dict, Optional, Tuple
 
 try:
     from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-    from cryptography.hazmat.primitives import hashes
+
     HAS_CRYPTO = True
 except ImportError:
     HAS_CRYPTO = False
@@ -143,8 +144,9 @@ class CryptoManager:
         key = kdf.derive(passphrase.encode())
 
         log.info(
-            "CryptoManager initialized from passphrase "
-            "(iterations=%d, salt_len=%d)", iterations, len(salt)
+            "CryptoManager initialized from passphrase " "(iterations=%d, salt_len=%d)",
+            iterations,
+            len(salt),
         )
 
         return CryptoManager(key=key)
@@ -251,7 +253,7 @@ class CryptoManager:
             raise ValueError("Field is not encrypted")
 
         with self._lock:
-            encrypted_data = field.nonce + field.ciphertext + field.tag
+            encrypted_data = (field.nonce or b"") + (field.ciphertext or b"") + (field.tag or b"")
             plaintext = self.decrypt(encrypted_data)
 
             return EncryptedField(

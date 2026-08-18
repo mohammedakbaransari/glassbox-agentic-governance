@@ -36,10 +36,13 @@ import functools
 import inspect
 import json
 import threading
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from glassbox.governance.models import (
-    DecisionContext, DecisionRequest, DecisionType, FinalStatus,
+    DecisionContext,
+    DecisionRequest,
+    DecisionType,
+    FinalStatus,
 )
 
 if TYPE_CHECKING:
@@ -48,23 +51,24 @@ if TYPE_CHECKING:
 
 # ── Utility ────────────────────────────────────────────────────────────────────
 
+
 def _infer_decision_type(tool_name: str) -> DecisionType:
     """Infer DecisionType from tool name for automatic governance routing."""
     name = tool_name.lower()
     # Check more specific patterns first to avoid false matches
-    if any(w in name for w in ["stock","inventory","warehouse","reorder"]):
+    if any(w in name for w in ["stock", "inventory", "warehouse", "reorder"]):
         return DecisionType.INVENTORY
-    if any(w in name for w in ["procure","purchase","order","buy","supplier"]):
+    if any(w in name for w in ["procure", "purchase", "order", "buy", "supplier"]):
         return DecisionType.PROCUREMENT
-    if any(w in name for w in ["pric","cost","price","rate"]):
+    if any(w in name for w in ["pric", "cost", "price", "rate"]):
         return DecisionType.PRICING
-    if any(w in name for w in ["transfer","pay","fund","wire","financial"]):
+    if any(w in name for w in ["transfer", "pay", "fund", "wire", "financial"]):
         return DecisionType.FINANCIAL
-    if any(w in name for w in ["ship","logistic","route","deliver","freight"]):
+    if any(w in name for w in ["ship", "logistic", "route", "deliver", "freight"]):
         return DecisionType.LOGISTICS
-    if any(w in name for w in ["deploy","server","infra","k8s","devops","ops"]):
+    if any(w in name for w in ["deploy", "server", "infra", "k8s", "devops", "ops"]):
         return DecisionType.IT_OPS
-    if any(w in name for w in ["hr","hire","fire","salary","employee"]):
+    if any(w in name for w in ["hr", "hire", "fire", "salary", "employee"]):
         return DecisionType.HR
     return DecisionType.CUSTOM
 
@@ -81,9 +85,10 @@ class GovernanceBlockedError(Exception):
     Raised when a governance check blocks a tool call.
     AI frameworks catch this and handle as a tool failure.
     """
+
     def __init__(self, tool_name: str, violations: List[str], decision_id: str):
-        self.tool_name   = tool_name
-        self.violations  = violations
+        self.tool_name = tool_name
+        self.violations = violations
         self.decision_id = decision_id
         super().__init__(
             f"GlassBox blocked '{tool_name}': {violations[0] if violations else 'governance block'}"
@@ -93,6 +98,7 @@ class GovernanceBlockedError(Exception):
 # ══════════════════════════════════════════════════════════════════════════════
 # LANGCHAIN ADAPTER
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class LangChainAdapter:
     """
@@ -119,15 +125,15 @@ class LangChainAdapter:
 
     def __init__(
         self,
-        pipeline:         "GovernancePipeline",
-        agent_id:         str = "langchain_agent",
+        pipeline: "GovernancePipeline",
+        agent_id: str = "langchain_agent",
         decision_type_map: Optional[Dict[str, DecisionType]] = None,
-        confidence:       float = 1.0,
+        confidence: float = 1.0,
     ):
-        self.pipeline          = pipeline
-        self.agent_id          = agent_id
+        self.pipeline = pipeline
+        self.agent_id = agent_id
         self.decision_type_map = decision_type_map or {}
-        self.confidence        = confidence
+        self.confidence = confidence
 
     def wrap_tool(self, tool) -> Any:
         """
@@ -137,8 +143,8 @@ class LangChainAdapter:
         """
         adapter = self
 
-        original_run = tool._run if hasattr(tool, '_run') else tool.run
-        original_arun = getattr(tool, '_arun', None)
+        original_run = tool._run if hasattr(tool, "_run") else tool.run
+        original_arun = getattr(tool, "_arun", None)
 
         @functools.wraps(original_run)
         def governed_run(*args, **kwargs):
@@ -147,7 +153,8 @@ class LangChainAdapter:
                 tool_name=tool.name,
                 tool_input=tool_input,
                 original_fn=original_run,
-                args=args, kwargs=kwargs,
+                args=args,
+                kwargs=kwargs,
             )
 
         @functools.wraps(original_run)
@@ -157,15 +164,16 @@ class LangChainAdapter:
                 tool_name=tool.name,
                 tool_input=tool_input,
                 original_fn=original_arun or original_run,
-                args=args, kwargs=kwargs,
+                args=args,
+                kwargs=kwargs,
             )
 
-        if hasattr(tool, '_run'):
+        if hasattr(tool, "_run"):
             tool._run = governed_run
         else:
             tool.run = governed_run
 
-        if hasattr(tool, '_arun'):
+        if hasattr(tool, "_arun"):
             tool._arun = governed_arun
 
         return tool
@@ -197,18 +205,21 @@ class LangChainAdapter:
         args: tuple,
         kwargs: dict,
     ) -> Any:
-        dtype   = self.decision_type_map.get(tool_name) or _infer_decision_type(tool_name)
+        dtype = self.decision_type_map.get(tool_name) or _infer_decision_type(tool_name)
         payload = self._build_payload(tool_name, tool_input)
-        ctx     = DecisionContext(confidence=self.confidence, source_system="langchain")
+        ctx = DecisionContext(confidence=self.confidence, source_system="langchain")
         request = DecisionRequest(
-            agent_id=self.agent_id, decision_type=dtype,
-            payload=payload, context=ctx,
+            agent_id=self.agent_id,
+            decision_type=dtype,
+            payload=payload,
+            context=ctx,
         )
         response = self.pipeline.process(request)
 
         if response.final_status == FinalStatus.BLOCKED:
             raise GovernanceBlockedError(
-                tool_name, response.policy_violations, response.decision_id)
+                tool_name, response.policy_violations, response.decision_id
+            )
 
         return original_fn(*args, **kwargs)
 
@@ -220,18 +231,21 @@ class LangChainAdapter:
         args: tuple,
         kwargs: dict,
     ) -> Any:
-        dtype   = self.decision_type_map.get(tool_name) or _infer_decision_type(tool_name)
+        dtype = self.decision_type_map.get(tool_name) or _infer_decision_type(tool_name)
         payload = self._build_payload(tool_name, tool_input)
-        ctx     = DecisionContext(confidence=self.confidence, source_system="langchain_async")
+        ctx = DecisionContext(confidence=self.confidence, source_system="langchain_async")
         request = DecisionRequest(
-            agent_id=self.agent_id, decision_type=dtype,
-            payload=payload, context=ctx,
+            agent_id=self.agent_id,
+            decision_type=dtype,
+            payload=payload,
+            context=ctx,
         )
         response = await self.pipeline.process_async(request)
 
         if response.final_status == FinalStatus.BLOCKED:
             raise GovernanceBlockedError(
-                tool_name, response.policy_violations, response.decision_id)
+                tool_name, response.policy_violations, response.decision_id
+            )
 
         return await _await_or_run_sync(original_fn, *args, **kwargs)
 
@@ -239,6 +253,7 @@ class LangChainAdapter:
 # ══════════════════════════════════════════════════════════════════════════════
 # LANGGRAPH ADAPTER
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class LangGraphAdapter:
     """
@@ -272,11 +287,11 @@ class LangGraphAdapter:
 
     def wrap_node(
         self,
-        node_fn:           Callable,
-        agent_id:          str,
-        decision_type:     DecisionType,
-        payload_extractor: Callable[[Any], Dict] = None,
-        confidence:        float = 1.0,
+        node_fn: Callable,
+        agent_id: str,
+        decision_type: DecisionType,
+        payload_extractor: Optional[Callable[[Any], Dict]] = None,
+        confidence: float = 1.0,
     ) -> Callable:
         """
         Wrap a LangGraph node function with governance.
@@ -284,35 +299,43 @@ class LangGraphAdapter:
         payload_extractor: fn(state) → Dict — extracts governance payload from state.
         If not provided, the entire state dict is used as payload.
         """
-        pipeline   = self.pipeline
-        _extractor = payload_extractor or (lambda s: s if isinstance(s, dict) else {"state": str(s)})
+        pipeline = self.pipeline
+        _extractor = payload_extractor or (
+            lambda s: s if isinstance(s, dict) else {"state": str(s)}
+        )
 
         @functools.wraps(node_fn)
         def governed_node(state):
             payload = _extractor(state)
-            ctx     = DecisionContext(confidence=confidence, source_system="langgraph")
+            ctx = DecisionContext(confidence=confidence, source_system="langgraph")
             request = DecisionRequest(
-                agent_id=agent_id, decision_type=decision_type,
-                payload=payload, context=ctx,
+                agent_id=agent_id,
+                decision_type=decision_type,
+                payload=payload,
+                context=ctx,
             )
             response = pipeline.process(request)
             if response.final_status == FinalStatus.BLOCKED:
                 raise GovernanceBlockedError(
-                    agent_id, response.policy_violations, response.decision_id)
+                    agent_id, response.policy_violations, response.decision_id
+                )
             return node_fn(state)
 
         @functools.wraps(node_fn)
         async def governed_node_async(state):
-            payload  = _extractor(state)
-            ctx      = DecisionContext(confidence=confidence, source_system="langgraph_async")
-            request  = DecisionRequest(
-                agent_id=agent_id, decision_type=decision_type,
-                payload=payload, context=ctx,
+            payload = _extractor(state)
+            ctx = DecisionContext(confidence=confidence, source_system="langgraph_async")
+            request = DecisionRequest(
+                agent_id=agent_id,
+                decision_type=decision_type,
+                payload=payload,
+                context=ctx,
             )
             response = await pipeline.process_async(request)
             if response.final_status == FinalStatus.BLOCKED:
                 raise GovernanceBlockedError(
-                    agent_id, response.policy_violations, response.decision_id)
+                    agent_id, response.policy_violations, response.decision_id
+                )
             return await _await_or_run_sync(node_fn, state)
 
         if inspect.iscoroutinefunction(node_fn):
@@ -323,6 +346,7 @@ class LangGraphAdapter:
 # ══════════════════════════════════════════════════════════════════════════════
 # AUTOGEN ADAPTER
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class AutoGenAdapter:
     """
@@ -347,26 +371,23 @@ class AutoGenAdapter:
 
     def __init__(
         self,
-        pipeline:  "GovernancePipeline",
-        agent_id:  str   = "autogen_agent",
+        pipeline: "GovernancePipeline",
+        agent_id: str = "autogen_agent",
         confidence: float = 1.0,
-        extract_fields: List[str] = ("amount", "quantity", "target", "account", "reference"),
+        extract_fields: Tuple[str, ...] = ("amount", "quantity", "target", "account", "reference"),
     ):
-        self.pipeline       = pipeline
-        self.agent_id       = agent_id
-        self.confidence     = confidence
+        self.pipeline = pipeline
+        self.agent_id = agent_id
+        self.confidence = confidence
         self.extract_fields = extract_fields
 
     def govern_function_map(self, function_map: Dict[str, Callable]) -> Dict[str, Callable]:
         """Return a new function_map with every function wrapped with governance."""
-        return {
-            name: self._wrap_fn(name, fn)
-            for name, fn in function_map.items()
-        }
+        return {name: self._wrap_fn(name, fn) for name, fn in function_map.items()}
 
     def _wrap_fn(self, fn_name: str, fn: Callable) -> Callable:
-        pipeline   = self.pipeline
-        agent_id   = self.agent_id
+        pipeline = self.pipeline
+        agent_id = self.agent_id
         confidence = self.confidence
         extract_fields = self.extract_fields
 
@@ -379,11 +400,13 @@ class AutoGenAdapter:
             }
             # Extract known fields from kwargs for better policy evaluation
             payload.update({k: v for k, v in kwargs.items() if k in extract_fields})
-            dtype   = _infer_decision_type(fn_name)
-            ctx     = DecisionContext(confidence=confidence, source_system="autogen")
+            dtype = _infer_decision_type(fn_name)
+            ctx = DecisionContext(confidence=confidence, source_system="autogen")
             request = DecisionRequest(
-                agent_id=agent_id, decision_type=dtype,
-                payload=payload, context=ctx,
+                agent_id=agent_id,
+                decision_type=dtype,
+                payload=payload,
+                context=ctx,
             )
             response = pipeline.process(request)
             if response.final_status == FinalStatus.BLOCKED:
@@ -401,6 +424,7 @@ class AutoGenAdapter:
 # ══════════════════════════════════════════════════════════════════════════════
 # GENERIC TOOL ADAPTER
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class GenericToolAdapter:
     """
@@ -428,56 +452,64 @@ class GenericToolAdapter:
 
     def govern(
         self,
-        agent_id:          str,
-        decision_type:     DecisionType,
+        agent_id: str,
+        decision_type: DecisionType,
         payload_extractor: Optional[Callable] = None,
-        confidence:        float = 1.0,
+        confidence: float = 1.0,
     ):
         """Decorator — govern the decorated function."""
+
         def decorator(fn):
-            return self.wrap(fn, agent_id, decision_type,
-                             payload_extractor, confidence)
+            return self.wrap(fn, agent_id, decision_type, payload_extractor, confidence)
+
         return decorator
 
     def wrap(
         self,
-        fn:                Callable,
-        agent_id:          str,
-        decision_type:     DecisionType,
+        fn: Callable,
+        agent_id: str,
+        decision_type: DecisionType,
         payload_extractor: Optional[Callable] = None,
-        confidence:        float = 1.0,
+        confidence: float = 1.0,
     ) -> Callable:
         """Wrap fn with governance. Returns governed callable."""
         pipeline = self.pipeline
-        _extract = payload_extractor or (lambda a, kw: {
-            **{f"arg_{i}": v for i, v in enumerate(a)}, **kw})
+        _extract = payload_extractor or (
+            lambda a, kw: {**{f"arg_{i}": v for i, v in enumerate(a)}, **kw}
+        )
 
         @functools.wraps(fn)
         def governed(*args, **kwargs):
-            payload  = _extract(args, kwargs)
-            ctx      = DecisionContext(confidence=confidence, source_system="generic_adapter")
-            request  = DecisionRequest(
-                agent_id=agent_id, decision_type=decision_type,
-                payload=payload, context=ctx,
+            payload = _extract(args, kwargs)
+            ctx = DecisionContext(confidence=confidence, source_system="generic_adapter")
+            request = DecisionRequest(
+                agent_id=agent_id,
+                decision_type=decision_type,
+                payload=payload,
+                context=ctx,
             )
             response = pipeline.process(request)
             if response.final_status == FinalStatus.BLOCKED:
                 raise GovernanceBlockedError(
-                    fn.__name__, response.policy_violations, response.decision_id)
+                    fn.__name__, response.policy_violations, response.decision_id
+                )
             return fn(*args, **kwargs)
 
         @functools.wraps(fn)
         async def governed_async(*args, **kwargs):
-            payload  = _extract(args, kwargs)
-            ctx      = DecisionContext(confidence=confidence, source_system="generic_async")
-            request  = DecisionRequest(
-                agent_id=agent_id, decision_type=decision_type,
-                payload=payload, context=ctx,
+            payload = _extract(args, kwargs)
+            ctx = DecisionContext(confidence=confidence, source_system="generic_async")
+            request = DecisionRequest(
+                agent_id=agent_id,
+                decision_type=decision_type,
+                payload=payload,
+                context=ctx,
             )
             response = await pipeline.process_async(request)
             if response.final_status == FinalStatus.BLOCKED:
                 raise GovernanceBlockedError(
-                    fn.__name__, response.policy_violations, response.decision_id)
+                    fn.__name__, response.policy_violations, response.decision_id
+                )
             return await _await_or_run_sync(fn, *args, **kwargs)
 
         if inspect.iscoroutinefunction(fn):

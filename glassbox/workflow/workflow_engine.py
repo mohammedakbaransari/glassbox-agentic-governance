@@ -28,13 +28,15 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from glassbox.governance.models import FinalStatus
 from glassbox.governance.logging_manager import get_logger
+from glassbox.governance.models import FinalStatus
 from glassbox.store.repository import (
-    WorkflowInstance, WorkflowStep, WorkflowRepository,
     SQLiteWorkflowRepository,
+    WorkflowInstance,
+    WorkflowRepository,
+    WorkflowStep,
 )
 
 if TYPE_CHECKING:
@@ -68,20 +70,20 @@ class WorkflowEngine:
 
     def __init__(
         self,
-        repository:         Optional[WorkflowRepository] = None,
-        event_bus:          Optional["EventBus"]         = None,
-        default_sla_minutes: int                         = 60,
-        monitor_sla:        bool                         = False,
-        monitor_interval_s: int                          = 60,
+        repository: Optional[WorkflowRepository] = None,
+        event_bus: Optional["EventBus"] = None,
+        default_sla_minutes: int = 60,
+        monitor_sla: bool = False,
+        monitor_interval_s: int = 60,
     ):
-        self.repo                 = repository or SQLiteWorkflowRepository(":memory:")
-        self.event_bus            = event_bus
-        self.default_sla_minutes  = default_sla_minutes
-        self._monitor_interval_s  = monitor_interval_s
+        self.repo = repository or SQLiteWorkflowRepository(":memory:")
+        self.event_bus = event_bus
+        self.default_sla_minutes = default_sla_minutes
+        self._monitor_interval_s = monitor_interval_s
         self._monitor_thread: Optional[threading.Thread] = None
-        self._stop_monitor        = threading.Event()
-        self._quorum_state: Dict[str, list] = {}   # {workflow_id: [actor, ...]}
-        self._quorum_lock         = threading.Lock()
+        self._stop_monitor = threading.Event()
+        self._quorum_state: Dict[str, list] = {}  # {workflow_id: [actor, ...]}
+        self._quorum_lock = threading.Lock()
 
         if monitor_sla:
             self._start_sla_monitor()
@@ -90,15 +92,15 @@ class WorkflowEngine:
 
     def create_from_decision(
         self,
-        decision_id:   str,
-        agent_id:      str,
+        decision_id: str,
+        agent_id: str,
         decision_type: str,
-        risk_score:    float,
-        violations:    List[str],
-        warnings:      List[str]   = None,
-        sla_minutes:   int         = None,
-        assigned_to:   Optional[str] = None,
-        escalate_to:   Optional[str] = None,
+        risk_score: float,
+        violations: List[str],
+        warnings: Optional[List[str]] = None,
+        sla_minutes: Optional[int] = None,
+        assigned_to: Optional[str] = None,
+        escalate_to: Optional[str] = None,
     ) -> WorkflowInstance:
         """
         Create a new workflow instance for a decision pending human review.
@@ -114,7 +116,8 @@ class WorkflowEngine:
         if existing is not None:
             log.info(
                 "Workflow already exists for decision %s (workflow_id=%s); returning existing",
-                decision_id, existing.workflow_id,
+                decision_id,
+                existing.workflow_id,
                 extra={
                     "component": "workflow_engine",
                     "event": "create_idempotent_skip",
@@ -126,25 +129,30 @@ class WorkflowEngine:
 
         workflow_id = str(uuid.uuid4())
         instance = WorkflowInstance(
-            workflow_id   = workflow_id,
-            decision_id   = decision_id,
-            agent_id      = agent_id,
-            decision_type = decision_type,
-            risk_score    = risk_score,
-            violations    = violations + (warnings or []),
-            sla_minutes   = sla_minutes or self.default_sla_minutes,
-            assigned_to   = assigned_to,
-            escalate_to   = escalate_to,
+            workflow_id=workflow_id,
+            decision_id=decision_id,
+            agent_id=agent_id,
+            decision_type=decision_type,
+            risk_score=risk_score,
+            violations=violations + (warnings or []),
+            sla_minutes=sla_minutes or self.default_sla_minutes,
+            assigned_to=assigned_to,
+            escalate_to=escalate_to,
         )
         self.repo.create(instance)
 
         if self.event_bus:
             from glassbox.events.event_bus import DecisionPendingReview
-            self.event_bus.publish(DecisionPendingReview(
-                decision_id=decision_id, agent_id=agent_id,
-                decision_type=decision_type, risk_score=risk_score,
-                workflow_id=workflow_id,
-            ))
+
+            self.event_bus.publish(
+                DecisionPendingReview(
+                    decision_id=decision_id,
+                    agent_id=agent_id,
+                    decision_type=decision_type,
+                    risk_score=risk_score,
+                    workflow_id=workflow_id,
+                )
+            )
 
         return instance
 
@@ -153,17 +161,17 @@ class WorkflowEngine:
     def start_review(
         self,
         workflow_id: str,
-        actor:       str,
-        notes:       str = "",
+        actor: str,
+        notes: str = "",
     ) -> Optional[WorkflowInstance]:
         """Mark a workflow as in_review (reviewer has picked it up)."""
         return self._transition(workflow_id, "review", actor, notes, "in_review")
 
     def approve(
         self,
-        workflow_id:  str,
-        actor:        str,
-        notes:        str = "",
+        workflow_id: str,
+        actor: str,
+        notes: str = "",
         min_approvers: int = 1,
     ) -> Optional[WorkflowInstance]:
         """
@@ -193,29 +201,40 @@ class WorkflowEngine:
 
         if count >= min_approvers:
             # Quorum reached — transition to approved
-            inst = self._transition(workflow_id, "approve", actor,
-                                    f"Quorum reached ({count}/{min_approvers}). {notes}",
-                                    "approved", step_outcome="approved")
+            inst = self._transition(
+                workflow_id,
+                "approve",
+                actor,
+                f"Quorum reached ({count}/{min_approvers}). {notes}",
+                "approved",
+                step_outcome="approved",
+            )
             if inst:
                 inst.approval_actors = list(actors)
                 self.repo.update(inst)
             if inst and self.event_bus:
                 from glassbox.events.event_bus import DecisionExecuted
-                self.event_bus.publish(DecisionExecuted(
-                    decision_id=inst.decision_id, agent_id=inst.agent_id,
-                    decision_type=inst.decision_type, risk_score=inst.risk_score or 0.0,
-                    latency_ms=0.0,
-                ))
+
+                self.event_bus.publish(
+                    DecisionExecuted(
+                        decision_id=inst.decision_id,
+                        agent_id=inst.agent_id,
+                        decision_type=inst.decision_type,
+                        risk_score=inst.risk_score or 0.0,
+                        latency_ms=0.0,
+                    )
+                )
             with self._quorum_lock:
                 self._quorum_state.pop(workflow_id, None)
         else:
             # Partial — record step, persist
             step = WorkflowStep(
                 step_id=str(uuid.uuid4()),
-                workflow_id=workflow_id, step_type="approve",
+                workflow_id=workflow_id,
+                step_type="approve",
                 actor=actor,
                 notes=f"Partial approval ({count}/{min_approvers}). "
-                      f"Needs {min_approvers - count} more approver(s). {notes}",
+                f"Needs {min_approvers - count} more approver(s). {notes}",
                 outcome="partial_approval",
             )
             inst.add_step(step)
@@ -225,10 +244,10 @@ class WorkflowEngine:
 
     def quorum_approve(
         self,
-        workflow_id:   str,
-        actor:         str,
+        workflow_id: str,
+        actor: str,
         min_approvers: int = 2,
-        notes:         str = "",
+        notes: str = "",
     ) -> Optional[WorkflowInstance]:
         """
         Convenience method for quorum/dual-control approval.
@@ -244,28 +263,33 @@ class WorkflowEngine:
     def reject(
         self,
         workflow_id: str,
-        actor:       str,
-        notes:       str = "",
+        actor: str,
+        notes: str = "",
     ) -> Optional[WorkflowInstance]:
         """Reject a pending decision — it will be blocked."""
-        inst = self._transition(workflow_id, "reject", actor, notes, "rejected",
-                                step_outcome="rejected")
+        inst = self._transition(
+            workflow_id, "reject", actor, notes, "rejected", step_outcome="rejected"
+        )
         if inst and self.event_bus:
             from glassbox.events.event_bus import DecisionBlocked
-            self.event_bus.publish(DecisionBlocked(
-                decision_id=inst.decision_id, agent_id=inst.agent_id,
-                decision_type=inst.decision_type,
-                violations=[f"Rejected by {actor}: {notes}"],
-                risk_score=inst.risk_score,
-            ))
+
+            self.event_bus.publish(
+                DecisionBlocked(
+                    decision_id=inst.decision_id,
+                    agent_id=inst.agent_id,
+                    decision_type=inst.decision_type,
+                    violations=[f"Rejected by {actor}: {notes}"],
+                    risk_score=inst.risk_score,
+                )
+            )
         return inst
 
     def escalate(
         self,
-        workflow_id:  str,
-        actor:        str,
-        escalate_to:  str,
-        notes:        str = "",
+        workflow_id: str,
+        actor: str,
+        escalate_to: str,
+        notes: str = "",
     ) -> Optional[WorkflowInstance]:
         """Escalate to a senior reviewer."""
         inst = self._get(workflow_id)
@@ -273,8 +297,12 @@ class WorkflowEngine:
             return None
         inst.escalate_to = escalate_to
         step = WorkflowStep(
-            step_id=str(uuid.uuid4()), workflow_id=workflow_id,
-            step_type="escalate", actor=actor, notes=notes, outcome="escalated",
+            step_id=str(uuid.uuid4()),
+            workflow_id=workflow_id,
+            step_type="escalate",
+            actor=actor,
+            notes=notes,
+            outcome="escalated",
         )
         step.completed_at = datetime.now(timezone.utc).isoformat()
         inst.add_step(step)
@@ -284,16 +312,20 @@ class WorkflowEngine:
     def add_comment(
         self,
         workflow_id: str,
-        actor:       str,
-        notes:       str,
+        actor: str,
+        notes: str,
     ) -> Optional[WorkflowInstance]:
         """Add a review comment without changing workflow state."""
         inst = self._get(workflow_id)
         if not inst:
             return None
         step = WorkflowStep(
-            step_id=str(uuid.uuid4()), workflow_id=workflow_id,
-            step_type="comment", actor=actor, notes=notes, outcome="pending",
+            step_id=str(uuid.uuid4()),
+            workflow_id=workflow_id,
+            step_type="comment",
+            actor=actor,
+            notes=notes,
+            outcome="pending",
         )
         inst.steps.append(step)
         inst.updated_at = datetime.now(timezone.utc).isoformat()
@@ -318,13 +350,13 @@ class WorkflowEngine:
 
     def queue_stats(self) -> Dict[str, Any]:
         """Snapshot of the current review queue."""
-        pending  = self.list_pending()
+        pending = self.list_pending()
         breached = [w for w in pending if w.is_sla_breached()]
         return {
-            "total_pending":     len(pending),
-            "sla_breached":      len(breached),
-            "by_decision_type":  self._count_by(pending, "decision_type"),
-            "by_assigned_to":    self._count_by(pending, "assigned_to"),
+            "total_pending": len(pending),
+            "sla_breached": len(breached),
+            "by_decision_type": self._count_by(pending, "decision_type"),
+            "by_assigned_to": self._count_by(pending, "assigned_to"),
             "oldest_pending_minutes": self._oldest_minutes(pending),
         }
 
@@ -349,13 +381,16 @@ class WorkflowEngine:
                     elapsed = self._elapsed_minutes(wf)
                     if self.event_bus:
                         from glassbox.events.event_bus import SLABreached
-                        self.event_bus.publish(SLABreached(
-                            workflow_id=wf.workflow_id,
-                            decision_id=wf.decision_id,
-                            agent_id=wf.agent_id,
-                            sla_minutes=wf.sla_minutes,
-                            elapsed_minutes=elapsed,
-                        ))
+
+                        self.event_bus.publish(
+                            SLABreached(
+                                workflow_id=wf.workflow_id,
+                                decision_id=wf.decision_id,
+                                agent_id=wf.agent_id,
+                                sla_minutes=wf.sla_minutes,
+                                elapsed_minutes=elapsed,
+                            )
+                        )
                     # Auto-escalate if escalate_to is configured
                     if wf.escalate_to and wf.state != "escalated":
                         self.escalate(
@@ -390,19 +425,23 @@ class WorkflowEngine:
 
     def _transition(
         self,
-        workflow_id:   str,
-        step_type:     str,
-        actor:         str,
-        notes:         str,
-        new_state:     str,
-        step_outcome:  str = "pending",
+        workflow_id: str,
+        step_type: str,
+        actor: str,
+        notes: str,
+        new_state: str,
+        step_outcome: str = "pending",
     ) -> Optional[WorkflowInstance]:
         inst = self._get(workflow_id)
         if not inst:
             return None
         step = WorkflowStep(
-            step_id=str(uuid.uuid4()), workflow_id=workflow_id,
-            step_type=step_type, actor=actor, notes=notes, outcome=step_outcome,
+            step_id=str(uuid.uuid4()),
+            workflow_id=workflow_id,
+            step_type=step_type,
+            actor=actor,
+            notes=notes,
+            outcome=step_outcome,
         )
         step.completed_at = datetime.now(timezone.utc).isoformat()
         if new_state not in ("in_review",):

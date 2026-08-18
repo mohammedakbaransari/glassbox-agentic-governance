@@ -16,13 +16,16 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from glassbox.governance.pipeline       import GovernancePipeline
-from glassbox.governance.models         import (
-    DecisionContext, DecisionRequest, DecisionType, FinalStatus,
-)
 from glassbox.governance.anomaly_detector import AnomalyDetector
+from glassbox.governance.models import (
+    DecisionContext,
+    DecisionRequest,
+    DecisionType,
+    FinalStatus,
+)
+from glassbox.governance.pipeline import GovernancePipeline
 
 DIV = "=" * 68
 
@@ -39,13 +42,22 @@ def _row(label, value, unit=""):
 
 PAYLOADS = {
     DecisionType.PROCUREMENT: {"amount": 5000, "supplier_id": "SUP-001", "category": "hardware"},
-    DecisionType.PRICING:     {"new_price": 102.0, "previous_price": 100.0, "product_id": "P-001", "reason": "demand"},
-    DecisionType.FINANCIAL:   {"amount": 15000, "destination_account": "ACC-001", "reference": "REF-001"},
-    DecisionType.INVENTORY:   {"quantity": 500, "product_id": "SKU-001", "warehouse_id": "WH-01"},
-    DecisionType.LOGISTICS:   {"origin": "MUM", "destination": "DEL", "shipment_value": 5000},
-    DecisionType.IT_OPS:      {"action": "restart_service", "target": "svc-api"},
-    DecisionType.HR:          {"action": "address_update", "employee_id": "EMP-001"},
-    DecisionType.CUSTOM:      {"description": "benchmark decision"},
+    DecisionType.PRICING: {
+        "new_price": 102.0,
+        "previous_price": 100.0,
+        "product_id": "P-001",
+        "reason": "demand",
+    },
+    DecisionType.FINANCIAL: {
+        "amount": 15000,
+        "destination_account": "ACC-001",
+        "reference": "REF-001",
+    },
+    DecisionType.INVENTORY: {"quantity": 500, "product_id": "SKU-001", "warehouse_id": "WH-01"},
+    DecisionType.LOGISTICS: {"origin": "MUM", "destination": "DEL", "shipment_value": 5000},
+    DecisionType.IT_OPS: {"action": "restart_service", "target": "svc-api"},
+    DecisionType.HR: {"action": "address_update", "employee_id": "EMP-001"},
+    DecisionType.CUSTOM: {"description": "benchmark decision"},
 }
 
 
@@ -57,6 +69,7 @@ def warm_up(pipeline, n=500):
 
 
 # ── Benchmark 1: Single-type throughput ──────────────────────────────────────
+
 
 def bench_throughput(n=10_000):
     _hdr("Benchmark 1 — Single-Type Throughput (Procurement)")
@@ -78,6 +91,7 @@ def bench_throughput(n=10_000):
 
 
 # ── Benchmark 2: Latency distribution ────────────────────────────────────────
+
 
 def bench_latency(n=5000):
     _hdr("Benchmark 2 — Latency Distribution (All Decision Types)")
@@ -112,62 +126,97 @@ def bench_latency(n=5000):
 
 # ── Benchmark 3: Policy accuracy ─────────────────────────────────────────────
 
+
 def bench_policy_accuracy():
     _hdr("Benchmark 3 — Policy Enforcement Accuracy")
     # Use a fresh pipeline per run with no ecosystem limit to avoid breaker interference
     from glassbox.governance.velocity_breaker import VelocityBreaker
-    vb = VelocityBreaker(max_decisions=10000, window_seconds=3600,
-                         ecosystem_max=100000, ecosystem_window_seconds=3600)
+
+    vb = VelocityBreaker(
+        max_decisions=10000,
+        window_seconds=3600,
+        ecosystem_max=100000,
+        ecosystem_window_seconds=3600,
+    )
     pipeline = GovernancePipeline(echo=False, velocity_breaker=vb)
 
     # Ground-truth test cases: (payload, expected_status)
     cases = [
         # Should EXECUTE
-        (DecisionType.PROCUREMENT,
-         {"amount": 5000, "supplier_id": "SUP-001", "category": "hardware"},
-         FinalStatus.EXECUTED),
-        (DecisionType.PROCUREMENT,
-         {"amount": 700000, "supplier_id": "SUP-001", "category": "hardware", "contract_id": "CT-001"},
-         FinalStatus.EXECUTED),
-        (DecisionType.PRICING,
-         {"new_price": 110.0, "previous_price": 100.0, "product_id": "P1", "reason": "demand"},
-         FinalStatus.EXECUTED),
-        (DecisionType.FINANCIAL,
-         {"amount": 50000, "destination_account": "ACC-1", "reference": "REF-1"},
-         FinalStatus.EXECUTED),
-        (DecisionType.IT_OPS,
-         {"action": "restart_service", "target": "web-tier"},
-         FinalStatus.EXECUTED),
+        (
+            DecisionType.PROCUREMENT,
+            {"amount": 5000, "supplier_id": "SUP-001", "category": "hardware"},
+            FinalStatus.EXECUTED,
+        ),
+        (
+            DecisionType.PROCUREMENT,
+            {
+                "amount": 700000,
+                "supplier_id": "SUP-001",
+                "category": "hardware",
+                "contract_id": "CT-001",
+            },
+            FinalStatus.EXECUTED,
+        ),
+        (
+            DecisionType.PRICING,
+            {"new_price": 110.0, "previous_price": 100.0, "product_id": "P1", "reason": "demand"},
+            FinalStatus.EXECUTED,
+        ),
+        (
+            DecisionType.FINANCIAL,
+            {"amount": 50000, "destination_account": "ACC-1", "reference": "REF-1"},
+            FinalStatus.EXECUTED,
+        ),
+        (
+            DecisionType.IT_OPS,
+            {"action": "restart_service", "target": "web-tier"},
+            FinalStatus.EXECUTED,
+        ),
         # Should BLOCK
-        (DecisionType.PROCUREMENT,
-         {"amount": 700000, "supplier_id": "SUP-001", "category": "hardware"},
-         FinalStatus.BLOCKED),
-        (DecisionType.PRICING,
-         {"new_price": 500.0, "previous_price": 100.0, "product_id": "P1"},
-         FinalStatus.BLOCKED),
-        (DecisionType.FINANCIAL,
-         {"amount": 2_000_000, "destination_account": "ACC-1", "reference": "REF-1"},
-         FinalStatus.BLOCKED),
-        (DecisionType.PROCUREMENT,
-         {"amount": 5000, "supplier_id": "SUP-001", "category": "semiconductors"},
-         FinalStatus.BLOCKED),
-        (DecisionType.IT_OPS,
-         {"action": "delete_database", "target": "prod-db"},
-         FinalStatus.BLOCKED),
-        (DecisionType.PROCUREMENT,
-         {"amount": 5000, "supplier_id": "SUP-001", "category": "hardware"},
-         FinalStatus.EXECUTED),  # Repeat to reach 10 expected-EXECUTE
-        (DecisionType.PRICING,
-         {"new_price": 15.0, "previous_price": 100.0, "product_id": "P1", "floor_price": 20.0},
-         FinalStatus.BLOCKED),
+        (
+            DecisionType.PROCUREMENT,
+            {"amount": 700000, "supplier_id": "SUP-001", "category": "hardware"},
+            FinalStatus.BLOCKED,
+        ),
+        (
+            DecisionType.PRICING,
+            {"new_price": 500.0, "previous_price": 100.0, "product_id": "P1"},
+            FinalStatus.BLOCKED,
+        ),
+        (
+            DecisionType.FINANCIAL,
+            {"amount": 2_000_000, "destination_account": "ACC-1", "reference": "REF-1"},
+            FinalStatus.BLOCKED,
+        ),
+        (
+            DecisionType.PROCUREMENT,
+            {"amount": 5000, "supplier_id": "SUP-001", "category": "semiconductors"},
+            FinalStatus.BLOCKED,
+        ),
+        (
+            DecisionType.IT_OPS,
+            {"action": "delete_database", "target": "prod-db"},
+            FinalStatus.BLOCKED,
+        ),
+        (
+            DecisionType.PROCUREMENT,
+            {"amount": 5000, "supplier_id": "SUP-001", "category": "hardware"},
+            FinalStatus.EXECUTED,
+        ),  # Repeat to reach 10 expected-EXECUTE
+        (
+            DecisionType.PRICING,
+            {"new_price": 15.0, "previous_price": 100.0, "product_id": "P1", "floor_price": 20.0},
+            FinalStatus.BLOCKED,
+        ),
     ]
 
     correct = 0
-    total   = len(cases) * 100  # run each case 100 times
+    total = len(cases) * 100  # run each case 100 times
     for _ in range(100):
         for idx, (dtype, payload, expected) in enumerate(cases):
             ctx = DecisionContext(confidence=0.95)
-            r   = pipeline.process(DecisionRequest(f"acc_{_}_{idx}", dtype, payload, ctx))
+            r = pipeline.process(DecisionRequest(f"acc_{_}_{idx}", dtype, payload, ctx))
             if r.final_status == expected:
                 correct += 1
 
@@ -182,13 +231,14 @@ def bench_policy_accuracy():
 
 # ── Benchmark 4: Anomaly detection precision/recall ──────────────────────────
 
+
 def bench_anomaly():
     _hdr("Benchmark 4 — Anomaly Detection Precision & Recall")
 
-    det    = AnomalyDetector(z_threshold=3.0, min_samples=10)
-    rng    = random.Random(42)
-    mean   = 50_000
-    std    = 5_000
+    det = AnomalyDetector(z_threshold=3.0, min_samples=10)
+    rng = random.Random(42)
+    mean = 50_000
+    std = 5_000
     n_seed = 50
 
     # Seed baseline
@@ -204,7 +254,7 @@ def bench_anomaly():
     tn = sum(1 for v in normals if not det.check("agent", "procurement", {"amount": v})[0])
 
     precision = tp / len(anomalies) * 100
-    recall    = tp / len(anomalies) * 100  # all anomalies detected = perfect recall
+    recall = tp / len(anomalies) * 100  # all anomalies detected = perfect recall
     specificity = tn / len(normals) * 100
 
     _row("Baseline samples seeded", f"{n_seed}")
@@ -221,38 +271,46 @@ def bench_anomaly():
 
 # ── Benchmark 5: Concurrent throughput ───────────────────────────────────────
 
+
 def bench_concurrency(n_threads=10, decisions_per_thread=500):
-    _hdr(f"Benchmark 5 — Concurrent Throughput ({n_threads} threads × {decisions_per_thread} decisions)")
-    pipeline  = GovernancePipeline(echo=False)
+    _hdr(
+        f"Benchmark 5 — Concurrent Throughput ({n_threads} threads × {decisions_per_thread} decisions)"
+    )
+    pipeline = GovernancePipeline(echo=False)
     warm_up(pipeline)
 
-    results  = []
-    errors   = []
-    lock     = threading.Lock()
-    total    = n_threads * decisions_per_thread
+    results = []
+    errors = []
+    lock = threading.Lock()
+    total = n_threads * decisions_per_thread
 
     def worker(tid):
         payload = PAYLOADS[DecisionType.PROCUREMENT]
         t0 = time.perf_counter()
         for i in range(decisions_per_thread):
             try:
-                pipeline.process(DecisionRequest(
-                    f"concurrent_{tid}", DecisionType.PROCUREMENT, payload))
+                pipeline.process(
+                    DecisionRequest(f"concurrent_{tid}", DecisionType.PROCUREMENT, payload)
+                )
             except Exception as e:
-                with lock: errors.append(str(e))
+                with lock:
+                    errors.append(str(e))
         elapsed = time.perf_counter() - t0
-        with lock: results.append(elapsed)
+        with lock:
+            results.append(elapsed)
 
     t_start = time.perf_counter()
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(n_threads)]
-    for t in threads: t.start()
-    for t in threads: t.join()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     wall_time = time.perf_counter() - t_start
 
-    throughput   = total / wall_time
-    avg_thread   = statistics.mean(results)
+    throughput = total / wall_time
+    avg_thread = statistics.mean(results)
     decision_ids = [r.decision_id for r in pipeline.audit_logger.get_all()]
-    duplicates   = len(decision_ids) - len(set(decision_ids))
+    duplicates = len(decision_ids) - len(set(decision_ids))
 
     _row("Threads", f"{n_threads}")
     _row("Decisions per thread", f"{decisions_per_thread:,}")
@@ -269,14 +327,15 @@ def bench_concurrency(n_threads=10, decisions_per_thread=500):
 
 # ── Benchmark 6: Per-decision-type latency ───────────────────────────────────
 
+
 def bench_per_type(n=2000):
     _hdr(f"Benchmark 6 — Per-Decision-Type Latency ({n} each)")
     pipeline = GovernancePipeline(echo=False)
     warm_up(pipeline)
 
     for dtype in DecisionType:
-        payload    = PAYLOADS[dtype]
-        latencies  = []
+        payload = PAYLOADS[dtype]
+        latencies = []
         for i in range(n):
             t0 = time.perf_counter()
             pipeline.process(DecisionRequest(f"type_bench", dtype, payload))
@@ -290,16 +349,18 @@ def bench_per_type(n=2000):
 
 # ── Benchmark 7: Memory footprint ────────────────────────────────────────────
 
+
 def bench_memory(n=10_000):
     _hdr(f"Benchmark 7 — Memory Footprint ({n:,} audit records in memory)")
     import sys as _sys
+
     pipeline = GovernancePipeline(echo=False)
 
     for i in range(n):
         dtype = list(DecisionType)[i % len(DecisionType)]
         pipeline.process(DecisionRequest(f"mem_agent", dtype, PAYLOADS[dtype]))
 
-    records   = pipeline.audit_logger.get_all()
+    records = pipeline.audit_logger.get_all()
     total_bytes = _sys.getsizeof(records)
     for r in records:
         total_bytes += _sys.getsizeof(r)
@@ -311,6 +372,7 @@ def bench_memory(n=10_000):
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
+
 def run_all():
     print(f"\n{DIV}")
     print("  GLASSBOX BENCHMARK SUITE  (v1.0.0)")
@@ -318,9 +380,9 @@ def run_all():
     print("  Author: Mohammed Akbar Ansari")
     print(DIV)
 
-    tp      = bench_throughput(10_000)
-    lats    = bench_latency(5_000)
-    acc     = bench_policy_accuracy()
+    tp = bench_throughput(10_000)
+    lats = bench_latency(5_000)
+    acc = bench_policy_accuracy()
     prec, rec = bench_anomaly()
     conc_tp = bench_concurrency(10, 500)
     bench_per_type(2_000)
@@ -328,12 +390,12 @@ def run_all():
 
     # ── Summary table ─────────────────────────────────────────────────────
     _hdr("BENCHMARK SUMMARY")
-    _row("Single-thread throughput",   f"{tp:,.0f}",  "decisions/sec")
-    _row("P50 latency (all types)",    f"{sorted(lats)[int(len(lats)*0.50)]:.4f}", "ms")
-    _row("P99 latency (all types)",    f"{sorted(lats)[int(len(lats)*0.99)]:.4f}", "ms")
+    _row("Single-thread throughput", f"{tp:,.0f}", "decisions/sec")
+    _row("P50 latency (all types)", f"{sorted(lats)[int(len(lats)*0.50)]:.4f}", "ms")
+    _row("P99 latency (all types)", f"{sorted(lats)[int(len(lats)*0.99)]:.4f}", "ms")
     _row("Policy enforcement accuracy", f"{acc:.2f}", "%")
-    _row("Anomaly detection precision",  f"{prec:.1f}", "%")
-    _row("Anomaly detection recall",     f"{rec:.1f}",  "%")
+    _row("Anomaly detection precision", f"{prec:.1f}", "%")
+    _row("Anomaly detection recall", f"{rec:.1f}", "%")
     _row("10-thread concurrent throughput", f"{conc_tp:,.0f}", "decisions/sec")
     print(f"\n{DIV}\n  All benchmarks complete.\n{DIV}\n")
 

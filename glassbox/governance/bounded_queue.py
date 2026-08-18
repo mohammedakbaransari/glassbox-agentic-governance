@@ -52,6 +52,7 @@ log = get_logger("backpressure")
 @dataclass
 class QueuedRequest:
     """Request in bounded queue."""
+
     decision_id: str
     agent_id: str
     request: DecisionRequest
@@ -68,6 +69,7 @@ class QueuedRequest:
 @dataclass
 class BackpressureMetrics:
     """Request queueing and backpressure metrics."""
+
     total_enqueued: int = 0
     total_dequeued: int = 0
     total_rejected: int = 0
@@ -141,7 +143,9 @@ class BoundedQueue:
 
         log.info(
             "BoundedQueue initialized: max_size=%d, fairness=%s, backpressure_threshold=%.0f%%",
-            max_size, fairness_enabled, backpressure_threshold_pct * 100,
+            max_size,
+            fairness_enabled,
+            backpressure_threshold_pct * 100,
         )
 
     def try_enqueue(
@@ -170,7 +174,10 @@ class BoundedQueue:
                 log.warning(
                     "BoundedQueue: BACKPRESSURE triggered (depth=%d/%d, "
                     "rejections=%d, est_wait=%.1fms)",
-                    current_depth, self.max_size, self._total_rejected, est_wait,
+                    current_depth,
+                    self.max_size,
+                    self._total_rejected,
+                    est_wait,
                 )
                 return (False, est_wait)
 
@@ -179,7 +186,8 @@ class BoundedQueue:
                 self._total_rejected += 1
                 log.error(
                     "BoundedQueue: HARD MAX reached (depth=%d/%d)",
-                    current_depth, self.max_size,
+                    current_depth,
+                    self.max_size,
                 )
                 return (False, None)
 
@@ -213,7 +221,11 @@ class BoundedQueue:
             log.debug(
                 "BoundedQueue: enqueued decision_id=%s, agent_id=%s, depth=%d/%d, "
                 "est_wait=%.1fms",
-                decision_id, agent_id, self._global_depth, self.max_size, est_wait,
+                decision_id,
+                agent_id,
+                self._global_depth,
+                self.max_size,
+                est_wait,
             )
 
             return (True, est_wait)
@@ -251,9 +263,10 @@ class BoundedQueue:
             self._wait_times.append(wait_time)
 
             log.debug(
-                "BoundedQueue: dequeued decision_id=%s, agent_id=%s, wait_time=%.1fms, "
-                "depth=%d",
-                queued_req.decision_id, queued_req.agent_id, wait_time,
+                "BoundedQueue: dequeued decision_id=%s, agent_id=%s, wait_time=%.1fms, " "depth=%d",
+                queued_req.decision_id,
+                queued_req.agent_id,
+                wait_time,
                 self._global_depth,
             )
 
@@ -273,7 +286,7 @@ class BoundedQueue:
 
             agent_q = self._agent_queues[agent_id]
             if agent_q:
-                queued_req = agent_q.popleft()   # O(1) — no global remove needed
+                queued_req = agent_q.popleft()  # O(1) — no global remove needed
 
                 if not agent_q:
                     del self._agent_queues[agent_id]
@@ -307,20 +320,13 @@ class BoundedQueue:
             # Compute wait time percentiles
             wait_times_list = sorted(self._wait_times)
             mean_wait = sum(wait_times_list) / len(wait_times_list) if wait_times_list else 0
-            p95_wait = (
-                wait_times_list[int(0.95 * len(wait_times_list))]
-                if wait_times_list else 0
-            )
-            p99_wait = (
-                wait_times_list[int(0.99 * len(wait_times_list))]
-                if wait_times_list else 0
-            )
+            p95_wait = wait_times_list[int(0.95 * len(wait_times_list))] if wait_times_list else 0
+            p99_wait = wait_times_list[int(0.99 * len(wait_times_list))] if wait_times_list else 0
 
             # Rejection rate
             total_attempts = self._total_enqueued + self._total_rejected
             rejection_rate = (
-                (self._total_rejected / total_attempts * 100)
-                if total_attempts > 0 else 0
+                (self._total_rejected / total_attempts * 100) if total_attempts > 0 else 0
             )
 
             return BackpressureMetrics(

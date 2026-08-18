@@ -45,8 +45,8 @@ class ContextCapture:
 
     def __init__(self, environment: str = "production"):
         self.environment = environment
-        self.hostname    = _safe_hostname()
-        self.platform    = platform.system()
+        self.hostname = _safe_hostname()
+        self.platform = platform.system()
 
     def enrich(
         self,
@@ -75,7 +75,11 @@ class ContextCapture:
         merged = {**enriched_metadata, **(base.metadata or {})}
 
         # Only an explicit request context may override the pipeline environment.
-        env = request_context.environment if request_context and request_context.environment else self.environment
+        env = (
+            request_context.environment
+            if request_context and request_context.environment
+            else self.environment
+        )
         source = base.source_system if base.source_system not in ("unknown", "") else "api"
 
         return DecisionContext(

@@ -26,17 +26,15 @@ Reference:
 Author: Mohammed Akbar Ansari
 """
 
-import hashlib
-import json
-import os
 import csv
+import hashlib
 import queue
 import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from glassbox.governance.logging_manager import get_logger
 
@@ -46,21 +44,21 @@ log = get_logger("audit_logger")
 class AuditLogger:
     """
     Thread-safe audit logger with lock pooling for contention reduction.
-    
+
     Problem: Single RLock caused P99 latency spikes under concurrent load.
-    
+
     Solution:
     - Partition audit entries by hash(decision_id) % pool_size
     - Each partition has its own RLock
     - 95% reduction in lock contention
     - Zero behavioral change (API identical to original)
-    
+
     Features:
     - Lock pooling for concurrent writes (95% less contention)
     - Ring buffer with configurable max_memory_records
     - Backward compatible API (log, get_by_id, get_by_status, etc.)
     - isinstance(logger, AuditLogger) returns True ✓
-    
+
     Usage:
         logger = AuditLogger(pool_size=8)
         logger.record_decision(decision_record)
@@ -68,7 +66,7 @@ class AuditLogger:
         logger.log(audit_record)  # Backward compat method
         logger.get_by_id("decision-123")
     """
-    
+
     def __init__(
         self,
         repository=None,
@@ -85,9 +83,17 @@ class AuditLogger:
         Args:
             repository: Optional audit repository (for persistence)
             pool_size: Number of locks in pool (typically 8-16)
-            log_dir: (Backward compat) Logging directory path
+            log_dir: Removed in GB-040 (accepted for backward compatibility,
+                but no longer writes anything). Plain-text JSONL audit output
+                is not tamper-evident: anyone with filesystem access can edit
+                it undetected, which contradicted the "immutable audit trail"
+                claim made elsewhere for this same data
+                (docs/CLAIMS.md, review §28 claim 1). Use
+                ``glassbox.adapters.outbound.memory.evidence.InMemoryEvidenceStore``
+                or ``glassbox.adapters.outbound.postgres.evidence.PostgresEvidenceStore``
+                for durable, tamper-evident storage.
             echo: (Backward compat) Debug logging flag
-            fsync_writes: (Backward compat) accepted for API stability
+            fsync_writes: Removed alongside log_dir; accepted but unused.
             max_memory_records: Max records to keep in memory (ring buffer)
         """
         self.repository = repository
@@ -95,23 +101,15 @@ class AuditLogger:
         self._max_memory_records = max_memory_records
         self._log_dir = log_dir
         self._fsync_writes = bool(fsync_writes)
-        self._file_lock = threading.Lock()
-        self._jsonl_path: Optional[str] = None
-        if self._log_dir:
-            try:
-                os.makedirs(self._log_dir, exist_ok=True)
-                self._jsonl_path = os.path.join(self._log_dir, "audit.jsonl")
-            except OSError as exc:
-                # Cross-platform safety: do not fail logger construction when the
-                # configured directory is unavailable (e.g., '/tmp' on Windows).
-                # Fall back to in-memory + optional repository persistence only.
-                self._jsonl_path = None
-                log.warning(
-                    "Audit JSONL sink disabled; cannot use log_dir '%s': %s",
-                    self._log_dir,
-                    exc,
-                )
-        
+        if log_dir:
+            log.warning(
+                "AuditLogger(log_dir=%r) has no effect: the JSONL audit sink was "
+                "removed in GB-040 (plain-text audit output is not tamper-evident). "
+                "Use a PostgresEvidenceStore or InMemoryEvidenceStore for durable "
+                "storage.",
+                log_dir,
+            )
+
         # Configuration (for backward compatibility)
         self._config = {
             "log_dir": log_dir,
@@ -122,15 +120,15 @@ class AuditLogger:
             "async_batch_size": async_batch_size,
             "async_flush_interval": async_flush_interval,
         }
-        
+
         # Lock pool: One RLock per partition
         self._locks = [threading.RLock() for _ in range(self.pool_size)]
-        
+
         # In-memory audit buffer (per partition)
-        self._audits = [[] for _ in range(self.pool_size)]
-        self._decision_order = deque()
+        self._audits: List[List[Dict[str, Any]]] = [[] for _ in range(self.pool_size)]
+        self._decision_order: deque = deque()
         self._order_lock = threading.Lock()
-        
+
         # Statistics
         self._stats = {
             "total_records": 0,
@@ -143,35 +141,39 @@ class AuditLogger:
             "async_last_flush_ms": 0.0,
         }
         self._stats_lock = threading.Lock()
-        self._async_queue = queue.Queue(maxsize=max(1, int(async_queue_size)))
+        self._async_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(
+            maxsize=max(1, int(async_queue_size))
+        )
         self._async_batch_size = max(1, int(async_batch_size))
         self._async_flush_interval = max(0.001, float(async_flush_interval))
         self._async_stop = threading.Event()
         self._async_last_error: Optional[str] = None
         self._async_worker: Optional[threading.Thread] = None
         self._ensure_async_worker()
-        
+
         if echo:
             log.debug(
                 "AuditLogger initialized: log_dir=%s, max_memory=%d, pool_size=%d",
-                log_dir, max_memory_records, pool_size
+                log_dir,
+                max_memory_records,
+                pool_size,
             )
-    
+
     def _partition(self, key: str) -> int:
         """
         Hash key to partition index.
-        
+
         Uses decision_id hash for consistent partitioning.
         """
-        hash_val = hashlib.md5(key.encode()).hexdigest()
+        hash_val = hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()
         return int(hash_val, 16) % self.pool_size
-    
+
     def _get_lock(self, key: str) -> threading.RLock:
         """Get partition lock for key."""
         partition = self._partition(key)
         return self._locks[partition]
-    
-    def record_decision(self, audit_record: Dict[str, Any], persist: bool = True) -> None:
+
+    def record_decision(self, audit_record: Any, persist: bool = True) -> None:
         """
         Record audit entry for a decision with ring buffer enforcement.
 
@@ -199,47 +201,25 @@ class AuditLogger:
         if self.repository and persist:
             self._persist_record(audit_record)
 
-        if persist:
-            self._append_jsonl(audit_dict)
-
         # Enforce ring-buffer globally to avoid per-partition over-eviction.
         # This keeps behavior aligned with max_memory_records semantics.
         self._enforce_memory_limit()
 
-    def _append_jsonl(self, audit_dict: Dict[str, Any]) -> None:
-        """Append a single audit record to the legacy JSONL sink when configured."""
-        if not self._jsonl_path:
-            return
-
-        line = json.dumps(audit_dict, ensure_ascii=True, separators=(",", ":")) + "\n"
-        with self._file_lock:
-            try:
-                with open(self._jsonl_path, "a", encoding="utf-8") as handle:
-                    handle.write(line)
-                    if self._fsync_writes:
-                        handle.flush()
-                        os.fsync(handle.fileno())
-            except OSError as exc:
-                # Fail-safe behavior: governance must keep running even if the
-                # legacy file sink is temporarily unavailable.
-                self._jsonl_path = None
-                log.warning("Audit JSONL append failed; sink disabled: %s", exc)
-    
     def query_by_agent(self, agent_id: str) -> List[Dict[str, Any]]:
         """
         Query audits for specific agent.
-        
+
         Performance: O(audits) but with distributed lock access.
         """
         results = []
-        
+
         # Acquire all locks (safe for reporting)
         for lock, audits in zip(self._locks, self._audits):
             with lock:
                 for audit in audits:
                     if audit.get("agent_id") == agent_id:
                         results.append(audit)
-        
+
         return results
 
     get_by_agent = query_by_agent
@@ -247,19 +227,19 @@ class AuditLogger:
     def query_by_decision_id(self, decision_id: str) -> Optional[Dict[str, Any]]:
         """
         Query single audit by decision_id.
-        
+
         Performance: O(1) lock lookup + O(1) partition search (fast).
         """
         lock = self._get_lock(decision_id)
         partition = self._partition(decision_id)
-        
+
         with lock:
             for audit in self._audits[partition]:
                 if audit.get("decision_id") == decision_id:
                     return audit
-        
+
         return None
-    
+
     def query_by_date_range(
         self,
         start_timestamp: float,
@@ -267,25 +247,25 @@ class AuditLogger:
     ) -> List[Dict[str, Any]]:
         """
         Query audits in date range.
-        
+
         Performance: O(audits) with distributed locks.
         """
         results = []
-        
+
         for lock, audits in zip(self._locks, self._audits):
             with lock:
                 for audit in audits:
                     ts = audit.get("timestamp", 0)
                     if start_timestamp <= ts <= end_timestamp:
                         results.append(audit)
-        
+
         return results
-    
+
     def get_statistics(self) -> Dict[str, Any]:
         """Get audit statistics."""
         with self._stats_lock:
             return dict(self._stats)
-    
+
     def clear(self) -> None:
         """Clear all audits (for testing)."""
         for lock, audits in zip(self._locks, self._audits):
@@ -293,7 +273,7 @@ class AuditLogger:
                 audits.clear()
         with self._order_lock:
             self._decision_order.clear()
-        
+
         with self._stats_lock:
             self._stats = {
                 "total_records": 0,
@@ -305,7 +285,7 @@ class AuditLogger:
                 "async_queue_full": 0,
                 "async_last_flush_ms": 0.0,
             }
-    
+
     def audit_count(self) -> int:
         """Get total audit records in memory."""
         count = 0
@@ -313,7 +293,7 @@ class AuditLogger:
             with lock:
                 count += len(audits)
         return count
-    
+
     def _enforce_memory_limit(self) -> None:
         """
         Enforce ring buffer limit by removing oldest entries.
@@ -347,7 +327,7 @@ class AuditLogger:
                     else:
                         # Another thread already evicted this slot; re-check limit.
                         return
-    
+
     def shutdown(self) -> None:
         """Graceful shutdown of audit logger (cleanup if needed)."""
         try:
@@ -370,19 +350,19 @@ class AuditLogger:
             daemon=True,
         )
         self._async_worker.start()
-    
+
     # ── Backward Compatibility API ────────────────────────────────────────
-    
-    def log(self, audit_record: Dict[str, Any]) -> None:
+
+    def log(self, audit_record: Any) -> None:
         """
         Backward compatibility method that calls record_decision().
-        
+
         Converts AuditRecord objects to dicts as needed.
         """
         # Convert AuditRecord object to dict if needed
         return self.record_decision(audit_record)
-    
-    def log_async(self, audit_record: Dict[str, Any]) -> None:
+
+    def log_async(self, audit_record: Any) -> None:
         """
         Async logging with synchronous in-memory append and queued persistence.
 
@@ -390,7 +370,7 @@ class AuditLogger:
         synchronously on the calling thread rather than raising RuntimeError.
         This guarantees audit completeness at the cost of a brief latency spike.
         """
-        if hasattr(audit_record, 'to_dict'):
+        if hasattr(audit_record, "to_dict"):
             audit_dict = audit_record.to_dict()
             persist_record = audit_record
         else:
@@ -447,7 +427,9 @@ class AuditLogger:
     def _persist_record(self, audit_record: Dict[str, Any]) -> None:
         try:
             if hasattr(self.repository, "insert"):
-                payload = audit_record.to_dict() if hasattr(audit_record, "to_dict") else audit_record
+                payload = (
+                    audit_record.to_dict() if hasattr(audit_record, "to_dict") else audit_record
+                )
                 self.repository.insert(payload)
             elif hasattr(self.repository, "save"):
                 self.repository.save(audit_record)
@@ -460,11 +442,11 @@ class AuditLogger:
             self._async_last_error = str(exc)
             with self._stats_lock:
                 self._stats["failed_persists"] += 1
-    
+
     def get_by_id(self, decision_id: str) -> Optional[Dict[str, Any]]:
         """
         Get audit by decision_id with proper type deserialization.
-        
+
         Returns:
             Deserialized AuditRecord dict or original dict on error
         """
@@ -472,11 +454,11 @@ class AuditLogger:
         if result:
             return self._deserialize_audit_record(result)
         return None
-    
+
     def get_by_status(self, final_status) -> List[Dict[str, Any]]:
         """
         Get all audits with given final_status with proper type deserialization.
-        
+
         Returns:
             List of deserialized audit records (dicts or AuditRecord objects)
         """
@@ -484,10 +466,11 @@ class AuditLogger:
         for lock, audits in zip(self._locks, self._audits):
             with lock:
                 for audit in audits:
-                    if audit.get("final_status") == final_status or \
-                       audit.get("final_status") == (final_status.value if hasattr(final_status, 'value') else final_status):
+                    if audit.get("final_status") == final_status or audit.get("final_status") == (
+                        final_status.value if hasattr(final_status, "value") else final_status
+                    ):
                         results.append(audit)
-        
+
         # Deserialize each record properly
         deserialized = []
         for result in results:
@@ -495,15 +478,16 @@ class AuditLogger:
                 deserialized.append(self._deserialize_audit_record(result))
             except (TypeError, ValueError) as e:
                 import logging
+
                 logging.warning(f"Failed to deserialize audit record: {e}")
                 deserialized.append(result)  # Fallback to raw dict
-        
+
         return deserialized
-    
+
     def get_all(self) -> List[Dict[str, Any]]:
         """
         Get all audit records with proper type deserialization.
-        
+
         Returns:
             List of deserialized audit records
         """
@@ -511,7 +495,7 @@ class AuditLogger:
         for lock, audits in zip(self._locks, self._audits):
             with lock:
                 results.extend(audits)
-        
+
         # Deserialize each record properly
         deserialized = []
         for result in results:
@@ -519,9 +503,10 @@ class AuditLogger:
                 deserialized.append(self._deserialize_audit_record(result))
             except (TypeError, ValueError) as e:
                 import logging
+
                 logging.warning(f"Failed to deserialize audit record: {e}")
                 deserialized.append(result)  # Fallback to raw dict
-        
+
         return deserialized
 
     def export_csv(self, path: str) -> None:
@@ -540,7 +525,7 @@ class AuditLogger:
             return value
 
         normalised_rows: List[Dict[str, Any]] = []
-        fieldnames = set()
+        fieldnames: Set[str] = set()
         for row in rows:
             data = row.to_dict() if hasattr(row, "to_dict") else dict(row)
             plain = {k: _to_plain(v) for k, v in data.items()}
@@ -561,13 +546,13 @@ class AuditLogger:
             record = row.to_dict() if hasattr(row, "to_dict") else dict(row)
 
             rec_type = record.get("decision_type")
-            rec_type_val = rec_type.value if hasattr(rec_type, "value") else rec_type
+            rec_type_val = getattr(rec_type, "value", rec_type)
             target_type = decision_type.value if hasattr(decision_type, "value") else decision_type
             if rec_type_val != target_type:
                 continue
 
             status = record.get("final_status")
-            status_val = status.value if hasattr(status, "value") else str(status).lower()
+            status_val = getattr(status, "value", None) or str(status).lower()
             if status_val != "executed":
                 continue
 
@@ -588,11 +573,11 @@ class AuditLogger:
                 continue
 
         return total
-    
+
     def summary_stats(self) -> Dict[str, Any]:
         """
         Return summary statistics for audit logger.
-        
+
         Returns:
             Dict with total, persisted, failed, status breakdown, in_memory counts
         """
@@ -601,9 +586,9 @@ class AuditLogger:
         for lock, audits in zip(self._locks, self._audits):
             with lock:
                 all_records.extend(audits)
-        
+
         # Calculate status breakdown
-        status_breakdown = {}
+        status_breakdown: Dict[Any, int] = {}
         latencies_ms = []
         for record in all_records:
             status = record.get("final_status", "UNKNOWN")
@@ -622,7 +607,7 @@ class AuditLogger:
         else:
             p99_latency_ms = None
             avg_latency_ms = None
-        
+
         return {
             "total": total,
             "persisted": stats.get("persisted_records", 0),
@@ -642,69 +627,78 @@ class AuditLogger:
             "async_last_flush_ms": stats.get("async_last_flush_ms", 0.0),
             "async_last_error": self._async_last_error,
         }
-    
-    def _deserialize_audit_record(self, data: Dict[str, Any]) -> Dict[str, Any]:
+
+    def _deserialize_audit_record(self, data: Dict[str, Any]) -> Any:
         """
         Deserialize raw audit dict into proper typed AuditRecord.
-        
+
         Reconstructs nested types (DecisionContext, FinalStatus, Disposition) from
         their serialized representations (dicts/strings).
-        
+
         Args:
             data: Raw dict from storage
-        
+
         Returns:
             Dict with properly typed fields, suitable for AuditRecord(**data)
         """
         try:
             # Import models to avoid circular import
             from glassbox.governance.models import (
-                DecisionContext, FinalStatus, Disposition, AuditRecord
+                AuditRecord,
+                DecisionContext,
+                Disposition,
+                FinalStatus,
             )
-            
+
             data = dict(data)  # Make a copy to avoid mutation
-            
+
             # Reconstruct DecisionContext if it's a dict
             if isinstance(data.get("context"), dict) and data["context"]:
                 try:
                     data["context"] = DecisionContext(**data["context"])
                 except (TypeError, ValueError) as e:
                     import logging
+
                     logging.warning(f"Failed to deserialize DecisionContext: {e}")
                     # Keep as-is; AuditRecord creation will handle it
-            
+
             # Reconstruct FinalStatus if it's a string
             if isinstance(data.get("final_status"), str) and data["final_status"]:
                 try:
                     data["final_status"] = FinalStatus(data["final_status"])
                 except ValueError as e:
                     import logging
+
                     logging.warning(f"Failed to deserialize FinalStatus: {e}")
                     # Keep as-is
-            
-            # Reconstruct Disposition if it's a string  
+
+            # Reconstruct Disposition if it's a string
             if isinstance(data.get("disposition"), str) and data["disposition"]:
                 try:
                     data["disposition"] = Disposition(data["disposition"])
                 except ValueError as e:
                     import logging
+
                     logging.warning(f"Failed to deserialize Disposition: {e}")
                     # Keep as-is
-            
+
             # Try to create AuditRecord (will catch schema mismatches)
             try:
                 return AuditRecord(**data)
             except (TypeError, ValueError) as e:
                 import logging
+
                 logging.warning(f"Failed to create AuditRecord: {e}, returning dict")
                 return data
-            
+
         except ImportError as e:
             import logging
+
             logging.warning(f"Could not import models for deserialization: {e}")
             return data
         except (KeyError, Exception) as e:
             import logging
+
             logging.warning(f"Unexpected error during deserialization: {e}")
             return data
 
@@ -713,7 +707,7 @@ class AuditLoggerPerformance:
     """
     Performance testing harness for lock pooling optimization.
     """
-    
+
     @staticmethod
     def benchmark_contention(
         logger: "AuditLogger",
@@ -722,7 +716,7 @@ class AuditLoggerPerformance:
     ) -> Dict[str, Any]:
         """
         Benchmark lock contention under concurrent load.
-        
+
         Returns:
             {
                 "total_records": int,
@@ -733,14 +727,14 @@ class AuditLoggerPerformance:
         """
         import threading
         from collections import defaultdict
-        
-        results = {
+
+        results: Dict[str, Any] = {
             "total_records": 0,
             "lock_waits": defaultdict(int),
             "errors": [],
         }
         results_lock = threading.Lock()
-        
+
         def worker(worker_id: int):
             for i in range(records_per_worker):
                 record = {
@@ -749,35 +743,35 @@ class AuditLoggerPerformance:
                     "timestamp": time.time(),
                     "payload": {"data": "test"},
                 }
-                
+
                 try:
                     start = time.perf_counter()
                     logger.record_decision(record)
                     elapsed = (time.perf_counter() - start) * 1000  # ms
-                    
+
                     with results_lock:
                         results["total_records"] += 1
                         # Histogram: bucket by wait time
                         bucket = int(elapsed / 10) * 10
                         results["lock_waits"][bucket] += 1
-                
+
                 except Exception as e:
                     with results_lock:
                         results["errors"].append(str(e))
-        
+
         threads = []
         start_time = time.perf_counter()
-        
+
         for w in range(num_workers):
             t = threading.Thread(target=worker, args=(w,))
             threads.append(t)
             t.start()
-        
+
         for t in threads:
             t.join()
-        
+
         elapsed = time.perf_counter() - start_time
-        
+
         return {
             "total_records": results["total_records"],
             "elapsed_seconds": elapsed,
@@ -799,25 +793,25 @@ def create_audit_logger(
 ) -> AuditLogger:
     """
     Factory function providing backward compatibility for AuditLogger API.
-    
+
     Accepts v1.0.0 parameters (log_dir, echo, max_memory_records) and creates
     an AuditLogger instance with all native methods.
-    
+
     Args:
         log_dir: (Backward compat) Logging directory - used for config only
         echo: (Backward compat) Echo parameter - used for initialization tracing
         max_memory_records: Max records to keep in memory (ring buffer), default 100K
         pool_size: Number of locks in pool (defaults to 8)
         repository: Optional audit repository for persistence
-    
+
     Returns:
         AuditLogger instance configured with parameters.
-    
+
     Note:
         Maintains backward compatibility with v1.0 API while using
         optimized lock pooling implementation with all methods as proper
         native methods (100% type-safe, isinstance() works correctly).
-    
+
     Example:
         logger = create_audit_logger(log_dir="/logs", echo=True)
         logger.record_decision({...})
@@ -844,7 +838,7 @@ def AuditLogger_factory(
 ) -> AuditLogger:
     """
     DEPRECATED: Use direct class instantiation instead.
-    
+
     This function is kept for backward compatibility only.
     New code should prefer: logger = AuditLogger(...)
     """

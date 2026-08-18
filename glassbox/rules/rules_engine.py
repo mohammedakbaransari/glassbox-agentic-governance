@@ -39,11 +39,13 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from glassbox.governance.logging_manager import get_logger
 from glassbox.governance.models import (
-    DecisionContext, DecisionType, PolicyEvaluation,
+    DecisionContext,
+    DecisionType,
+    PolicyEvaluation,
 )
 from glassbox.governance.policy_engine import Policy, PolicyEngine
-from glassbox.governance.logging_manager import get_logger
 
 log = get_logger("rules_engine")
 
@@ -51,23 +53,26 @@ log = get_logger("rules_engine")
 # ── Supported operators ───────────────────────────────────────────────────────
 
 _OPS: Dict[str, Callable] = {
-    "gt":          lambda v, t: float(v or 0) > float(t),
-    "gte":         lambda v, t: float(v or 0) >= float(t),
-    "lt":          lambda v, t: float(v or 0) < float(t),
-    "lte":         lambda v, t: float(v or 0) <= float(t),
-    "eq":          lambda v, t: str(v or "").strip().upper() == str(t).strip().upper(),
-    "neq":         lambda v, t: str(v or "").strip().upper() != str(t).strip().upper(),
-    "in":          lambda v, t: str(v or "").strip().upper() in [x.strip().upper() for x in (t if isinstance(t, list) else [t])],
-    "not_in":      lambda v, t: str(v or "").strip().upper() not in [x.strip().upper() for x in (t if isinstance(t, list) else [t])],
-    "missing":     lambda v, t: not v,
-    "present":     lambda v, t: bool(v),
-    "contains":    lambda v, t: str(t).lower() in str(v or "").lower(),
-    "startswith":  lambda v, t: str(v or "").lower().startswith(str(t).lower()),
-    "regex":       lambda v, t: bool(re.search(str(t), str(v or ""), re.IGNORECASE)),
+    "gt": lambda v, t: float(v or 0) > float(t),
+    "gte": lambda v, t: float(v or 0) >= float(t),
+    "lt": lambda v, t: float(v or 0) < float(t),
+    "lte": lambda v, t: float(v or 0) <= float(t),
+    "eq": lambda v, t: str(v or "").strip().upper() == str(t).strip().upper(),
+    "neq": lambda v, t: str(v or "").strip().upper() != str(t).strip().upper(),
+    "in": lambda v, t: str(v or "").strip().upper()
+    in [x.strip().upper() for x in (t if isinstance(t, list) else [t])],
+    "not_in": lambda v, t: str(v or "").strip().upper()
+    not in [x.strip().upper() for x in (t if isinstance(t, list) else [t])],
+    "missing": lambda v, t: not v,
+    "present": lambda v, t: bool(v),
+    "contains": lambda v, t: str(t).lower() in str(v or "").lower(),
+    "startswith": lambda v, t: str(v or "").lower().startswith(str(t).lower()),
+    "regex": lambda v, t: bool(re.search(str(t), str(v or ""), re.IGNORECASE)),
 }
 
 
 # ── Rule definition ───────────────────────────────────────────────────────────
+
 
 class RuleCondition:
     """
@@ -81,9 +86,9 @@ class RuleCondition:
     """
 
     def __init__(self, field: str, op: str, value: Any = None, negate: bool = False):
-        self.field  = field
-        self.op     = op
-        self.value  = value
+        self.field = field
+        self.op = op
+        self.value = value
         self.negate = negate
         if op not in _OPS:
             raise ValueError(f"Unknown operator '{op}'. Valid: {sorted(_OPS)}")
@@ -118,27 +123,27 @@ class DeclarativeRule:
 
     def __init__(
         self,
-        policy_id:     str,
-        policy_name:   str,
-        applies_to:    List[str],
-        conditions:    List[RuleCondition],
-        result:        str,               # "fail" | "warn" | "pass"
-        message:       str,
-        logic:         str = "and",      # "and" | "or"
-        description:   str = "",
-        version:       str = "1.0",
-        enabled:       bool = True,
+        policy_id: str,
+        policy_name: str,
+        applies_to: List[str],
+        conditions: List[RuleCondition],
+        result: str,  # "fail" | "warn" | "pass"
+        message: str,
+        logic: str = "and",  # "and" | "or"
+        description: str = "",
+        version: str = "1.0",
+        enabled: bool = True,
     ):
-        self.policy_id   = policy_id
+        self.policy_id = policy_id
         self.policy_name = policy_name
-        self.applies_to  = [DecisionType(t.lower()) for t in applies_to]
-        self.conditions  = conditions
-        self.result      = result
-        self.message     = message
-        self.logic       = logic
+        self.applies_to = [DecisionType(t.lower()) for t in applies_to]
+        self.conditions = conditions
+        self.result = result
+        self.message = message
+        self.logic = logic
         self.description = description
-        self.version     = version
-        self.enabled     = enabled
+        self.version = version
+        self.enabled = enabled
 
     def evaluate(self, payload: Dict[str, Any], ctx: DecisionContext) -> PolicyEvaluation:
         if not self.conditions:
@@ -148,23 +153,24 @@ class DeclarativeRule:
 
         if self.logic == "or":
             fired = any(results)
-        else:   # "and"
+        else:  # "and"
             fired = all(results)
 
         if fired:
             # Interpolate {field} tokens in message
             try:
-                msg = self.message.format(**payload,
-                                          confidence=ctx.confidence,
-                                          environment=ctx.environment)
+                msg = self.message.format(
+                    **payload, confidence=ctx.confidence, environment=ctx.environment
+                )
             except (KeyError, ValueError):
                 msg = self.message
             # Prefix message with [policy_id] for consistent searchability
             prefixed = f"[{self.policy_id}] {msg}"
             return PolicyEvaluation(self.policy_id, self.policy_name, self.result, prefixed)
 
-        return PolicyEvaluation(self.policy_id, self.policy_name, "pass",
-                                f"{self.policy_name}: conditions not met")
+        return PolicyEvaluation(
+            self.policy_id, self.policy_name, "pass", f"{self.policy_name}: conditions not met"
+        )
 
     def to_policy(self) -> "Policy":
         """Convert to a Policy object compatible with PolicyEngine."""
@@ -182,29 +188,32 @@ class DeclarativeRule:
 
 # ── YAML/JSON Loader ──────────────────────────────────────────────────────────
 
+
 def _parse_rule_dict(d: Dict[str, Any]) -> DeclarativeRule:
     """Parse one rule definition dict into a DeclarativeRule."""
     raw_conditions = d.get("conditions", [])
     conditions = []
     for c in raw_conditions:
-        conditions.append(RuleCondition(
-            field  = c["field"],
-            op     = c["op"],
-            value  = c.get("value"),
-            negate = bool(c.get("negate", False)),
-        ))
+        conditions.append(
+            RuleCondition(
+                field=c["field"],
+                op=c["op"],
+                value=c.get("value"),
+                negate=bool(c.get("negate", False)),
+            )
+        )
 
     return DeclarativeRule(
-        policy_id   = d["policy_id"],
-        policy_name = d.get("name", d["policy_id"]),
-        applies_to  = d.get("applies_to", ["custom"]),
-        conditions  = conditions,
-        result      = d.get("result", "fail"),
-        message     = d.get("message", "Policy condition matched."),
-        logic       = d.get("logic", "and"),
-        description = d.get("description", ""),
-        version     = str(d.get("version", "1.0")),
-        enabled     = bool(d.get("enabled", True)),
+        policy_id=d["policy_id"],
+        policy_name=d.get("name", d["policy_id"]),
+        applies_to=d.get("applies_to", ["custom"]),
+        conditions=conditions,
+        result=d.get("result", "fail"),
+        message=d.get("message", "Policy condition matched."),
+        logic=d.get("logic", "and"),
+        description=d.get("description", ""),
+        version=str(d.get("version", "1.0")),
+        enabled=bool(d.get("enabled", True)),
     )
 
 
@@ -264,10 +273,7 @@ class RulesLoader:
                 rule = _parse_rule_dict(r)
                 policies.append(rule.to_policy())
             except Exception as exc:
-                log.error(
-                    "RulesLoader: failed to parse rule %s: %s",
-                    r.get("policy_id", "?"), exc
-                )
+                log.error("RulesLoader: failed to parse rule %s: %s", r.get("policy_id", "?"), exc)
         return policies
 
     def load_json_string(self, json_str: str) -> List[Policy]:
@@ -291,6 +297,7 @@ class RulesLoader:
         """
         try:
             import yaml
+
             return self.load_dict(yaml.safe_load(yaml_str))
         except ImportError:
             # Fallback: try to parse as JSON
@@ -338,44 +345,46 @@ class RulesLoader:
 
 # ── Built-in reference rule set (JSON) ───────────────────────────────────────
 
-REFERENCE_RULES_JSON = json.dumps({
-    "rules": [
-        {
-            "policy_id": "YAML-PROC-001",
-            "name": "Procurement Declarative Limit",
-            "applies_to": ["procurement"],
-            "logic": "and",
-            "conditions": [
-                {"field": "amount", "op": "gt",      "value": 500000},
-                {"field": "contract_id", "op": "missing"},
-            ],
-            "result": "fail",
-            "message": "Amount {amount} exceeds $500K limit without contract_id.",
-            "version": "1.0",
-        },
-        {
-            "policy_id": "YAML-PRICE-001",
-            "name": "Pricing Change Declarative",
-            "applies_to": ["pricing"],
-            "logic": "and",
-            "conditions": [
-                {"field": "new_price",      "op": "present"},
-                {"field": "previous_price", "op": "present"},
-            ],
-            "result": "warn",
-            "message": "Price change detected — verify against market data.",
-            "version": "1.0",
-        },
-        {
-            "policy_id": "YAML-CONF-001",
-            "name": "Low Confidence Warning",
-            "applies_to": ["procurement", "financial", "pricing"],
-            "conditions": [
-                {"field": "ctx.confidence", "op": "lt", "value": 0.5},
-            ],
-            "result": "warn",
-            "message": "AI model confidence is low. Human verification recommended.",
-            "version": "1.0",
-        },
-    ]
-})
+REFERENCE_RULES_JSON = json.dumps(
+    {
+        "rules": [
+            {
+                "policy_id": "YAML-PROC-001",
+                "name": "Procurement Declarative Limit",
+                "applies_to": ["procurement"],
+                "logic": "and",
+                "conditions": [
+                    {"field": "amount", "op": "gt", "value": 500000},
+                    {"field": "contract_id", "op": "missing"},
+                ],
+                "result": "fail",
+                "message": "Amount {amount} exceeds $500K limit without contract_id.",
+                "version": "1.0",
+            },
+            {
+                "policy_id": "YAML-PRICE-001",
+                "name": "Pricing Change Declarative",
+                "applies_to": ["pricing"],
+                "logic": "and",
+                "conditions": [
+                    {"field": "new_price", "op": "present"},
+                    {"field": "previous_price", "op": "present"},
+                ],
+                "result": "warn",
+                "message": "Price change detected — verify against market data.",
+                "version": "1.0",
+            },
+            {
+                "policy_id": "YAML-CONF-001",
+                "name": "Low Confidence Warning",
+                "applies_to": ["procurement", "financial", "pricing"],
+                "conditions": [
+                    {"field": "ctx.confidence", "op": "lt", "value": 0.5},
+                ],
+                "result": "warn",
+                "message": "AI model confidence is low. Human verification recommended.",
+                "version": "1.0",
+            },
+        ]
+    }
+)

@@ -15,42 +15,47 @@ Run with: pytest test_v1_1_enterprise.py -v
 Author: Mohammed Akbar Ansari
 """
 
-import pytest
-import threading
-import time
 import json
 import tempfile
-from datetime import datetime, timezone, timedelta
+import threading
+import time
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 
-# Import enterprise modules
-from glassbox.store.database_abstraction import (
-    DatabaseFactory, SQLiteBackend, PostgreSQLBackend
-)
-from glassbox.governance.access_control import (
-    AccessControl, Role, User, PermissionScope
+import pytest
+
+from glassbox.governance.access_control import AccessControl, PermissionScope, Role, User
+from glassbox.governance.advanced_audit import AuditRecord, TamperEvidentAuditLogger
+from glassbox.governance.api_gateway import (
+    APIGateway,
+    AuthenticationMiddleware,
+    CORSMiddleware,
+    RateLimitMiddleware,
+    Request,
+    RequestLoggingMiddleware,
+    Response,
 )
 from glassbox.governance.encryption import CryptoManager, EncryptedField
-from glassbox.governance.advanced_audit import TamperEvidentAuditLogger, AuditRecord
-from glassbox.governance.request_context import (
-    RequestContext, Config, ContextManager
-)
 from glassbox.governance.enterprise_pipeline import EnterpriseGovernancePipeline
-from glassbox.governance.pipeline import GovernancePipeline
 from glassbox.governance.models import (
-    DecisionRequest, DecisionType, FinalStatus, PolicyResult,
-    RiskResult, RiskLevel, Disposition,
+    DecisionRequest,
+    DecisionType,
+    Disposition,
+    FinalStatus,
+    PolicyResult,
+    RiskLevel,
+    RiskResult,
 )
-from glassbox.governance.api_gateway import (
-    APIGateway, Request, Response, 
-    AuthenticationMiddleware, RateLimitMiddleware, RequestLoggingMiddleware,
-    CORSMiddleware
-)
+from glassbox.governance.pipeline import GovernancePipeline
+from glassbox.governance.request_context import Config, ContextManager, RequestContext
 
+# Import enterprise modules
+from glassbox.store.database_abstraction import DatabaseFactory, PostgreSQLBackend, SQLiteBackend
 
 # ============================================================================
 # PART 1: DATABASE ABSTRACTION TESTS
 # ============================================================================
+
 
 class TestDatabaseAbstraction:
     """Test database abstraction layer."""
@@ -60,9 +65,7 @@ class TestDatabaseAbstraction:
         db = DatabaseFactory.create("sqlite", db_path=":memory:")
 
         # CREATE
-        affected = db.execute(
-            "CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)"
-        )
+        affected = db.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
 
         # INSERT
         affected = db.execute(
@@ -72,10 +75,7 @@ class TestDatabaseAbstraction:
         assert affected == 1
 
         # SELECT one
-        row = db.query_one(
-            "SELECT * FROM test WHERE id = ?",
-            (1,)
-        )
+        row = db.query_one("SELECT * FROM test WHERE id = ?", (1,))
         assert row["name"] == "Alice"
 
         # SELECT all
@@ -83,17 +83,11 @@ class TestDatabaseAbstraction:
         assert len(rows) == 1
 
         # UPDATE
-        affected = db.execute(
-            "UPDATE test SET name = ? WHERE id = ?",
-            ("Bob", 1)
-        )
+        affected = db.execute("UPDATE test SET name = ? WHERE id = ?", ("Bob", 1))
         assert affected == 1
 
         # DELETE
-        affected = db.execute(
-            "DELETE FROM test WHERE id = ?",
-            (1,)
-        )
+        affected = db.execute("DELETE FROM test WHERE id = ?", (1,))
         assert affected == 1
 
         db.close()
@@ -165,8 +159,26 @@ class TestDatabaseAbstraction:
 # PART 2: ACCESS CONTROL TESTS
 # ============================================================================
 
+
 class TestAccessControl:
     """Test advanced access control."""
+
+    def test_permission_cache_is_bounded(self):
+        """GB-040: the permission cache used to grow without bound (one entry
+        per unique user/resource/action/context combination, never evicted
+        except by a full manual clear_cache()). It must now stay at or below
+        MAX_CACHE_ENTRIES regardless of how many distinct checks are made."""
+        ac = AccessControl(enable_caching=True, cache_ttl_sec=300.0)
+        role = Role("admin")
+        role.grant_permission("data", "read", PermissionScope.ANY)
+        ac.register_role(role)
+        user = User("user1", roles={"admin"})
+        ac.register_user(user)
+
+        for i in range(AccessControl.MAX_CACHE_ENTRIES + 500):
+            ac.has_permission("user1", "data", "read", context={"i": i})
+
+        assert len(ac._cache) <= AccessControl.MAX_CACHE_ENTRIES
 
     def test_role_hierarchy(self):
         """Test role inheritance."""
@@ -217,24 +229,24 @@ class TestAccessControl:
         ac.register_user(regular_user)
 
         # Admin can read anything
-        assert ac.has_permission(
-            "admin1", "audit", "read",
-            context={"scope": PermissionScope.ANY}
-        )
+        assert ac.has_permission("admin1", "audit", "read", context={"scope": PermissionScope.ANY})
 
         # User can only read own tenant
         assert ac.has_permission(
-            "user1", "audit", "read",
-            context={"scope": PermissionScope.OWN_TENANT, "tenant_id": "tenant1"}
+            "user1",
+            "audit",
+            "read",
+            context={"scope": PermissionScope.OWN_TENANT, "tenant_id": "tenant1"},
         )
 
-    def test_impersonation(self):
-        """Test role impersonation."""
+    def test_impersonation_removed(self):
+        """GB-040: impersonate() was removed -- it was an in-process,
+        unaudited, externally-unrevocable privilege-escalation mechanism.
+        It must now fail loudly rather than silently grant elevated access."""
         ac = AccessControl()
 
         admin = Role("admin")
         admin.grant_permission("secret", "read", PermissionScope.ANY)
-
         user_role = Role("user")
 
         ac.register_role(admin)
@@ -243,14 +255,12 @@ class TestAccessControl:
         user = User("user1", roles={"user"})
         ac.register_user(user)
 
-        # Can't access secret normally
         assert not ac.has_permission("user1", "secret", "read")
 
-        # Can access when impersonated as admin
-        with ac.impersonate("admin", "user1"):
-            assert ac.has_permission("user1", "secret", "read")
+        with pytest.raises(NotImplementedError):
+            ac.impersonate("admin", "user1")
 
-        # Can't access after impersonation ends
+        # No side effect: still can't access secret after the failed call.
         assert not ac.has_permission("user1", "secret", "read")
 
     def test_permission_caching(self):
@@ -278,38 +288,24 @@ class TestAccessControl:
         assert ac.has_permission("user1", "data", "read")
 
     def test_impersonation_timeout_restores_role(self):
-        """Watchdog must restore impersonation after timeout if __exit__ never runs."""
+        """GB-040: impersonate() (and its watchdog) was removed entirely --
+        see test_impersonation_removed."""
         ac = AccessControl()
-
-        admin = Role("admin")
-        admin.grant_permission("secret", "read", PermissionScope.ANY)
-        user_role = Role("user")
-
-        ac.register_role(admin)
-        ac.register_role(user_role)
-
-        user = User("user1", roles={"user"})
-        ac.register_user(user)
-
-        impersonation = ac.impersonate("admin", "user1", max_seconds=1)
-        impersonation.__enter__()
-        assert ac.has_permission("user1", "secret", "read")
-
-        time.sleep(1.2)
-
-        assert not ac.has_permission("user1", "secret", "read")
-        impersonation.__exit__(None, None, None)
+        with pytest.raises(NotImplementedError):
+            ac.impersonate("admin", "user1", max_seconds=1)
 
     def test_impersonation_enforces_max_duration_cap(self):
-        """Impersonation duration should be capped server-side."""
+        """GB-040: impersonate() always raises NotImplementedError now,
+        regardless of arguments -- see test_impersonation_removed."""
         ac = AccessControl()
-        with pytest.raises(ValueError):
-            ac.impersonate("admin", "user1", max_seconds=AccessControl.MAX_IMPERSONATION_SECONDS + 1)
+        with pytest.raises(NotImplementedError):
+            ac.impersonate("admin", "user1", max_seconds=999_999)
 
 
 # ============================================================================
 # PART 3: ENCRYPTION TESTS
 # ============================================================================
+
 
 class TestEncryption:
     """Test encryption utilities."""
@@ -405,6 +401,7 @@ class TestEncryption:
 # PART 4: ADVANCED AUDIT LOGGING TESTS
 # ============================================================================
 
+
 class TestAdvancedAudit:
     """Test advanced audit logging."""
 
@@ -418,7 +415,7 @@ class TestAdvancedAudit:
             resource_type="policy",
             resource_id="policy_456",
             result="success",
-            context={"policy_name": "New Policy"}
+            context={"policy_name": "New Policy"},
         )
 
         assert record.user_id == "user123"
@@ -473,6 +470,7 @@ class TestAdvancedAudit:
 # ============================================================================
 # PART 5: REQUEST CONTEXT & CONFIGURATION TESTS
 # ============================================================================
+
 
 class TestRequestContext:
     """Test request context and configuration."""
@@ -537,6 +535,7 @@ class TestRequestContext:
             assert config.get("database.host") == "temp-localhost"
         finally:
             import os
+
             os.unlink(config_path)
 
     def test_config_env_override(self):
@@ -573,15 +572,18 @@ class TestRequestContext:
         t_a.join()
         t_b.join()
 
-        assert results.get("tenant_A") == "tenant_A", \
-            f"Thread A saw tenant: {results.get('tenant_A')}"
-        assert results.get("tenant_B") == "tenant_B", \
-            f"Thread B saw tenant: {results.get('tenant_B')}"
+        assert (
+            results.get("tenant_A") == "tenant_A"
+        ), f"Thread A saw tenant: {results.get('tenant_A')}"
+        assert (
+            results.get("tenant_B") == "tenant_B"
+        ), f"Thread B saw tenant: {results.get('tenant_B')}"
 
 
 # ============================================================================
 # PART 6: API GATEWAY & MIDDLEWARE TESTS
 # ============================================================================
+
 
 class TestAPIGateway:
     """Test API gateway and middleware."""
@@ -618,9 +620,7 @@ class TestAPIGateway:
 
         # Valid auth header -> success
         response = gateway.handle_request(
-            method="GET",
-            path="/secure",
-            headers={"Authorization": "Bearer my_token"}
+            method="GET", path="/secure", headers={"Authorization": "Bearer my_token"}
         )
         assert response.status_code == 200
 
@@ -648,10 +648,11 @@ class TestAPIGateway:
     def test_cors_middleware(self):
         """Test CORS middleware."""
         gateway = APIGateway()
-        gateway.add_middleware(CORSMiddleware(
-            allowed_origins=["http://localhost:3000"],
-            allowed_methods=["GET", "POST"]
-        ))
+        gateway.add_middleware(
+            CORSMiddleware(
+                allowed_origins=["http://localhost:3000"], allowed_methods=["GET", "POST"]
+            )
+        )
 
         def handler(request):
             return Response(status_code=200)
@@ -660,9 +661,7 @@ class TestAPIGateway:
 
         # Preflight request
         response = gateway.handle_request(
-            method="OPTIONS",
-            path="/api/data",
-            headers={"Origin": "http://localhost:3000"}
+            method="OPTIONS", path="/api/data", headers={"Origin": "http://localhost:3000"}
         )
 
         assert response.status_code == 200
@@ -709,6 +708,7 @@ class TestAPIGateway:
 # ============================================================================
 # INTEGRATION TEST: END-TO-END SCENARIO
 # ============================================================================
+
 
 class TestEndToEndIntegration:
     """End-to-end integration test combining all modules."""
@@ -785,7 +785,9 @@ class TestEndToEndIntegration:
         logger = TamperEvidentAuditLogger(db_path=":memory:", enable_hash_chain=True)
         pipeline = self._enterprise_ready_pipeline(EnterpriseGovernancePipeline, ac, logger)
 
-        with ContextManager(user_id="user2", tenant_id="tenant_denied", correlation_id="corr-denied"):
+        with ContextManager(
+            user_id="user2", tenant_id="tenant_denied", correlation_id="corr-denied"
+        ):
             response = pipeline.process(
                 DecisionRequest(
                     agent_id="agent_2",
@@ -841,8 +843,10 @@ class TestEndToEndIntegration:
 
             # Check permission
             can_read = ac.has_permission(
-                ctx.user_id, "report", "read",
-                context={"scope": PermissionScope.OWN_TENANT, "tenant_id": ctx.tenant_id}
+                ctx.user_id,
+                "report",
+                "read",
+                context={"scope": PermissionScope.OWN_TENANT, "tenant_id": ctx.tenant_id},
             )
 
             if not can_read:
@@ -855,30 +859,23 @@ class TestEndToEndIntegration:
                 resource_type="report",
                 resource_id="report_123",
                 result="success",
-                context={"tenant_id": ctx.tenant_id}
+                context={"tenant_id": ctx.tenant_id},
             )
 
             # Encrypt sensitive data
             sensitive = b"Report data with sensitive values"
             encrypted = crypto.encrypt(sensitive)
 
-            return Response(
-                status_code=200,
-                body={"encrypted_report": encrypted.hex()}
-            )
+            return Response(status_code=200, body={"encrypted_report": encrypted.hex()})
 
         gateway.register_route("POST", "/api/reports/generate", generate_report_handler)
 
         # Execute request
-        with ContextManager(
-            user_id="analyst1",
-            tenant_id="tenant_acme",
-            correlation_id="flow-123"
-        ):
+        with ContextManager(user_id="analyst1", tenant_id="tenant_acme", correlation_id="flow-123"):
             response = gateway.handle_request(
                 method="POST",
                 path="/api/reports/generate",
-                headers={"Authorization": "Bearer analytics_token"}
+                headers={"Authorization": "Bearer analytics_token"},
             )
 
         # Verify response
@@ -895,6 +892,7 @@ class TestEndToEndIntegration:
     def test_hash_chain_survives_restart_on_file_backed_db(self):
         """File-backed audit chains should remain appendable and verifiable after restart."""
         import tempfile
+
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
             db_path = handle.name
         try:
@@ -908,6 +906,7 @@ class TestEndToEndIntegration:
             logger2.close()
         finally:
             import os
+
             os.unlink(db_path)
 
     def test_hash_chain_partial_verification_from_middle_record(self):

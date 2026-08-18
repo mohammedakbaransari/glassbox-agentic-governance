@@ -20,31 +20,51 @@ import logging.handlers
 import os
 import sys
 import threading
+from contextlib import suppress
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-
 # ── JSON Formatter ────────────────────────────────────────────────────────────
+
 
 class JsonFormatter(logging.Formatter):
     """Formats log records as single-line JSON objects."""
 
     def format(self, record: logging.LogRecord) -> str:
         log_obj: Dict[str, Any] = {
-            "ts":        datetime.now(timezone.utc).isoformat(),
-            "level":     record.levelname,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
             "component": getattr(record, "component", "glassbox"),
-            "msg":       record.getMessage(),
+            "msg": record.getMessage(),
         }
         if record.exc_info:
             log_obj["exc"] = self.formatException(record.exc_info)
         # Merge any extra fields attached by the caller
         for k, v in record.__dict__.items():
-            if k not in ("msg", "args", "created", "filename", "funcName",
-                         "levelname", "levelno", "lineno", "module", "msecs",
-                         "message", "name", "pathname", "process",
-                         "processName", "relativeCreated", "stack_info",
-                         "thread", "threadName", "exc_info", "exc_text"):
+            if k not in (
+                "msg",
+                "args",
+                "created",
+                "filename",
+                "funcName",
+                "levelname",
+                "levelno",
+                "lineno",
+                "module",
+                "msecs",
+                "message",
+                "name",
+                "pathname",
+                "process",
+                "processName",
+                "relativeCreated",
+                "stack_info",
+                "thread",
+                "threadName",
+                "exc_info",
+                "exc_text",
+            ):
                 if not k.startswith("_"):
                     log_obj[k] = v
         return json.dumps(log_obj, default=str)
@@ -83,6 +103,7 @@ class ResilientStderrHandler(logging.StreamHandler):
 
 # ── GlassBox Logger ───────────────────────────────────────────────────────────
 
+
 class GlassBoxLogger:
     """
     Central logging façade for the GlassBox framework.
@@ -92,6 +113,7 @@ class GlassBoxLogger:
 
     _instance: Optional["GlassBoxLogger"] = None
     _lock = threading.Lock()
+    _initialized: bool
 
     def __new__(cls, *args, **kwargs):
         # Singleton: one log manager per process
@@ -103,21 +125,21 @@ class GlassBoxLogger:
 
     def __init__(
         self,
-        level:           str  = "INFO",
-        format:          str  = "json",
-        log_dir:         Optional[str] = None,
-        max_bytes:       int  = 10 * 1024 * 1024,
-        backup_count:    int  = 5,
+        level: str = "INFO",
+        format: str = "json",
+        log_dir: Optional[str] = None,
+        max_bytes: int = 10 * 1024 * 1024,
+        backup_count: int = 5,
         include_payload: bool = False,
     ):
         if self._initialized:
             return
 
-        self.level           = getattr(logging, level.upper(), logging.INFO)
-        self.format          = format
-        self.log_dir         = log_dir
-        self.max_bytes       = max_bytes
-        self.backup_count    = backup_count
+        self.level = getattr(logging, level.upper(), logging.INFO)
+        self.format = format
+        self.log_dir = log_dir
+        self.max_bytes = max_bytes
+        self.backup_count = backup_count
         self.include_payload = include_payload
         self._loggers: Dict[str, logging.Logger] = {}
         self._initialized = True
@@ -138,10 +160,8 @@ class GlassBoxLogger:
 
         for handler in list(root.handlers):
             root.removeHandler(handler)
-            try:
+            with suppress(Exception):
                 handler.close()
-            except Exception:
-                pass
 
         root.propagate = False
 
@@ -179,31 +199,34 @@ class GlassBoxLogger:
 
     def log_decision(
         self,
-        component:  str,
-        level:      str,
-        event:      str,
-        decision_id:str,
-        agent_id:   str,
-        dtype:      str,
-        status:     Optional[str]  = None,
-        risk_score: Optional[float]= None,
-        latency_ms: Optional[float]= None,
-        payload:    Optional[Dict] = None,
-        extra:      Optional[Dict] = None,
+        component: str,
+        level: str,
+        event: str,
+        decision_id: str,
+        agent_id: str,
+        dtype: str,
+        status: Optional[str] = None,
+        risk_score: Optional[float] = None,
+        latency_ms: Optional[float] = None,
+        payload: Optional[Dict] = None,
+        extra: Optional[Dict] = None,
     ):
         """Log a structured decision governance event."""
         lg = self.get_logger(component)
         log_level = getattr(logging, level.upper(), logging.INFO)
 
         log_data: Dict[str, Any] = {
-            "event":       event,
+            "event": event,
             "decision_id": decision_id,
-            "agent_id":    agent_id,
-            "dtype":       dtype,
+            "agent_id": agent_id,
+            "dtype": dtype,
         }
-        if status:     log_data["status"]     = status
-        if risk_score is not None: log_data["risk_score"] = risk_score
-        if latency_ms is not None: log_data["latency_ms"] = round(latency_ms, 3)
+        if status:
+            log_data["status"] = status
+        if risk_score is not None:
+            log_data["risk_score"] = risk_score
+        if latency_ms is not None:
+            log_data["latency_ms"] = round(latency_ms, 3)
         if self.include_payload and payload:
             log_data["payload"] = payload
         if extra:
@@ -211,7 +234,7 @@ class GlassBoxLogger:
 
         lg.log(log_level, event, extra=log_data)
 
-    def reconfigure(self, level: str = None, include_payload: bool = None):
+    def reconfigure(self, level: Optional[str] = None, include_payload: Optional[bool] = None):
         """Reconfigure the log manager at runtime."""
         if level:
             self.level = getattr(logging, level.upper(), self.level)
@@ -226,11 +249,11 @@ _default_manager: Optional[GlassBoxLogger] = None
 
 
 def setup_logging(
-    level:           str  = "INFO",
-    format:          str  = "json",
-    log_dir:         Optional[str] = None,
-    max_bytes:       int  = 10 * 1024 * 1024,
-    backup_count:    int  = 5,
+    level: str = "INFO",
+    format: str = "json",
+    log_dir: Optional[str] = None,
+    max_bytes: int = 10 * 1024 * 1024,
+    backup_count: int = 5,
     include_payload: bool = False,
 ) -> GlassBoxLogger:
     """
@@ -239,8 +262,11 @@ def setup_logging(
     """
     global _default_manager
     _default_manager = GlassBoxLogger(
-        level=level, format=format, log_dir=log_dir,
-        max_bytes=max_bytes, backup_count=backup_count,
+        level=level,
+        format=format,
+        log_dir=log_dir,
+        max_bytes=max_bytes,
+        backup_count=backup_count,
         include_payload=include_payload,
     )
     return _default_manager
@@ -251,6 +277,7 @@ def get_logger(component: str) -> logging.Logger:
     global _default_manager
     if _default_manager is None:
         import os
+
         level = os.environ.get("GLASSBOX_LOG_LEVEL", "INFO")
         _default_manager = GlassBoxLogger(level=level)
     return _default_manager.get_logger(component)
@@ -258,7 +285,7 @@ def get_logger(component: str) -> logging.Logger:
 
 # ── ContextualLogger — request-scoped structured log context ─────────────────
 
-_context_local = threading.local()
+_context_fields: ContextVar[Dict[str, Any]] = ContextVar("_context_fields", default={})
 
 
 class _ContextBinder:
@@ -266,15 +293,16 @@ class _ContextBinder:
 
     def __init__(self, fields: dict):
         self._fields = fields
-        self._prev: dict = {}
+        self._token: Optional[Token[Dict[str, Any]]] = None
 
     def __enter__(self) -> "_ContextBinder":
-        self._prev = getattr(_context_local, "fields", {}).copy()
-        _context_local.fields = {**self._prev, **self._fields}
+        prev = _context_fields.get()
+        self._token = _context_fields.set({**prev, **self._fields})
         return self
 
     def __exit__(self, *_) -> None:
-        _context_local.fields = self._prev
+        if self._token is not None:
+            _context_fields.reset(self._token)
 
 
 class ContextualLogger:
@@ -304,7 +332,7 @@ class ContextualLogger:
         return _ContextBinder(fields)
 
     def _make_extra(self, kwargs: dict) -> dict:
-        ctx = getattr(_context_local, "fields", {})
+        ctx = _context_fields.get()
         return {"structured": {**ctx, **kwargs}}
 
     def debug(self, msg: str, **kwargs) -> None:
