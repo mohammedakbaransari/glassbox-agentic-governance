@@ -44,43 +44,26 @@ pip install -e .
 ## Quick start
 
 ```python
-from glassbox.adapters.outbound.memory import memory_adapter_set
+from glassbox.adapters.outbound.memory import (
+  memory_adapter_set,
+  wire_memory_adapter_set,
+)
 from glassbox.app.composition import build_runtime
 from glassbox.app.config import GlassBoxConfig, RuntimeProfile
 from glassbox.app.decision_service import DecisionService
-from glassbox.domain.action import ResourceRef
-from glassbox.domain.identity import CredentialType, RawCredential
 
-# The in-memory adapter set is for local development only: it provides no
-# durability or tamper-evidence guarantees. Production uses the PostgreSQL,
-# Redis and KMS adapters under glassbox/adapters/outbound instead.
-runtime = build_runtime(GlassBoxConfig(profile=RuntimeProfile.DEV), memory_adapter_set())
+# Development only: no durability, distributed state, or managed key custody.
+runtime = wire_memory_adapter_set(
+  build_runtime(GlassBoxConfig(profile=RuntimeProfile.DEV), memory_adapter_set())
+)
 decisions = DecisionService(runtime)
-
-credential = RawCredential(
-    credential_type=CredentialType.OIDC,
-    material="dev:acme:agent.procurement-bot:instance-01",
-)
-resource = ResourceRef(kind="purchase_order", id="po-4471", tenant_id="acme")
-
-outcome = decisions.decide_and_dispatch_for_request(
-    credential,
-    action_name="procurement.create_purchase_order",
-    resource=resource,
-    parameters={"amount": 750000, "category": "semiconductors"},
-    idempotency_key="po-4471-create",
-)
-
-print(outcome.decision.effect)      # ALLOW / DENY / REQUIRE_APPROVAL
-print(outcome.decision.rationale)
-print(outcome.execution)
+print(runtime.describe())
 ```
 
-`procurement.create_purchase_order` must first be registered in the action
-catalogue (consequence class, exposure rule, parameter schema) — see
-`tests/test_decision_service.py` for a complete, runnable setup and
-[docs/DEVELOPMENT/implementation_guide.md](docs/DEVELOPMENT/implementation_guide.md)
-for how to register your own actions.
+GlassBox denies by default. Before an action can execute, register its governed
+definition, mandate, policy permission, baseline, and dispatcher. The
+[complete quick start](docs/USER/quick_start.md) is executed from Markdown as
+part of documentation validation and demonstrates the full path.
 
 ## Run tests
 

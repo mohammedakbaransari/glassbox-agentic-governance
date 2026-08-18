@@ -1,5 +1,8 @@
 # glassbox/security
 
+> **Legacy compatibility module:** Payload sanitization here is retained for v1.
+> Current parameter allow-lists and untrusted-text controls live in the domain.
+
 Payload safety checks and request sanitization helpers.
 
 ## Key Modules

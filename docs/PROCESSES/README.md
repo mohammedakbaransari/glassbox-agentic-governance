@@ -2,7 +2,7 @@
 
 This directory contains documentation for processes, workflows, and procedures.
 
-## 📖 Contents
+## Contents
 
 ### Documentation Style
 - **[style_guide.md](style_guide.md)** — how to write and maintain documentation in this repository
@@ -17,11 +17,11 @@ This directory contains documentation for processes, workflows, and procedures.
 3. Write tests (coverage >90%)
 4. Submit pull request
 5. Reviewer checks:
-   - ✅ Tests pass
-   - ✅ Code style consistent
-   - ✅ Documentation updated
-   - ✅ No breaking changes
-   - ✅ Performance impact acceptable
+   - [ ] Tests pass
+   - [ ] Code style is consistent
+   - [ ] Documentation is updated
+   - [ ] Breaking changes are identified and managed
+   - [ ] Performance impact is assessed
 6. Approval and merge
 
 **Review Checklist:**
@@ -161,7 +161,7 @@ Documented for:
 - Documentation index
 - Internal wiki access
 
-## 📊 Process Metrics
+## Process Metrics
 
 Monitor process health:
 - **Deployment frequency** - Deployments/month
@@ -173,7 +173,7 @@ Monitor process health:
 
 ## 🔗 Related Documentation
 
-- **Review process**: [review_and_improvements.md](review_and_improvements.md)
+- **Review process**: [../../CONTRIBUTING.md](../../CONTRIBUTING.md)
 - **Development**: [../DEVELOPMENT/](../DEVELOPMENT/)
 - **Deployment**: [../DEPLOYMENT/](../DEPLOYMENT/)
 - **Security**: [../SECURITY/](../SECURITY/)

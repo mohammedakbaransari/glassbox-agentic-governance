@@ -1,55 +1,42 @@
-# API Documentation
+# HTTP API Documentation
 
-This section documents the HTTP interface implemented in `glassbox/api/app.py`.
+GlassBox contains two HTTP surfaces. They solve the same governance problem but
+use different runtimes and contracts. Choose the surface deliberately; routes
+and request models are not interchangeable.
 
-## Start API Locally
+## Current API: DecisionService v2
 
-```bash
-pip install -e .[api]
-python -m glassbox.api.app
-```
+New integrations use the hexagonal runtime exposed by
+`glassbox/adapters/inbound/http/app.py`. A process entry point composes one
+`GovernanceRuntime`, passes it to `create_app(runtime)`, and serves these routes:
 
-Default bind is controlled by env vars in the app configuration path.
+- `GET /healthz`
+- `POST /v2/actions/{action_name}`
+- `POST /v2/tools/{tool_name}`
+- `POST /v2/replay`
 
-## Endpoint Surface
+Identity verification, tenant assertion checks, policy evaluation, evidence
+persistence, and dispatch ordering are enforced by `DecisionService`, not by
+optional transport middleware.
 
-Implemented routes include:
+See [v2_endpoint_reference.md](v2_endpoint_reference.md) for the contract and
+[../../glassbox/adapters/inbound/http/README.md](../../glassbox/adapters/inbound/http/README.md)
+for composition guidance.
 
-- `GET /health`
-- `GET /ready`
-- `GET /metrics`
-- `GET /openapi.json`
-- `POST /decisions`
-- `POST /decisions/simulate`
-- `GET /decisions`
-- `GET /decisions/{decision_id}`
-- `POST /decisions/{decision_id}/replay`
-- `POST /decisions/batch`
-- `GET /stats`
-- `GET /agents/{agent_id}/velocity`
-- `GET /agents/{agent_id}/anomaly`
-- `GET /policies`
-- `GET /contracts`
-- `GET /ecosystem`
-- `GET /events/stream`
+## Legacy API: GovernancePipeline v1
 
-## Operational Behavior
+The retained synchronous API in `glassbox/api/app.py` provides the original
+17-route surface, including `/decisions`, `/metrics`, and `/events/stream`. It
+remains tested for compatibility, but new integrations should not assume that
+its routes or security model apply to v2.
 
-- Built-in request-size limits are enforced.
-- Built-in in-memory rate limiting is applied per-agent and per-IP.
-- `openapi.json` exposes machine-readable route schema.
-- `/metrics` exposes Prometheus text format without extra metrics dependencies.
+See [endpoint_reference.md](endpoint_reference.md) and
+[../../glassbox/api/README.md](../../glassbox/api/README.md).
 
-## Security Integration Guidance
+## Compatibility Policy
 
-The default distribution is intentionally light on identity controls. For production:
-
-- add authentication middleware (API key, JWT, gateway auth)
-- enforce authorization checks per route/action
-- run behind TLS-terminating reverse proxy/load balancer
-- keep outer rate limits in your ingress/proxy tier
-
-## Canonical Reference
-
-- [endpoint_reference.md](endpoint_reference.md)
-- [../../glassbox/api/README.md](../../glassbox/api/README.md)
+- v2 documentation describes only behavior implemented by the current
+	`DecisionService` path.
+- v1 documentation is labeled **Legacy** and remains separate.
+- A capability is not a production guarantee unless it is also represented in
+	[../CLAIMS.md](../CLAIMS.md) or explicitly described as deployment-specific.

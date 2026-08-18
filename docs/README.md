@@ -10,15 +10,16 @@ Start here based on your goal:
 - Understand internals: [ARCHITECTURE.md](ARCHITECTURE.md)
 - Extend framework behavior: [DEVELOPMENT/implementation_guide.md](DEVELOPMENT/implementation_guide.md)
 - Operate in production: [DEPLOYMENT/README.md](DEPLOYMENT/README.md)
-- Integrate over HTTP: [API/endpoint_reference.md](API/endpoint_reference.md)
+- Integrate over HTTP: [API/v2_endpoint_reference.md](API/v2_endpoint_reference.md)
 - Harden security posture: [SECURITY/hardening.md](SECURITY/hardening.md)
 - Verify a specific claim: [CLAIMS.md](CLAIMS.md)
 
 ## Documentation Structure
 
-- [API/](API/) - endpoint contracts, auth/security patterns, API operations
+- [API/](API/) - current and legacy endpoint contracts, identity, and error semantics
 - [USER/](USER/) - onboarding, scenarios, troubleshooting
 - [DEVELOPMENT/](DEVELOPMENT/) - internals and extension implementation
+- [DEVELOPMENT/testing.md](DEVELOPMENT/testing.md) - test layers, service gates, and CI checks
 - [DEPLOYMENT/](DEPLOYMENT/) - operational setup, tuning, and references
 - [FEATURES/](FEATURES/) - deep dives for specific capabilities
 - [COMPLIANCE/](COMPLIANCE/) - standards mapping and evidence concepts
@@ -32,7 +33,10 @@ Start here based on your goal:
 
 When code changes, update docs in the same change set:
 
-- API behavior: update both `glassbox/api/README.md` and `docs/API/endpoint_reference.md`
+- Current HTTP behavior: update `glassbox/adapters/inbound/http/README.md` and
+  `docs/API/v2_endpoint_reference.md`
+- Legacy HTTP behavior: update `glassbox/api/README.md` and
+  `docs/API/endpoint_reference.md`
 - Decision-service stages/policies: update `docs/ARCHITECTURE.md` and `docs/DEVELOPMENT/*`
 - Test workflow changes: update `CONTRIBUTING.md` and user/dev command snippets
 - New module capability: add or update the corresponding `glassbox/<module>/README.md`
@@ -43,6 +47,7 @@ When code changes, update docs in the same change set:
 - Application orchestration: `glassbox/app/decision_service.py`, `glassbox/app/composition.py`
 - Domain rules: `glassbox/domain/`
 - HTTP entry point: `glassbox/adapters/inbound/http/app.py`
-- Compliance control catalogue: `glassbox/compliance/catalogue.py`
+- Legacy compliance crosswalk: `glassbox/compliance/catalogue.py`
+- Current assurance claims: `docs/CLAIMS.md`
 - Test orchestration: `python -m pytest tests -q`
 

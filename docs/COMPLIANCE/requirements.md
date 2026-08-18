@@ -1,4 +1,11 @@
-# GlassBox — Compliance Framework Reference
+# Legacy ComplianceCatalogue Framework Crosswalk
+
+> **Engineering reference, not certification:** This 97-control crosswalk is
+> maintained by the retained `glassbox.compliance.ComplianceCatalogue` path.
+> Status values describe repository mappings, not an organization's control
+> design, operating effectiveness, legal compliance, or audit opinion. Reconcile
+> every row with [the current evidence model](README.md), [verified claims](../CLAIMS.md),
+> and the deployed environment before using it in an assessment.
 
 This document maps every supported compliance standard to GlassBox components and controls. All 97 controls are stored as database records in `ComplianceCatalogue` — no hardcoding.
 

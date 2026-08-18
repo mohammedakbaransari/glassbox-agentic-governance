@@ -1,5 +1,8 @@
 # glassbox/integrations
 
+> **Legacy compatibility module:** The wrappers below target
+> `GovernancePipeline`. New integrations should call `DecisionService` or v2 HTTP.
+
 Adapters for external agent frameworks and policy systems.
 
 ## Key Modules

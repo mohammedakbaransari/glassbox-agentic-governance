@@ -1,5 +1,8 @@
 # glassbox/workflow
 
+> **Legacy compatibility module:** This workflow engine consumes v1 outcomes.
+> v2 approval completion remains an external workflow responsibility.
+
 Workflow management for decisions routed to human review.
 
 ## Key Modules

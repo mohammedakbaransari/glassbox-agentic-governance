@@ -1,5 +1,8 @@
 # glassbox/orchestration
 
+> **Legacy compatibility module:** These orchestration helpers wrap the v1
+> pipeline. Govern each v2 effect through `DecisionService`.
+
 Orchestration primitives for chain, graph, and saga-style governed execution.
 
 ## Key Modules

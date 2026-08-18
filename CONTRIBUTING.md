@@ -51,9 +51,11 @@ python scripts/run_test_batches.py
 When behavior changes, update related docs in the same PR:
 
 - root [README.md](README.md)
-- [docs/API/endpoint_reference.md](docs/API/endpoint_reference.md) for API changes
+- [docs/API/v2_endpoint_reference.md](docs/API/v2_endpoint_reference.md) for current API changes
+- [docs/API/endpoint_reference.md](docs/API/endpoint_reference.md) for legacy API changes
 - [docs/DEVELOPMENT/](docs/DEVELOPMENT/) for architecture/extension changes
 - relevant module README under `glassbox/*/README.md`
+- [docs/CLAIMS.md](docs/CLAIMS.md) when a public guarantee or limitation changes
 
 ## Commit messages
 
@@ -69,8 +71,8 @@ Conventional commit style is recommended:
 
 Do not open public issues for vulnerabilities.
 
-- Email: `security@glassbox.dev`
-- Include: impact, reproduction steps, affected component, and suggested remediation if available
+- Submit a private GitHub Security Advisory to the repository owner.
+- Include impact, reproduction steps, affected component, and suggested remediation if available.
 
 ## License
 

@@ -1,4 +1,10 @@
-# GlassBox — Architecture Reference
+# GovernancePipeline Architecture (v1 Compatibility Reference)
+
+> **Legacy track:** This document describes the retained synchronous
+> `GovernancePipeline` and its supporting modules. For the current
+> `DecisionService` ports-and-adapters architecture used by new integrations,
+> start with [../ARCHITECTURE.md](../ARCHITECTURE.md). The two runtimes remain
+> tested but have different composition, identity, evidence, and HTTP contracts.
 
 ---
 

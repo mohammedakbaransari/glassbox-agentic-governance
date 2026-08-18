@@ -1,89 +1,133 @@
-# Implementation Guide
+# Extension Guide
 
-This guide explains how to extend GlassBox safely with production-oriented patterns.
+Extend GlassBox at the narrowest owning boundary. Domain semantics belong in
+the domain; external capabilities become ports; vendor code becomes an outbound
+adapter; request translation becomes an inbound adapter; multi-port sequencing
+belongs in the application layer.
 
-## 1. Extend Policies
+## Add a Governed Action
 
-Policy extension path:
+An `ActionDefinition` fixes server-governed consequence, exposure derivation,
+parameter schema, required attestations, and untrusted text fields.
 
-- implement logic via `PolicyEngine` registration
-- keep policy functions deterministic and side-effect free
-- return clear violation/warning messages
-- avoid expensive I/O inside evaluation paths
+```python
+from glassbox.domain.action import BlastRadius, ConsequenceClass
+from glassbox.domain.catalogue import (
+    ActionDefinition,
+    ExposureRule,
+    ParameterField,
+    ParameterType,
+)
 
-Testing expectations:
+definition = ActionDefinition(
+    action="procurement.create_purchase_order",
+    consequence=ConsequenceClass.COMPENSABLE,
+    exposure_rule=ExposureRule(
+        blast_radius=BlastRadius.SINGLE,
+        monetary_field="amount",
+    ),
+    parameter_schema=(
+        ParameterField("amount", ParameterType.NUMBER, required=True),
+        ParameterField("supplier_id", ParameterType.STRING, required=True),
+        ParameterField("justification", ParameterType.STRING, max_length=4000),
+    ),
+    required_attestations=("supplier_active",),
+    untrusted_text_fields=frozenset({"justification"}),
+)
+```
 
-- pass case
-- fail case
-- malformed payload case
+Add the definition to a versioned `ActionCatalogueBundle`, supply the named
+attestations from an `AttestationProvider`, grant a bounded `Mandate`, configure
+policy and limits, and register a dispatcher handler. Test both allow and denial
+paths, including unknown parameters and unavailable attestations.
 
-## 2. Declarative Rules
+## Add a Domain Rule
 
-Use `RulesLoader` for YAML/JSON rule definitions when you want non-code policy updates.
+Use `glassbox/domain` when the rule:
 
-Recommended workflow:
+- is deterministic for explicit inputs;
+- requires no database, network, environment, wall clock, or framework;
+- belongs to the stable language of governance.
 
-1. author rule in staging
-2. validate against replay/simulation samples
-3. promote to production with rollout guardrails
+Validate values at construction, prefer immutable dataclasses and enums, and
+provide canonical evidence serialization when the value is persisted.
 
-## 3. Pipeline Composition
+## Add a Port
 
-`GovernancePipeline` supports injection of core and optional integrations:
+Create a small `@runtime_checkable Protocol` under `glassbox/ports` using domain
+types. Document behavioral semantics, especially atomicity, durability,
+idempotency, tenant isolation, and failure behavior.
 
-- policy engine, risk evaluator, anomaly detector, velocity breaker
-- audit repository
-- event bus
-- workflow engine
-- compliance catalogue
-- stage registry
+Then:
 
-Use `trace_enabled=True` during debugging environments to inspect execution traces.
+1. add the port to `REQUIRED_COMPONENTS` only if every runtime needs it;
+2. update `AdapterSet` factories and `GovernanceRuntime` through the composition
+   root's single source of truth;
+3. implement the reference memory adapter;
+4. add shared conformance tests;
+5. implement durable adapters;
+6. update the ports and outbound-adapter READMEs.
 
-## 4. Multi-Tenant Setup
+## Add an Outbound Adapter
 
-Use `MultiTenantPipeline` when tenant isolation requirements include:
+Place vendor-specific code under `glassbox/adapters/outbound/<technology>`.
 
-- isolated policy/risk context
-- separated breaker/anomaly baselines
-- tenant-scoped configuration and contracts
+- Keep SDK and driver types inside the adapter.
+- Parameterize data values and enforce tenant context.
+- Use server-side atomic operations for counters and ledgers.
+- Translate dependency failures into structured errors expected by the service.
+- Never return a permissive result because a safety dependency is unavailable.
+- Add environment-gated integration tests against the real service.
 
-## 5. Async and Throughput Considerations
+An object that passes `isinstance(component, Protocol)` may still violate
+behavioral semantics; conformance tests are mandatory.
 
-- `process_async()` uses thread-pool dispatch to avoid blocking event loops
-- tune async worker count for your environment
-- monitor p99 latency and queue depth under burst traffic
+## Add an Inbound Adapter
 
-## 6. API-Layer Extensions
+Inbound adapters extract untrusted transport values, call one application
+method, and serialize outcomes. They must not:
 
-When extending API behavior:
+- construct concrete outbound dependencies;
+- accept caller-selected consequence, exposure, tenant, or policy verdicts;
+- duplicate application control flow;
+- turn replay into dispatch.
 
-- keep schema aligned with `DecisionRequest` and `DecisionResponse`
-- preserve deterministic error semantics
-- document new routes in both API docs files
-- add route tests for auth, validation, and rate-limit behavior
+Use `glassbox/adapters/inbound/http/app.py` as the reference pattern.
 
-## 7. Test Harness Usage
+## Add Policy Behavior
 
-`run_test_batches.py` supports:
+Policy refines authority within a mandate; it cannot expand the mandate.
+Production policy bundles must be versioned, attributable, active, and
+signature-verified according to configuration. Record bundle identity in
+evidence and test unavailable/invalid bundles as fail-closed paths.
 
-- batch selection (`--batch`)
-- tag filtering (`--tag`)
-- scheduling (`--schedule`)
-- plan preview and JSON export (`--plan*`)
-- rerun failed batches (`--rerun-failed-*`)
-- CI one-line summaries (`--ci-summary`, `--ci-analysis-summary`)
+## Add Observability
 
-## 8. Change Safety Checklist
+The application layer exposes dependency-free telemetry protocols and no-op
+defaults. Install concrete OpenTelemetry providers from an outbound adapter at
+the process entry point. Do not import OpenTelemetry into `glassbox.app`.
 
-- [ ] tests updated and passing
-- [ ] docs updated for behavior/API changes
-- [ ] backward compatibility considered
-- [ ] performance impact assessed
-- [ ] security implications reviewed
+Use bounded-cardinality attributes. Never emit credentials, raw tokens, client
+certificates, signing material, or unrestricted action parameters.
 
-## Related
+## Review Checklist
 
-- [architecture.md](architecture.md)
-- [../API/endpoint_reference.md](../API/endpoint_reference.md)
-- [../../CONTRIBUTING.md](../../CONTRIBUTING.md)
+- Owning layer is correct and dependency direction remains inward.
+- Input trust and tenant derivation are explicit.
+- Failure mode is fail closed where safety depends on the component.
+- Dispatch still requires a durable intent receipt.
+- Shared state is atomic across processes and replicas.
+- Unit, conformance, adversarial, and integration coverage match the risk.
+- Public docs and `CLAIMS.md` reflect the change.
+
+## Verification
+
+```bash
+lint-imports
+ruff check glassbox tests
+mypy glassbox --ignore-missing-imports --no-error-summary
+python -m pytest tests/test_layering.py -q
+python -m pytest tests -q
+```
+
+See [testing.md](testing.md) for service-specific gates and environment variables.

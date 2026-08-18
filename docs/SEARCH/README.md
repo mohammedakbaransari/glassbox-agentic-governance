@@ -2,7 +2,7 @@
 
 This directory contains search index files for quick lookup across the GlassBox documentation.
 
-## 📖 Search Strategy
+## Search Strategy
 
 The GlassBox documentation uses multiple search approaches:
 
@@ -63,12 +63,12 @@ Each docs/ subdirectory has its own README with local index:
 - **Business Rules** → [USER/quick_start.md](../USER/quick_start.md), [FEATURES/README.md](../FEATURES/README.md)
 
 ### C
-- **Circuit Breaker** → [FEATURES/velocity_breaker_readme.md](../FEATURES/velocity_breaker_readme.md)
+- **Circuit Breaker** → [FEATURES/velocity_breaker.md](../FEATURES/velocity_breaker.md)
 - **CLI** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
 - **Compliance** → [COMPLIANCE/requirements.md](../COMPLIANCE/requirements.md)
 - **Configuration** → [DEPLOYMENT/deployment_reference.md](../DEPLOYMENT/deployment_reference.md)
 - **Containerization** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
-- **Currency** → [FEATURES/velocity_breaker_readme.md](../FEATURES/velocity_breaker_readme.md)
+- **Currency** → [FEATURES/velocity_breaker.md](../FEATURES/velocity_breaker.md)
 
 ### D
 - **Database** → [DEPLOYMENT/deployment_reference.md](../DEPLOYMENT/deployment_reference.md)
@@ -76,7 +76,7 @@ Each docs/ subdirectory has its own README with local index:
 - **Decision Replay** → [FEATURES/enterprise.md](../FEATURES/enterprise.md)
 - **Deployment** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
 - **Disaster Recovery** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
-- **Distributed** → [FEATURES/velocity_breaker_details.md](../FEATURES/velocity_breaker_details.md)
+- **Distributed** → [FEATURES/velocity_breaker.md](../FEATURES/velocity_breaker.md)
 - **Docker** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
 
 ### E
@@ -121,7 +121,7 @@ Each docs/ subdirectory has its own README with local index:
 
 ### M
 - **Metrics** → [DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md)
-- **Migration** → [VERSIONS/README.md](../VERSIONS/README.md)
+- **Migration** → [ARCHITECTURE.md](../ARCHITECTURE.md#current-and-legacy-implementations)
 - **Monitoring** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
 - **Multi-Tenant** → [FEATURES/enterprise.md](../FEATURES/enterprise.md)
 
@@ -144,7 +144,7 @@ Each docs/ subdirectory has its own README with local index:
 
 ### R
 - **RBAC** → [SECURITY/hardening.md](../SECURITY/hardening.md)
-- **Redis** → [FEATURES/velocity_breaker_readme.md](../FEATURES/velocity_breaker_readme.md), [DEPLOYMENT/deployment_reference.md](../DEPLOYMENT/deployment_reference.md)
+- **Redis** → [FEATURES/velocity_breaker.md](../FEATURES/velocity_breaker.md), [DEPLOYMENT/deployment_reference.md](../DEPLOYMENT/deployment_reference.md)
 - **Regression** → [FEATURES/enterprise.md](../FEATURES/enterprise.md)
 - **Release** → [PROCESSES/README.md](../PROCESSES/README.md)
 - **Reliability** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
@@ -160,7 +160,7 @@ Each docs/ subdirectory has its own README with local index:
 - **Security** → [SECURITY/hardening.md](../SECURITY/hardening.md)
 - **SOC 2** → [COMPLIANCE/requirements.md](../COMPLIANCE/requirements.md)
 - **SSL/TLS** → [SECURITY/hardening.md](../SECURITY/hardening.md)
-- **State** → [FEATURES/velocity_breaker_details.md](../FEATURES/velocity_breaker_details.md)
+- **State** → [FEATURES/velocity_breaker.md](../FEATURES/velocity_breaker.md)
 - **Status** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
 
 ### T
@@ -174,12 +174,12 @@ Each docs/ subdirectory has its own README with local index:
 - **Tune** → [DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md)
 
 ### U
-- **Upgrade** → [VERSIONS/COMPARISON.md](../VERSIONS/COMPARISON.md)
+- **Upgrade** → [ARCHITECTURE.md](../ARCHITECTURE.md#current-and-legacy-implementations)
 - **Use Case** → [USER/use_cases.md](../USER/use_cases.md)
 
 ### V
-- **Velocity Breaker** → [FEATURES/velocity_breaker_readme.md](../FEATURES/velocity_breaker_readme.md)
-- **Version** → [VERSIONS/README.md](../VERSIONS/README.md)
+- **Velocity Breaker** → [FEATURES/velocity_breaker.md](../FEATURES/velocity_breaker.md)
+- **Version** → [pyproject.toml](../../pyproject.toml)
 - **Vertical Scaling** → [DEPLOYMENT/README.md](../DEPLOYMENT/README.md)
 
 ### W
@@ -190,7 +190,7 @@ Each docs/ subdirectory has its own README with local index:
 
 ---
 
-## 📊 Search Statistics
+## Search Statistics
 
 | Category | Documents | Keywords | Topics |
 |----------|-----------|----------|--------|

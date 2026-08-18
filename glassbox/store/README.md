@@ -1,5 +1,8 @@
 # glassbox/store
 
+> **Legacy compatibility module:** New durable implementations belong under
+> `glassbox/adapters/outbound` and must implement port contracts.
+
 Persistence and repository abstractions for policies, workflows, and audit
 records, used by the original synchronous `GovernancePipeline`. The current
 evidence and limits stores are `glassbox/adapters/outbound/postgres` and

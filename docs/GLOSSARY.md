@@ -109,7 +109,7 @@ A `Protocol` interface describing a capability the application layer depends on 
 
 **Adapter**
 A concrete implementation of a port. Inbound adapters expose the system (e.g., the HTTP entry point); outbound adapters back it with infrastructure (e.g., Postgres, Redis, KMS).
-- See: [adapters/inbound/http/app.py](../glassbox/adapters/inbound/http/app.py), [adapters/outbound/memory.py](../glassbox/adapters/outbound/memory.py)
+- See: [adapters/inbound/http/app.py](../glassbox/adapters/inbound/http/app.py), [adapters/outbound/memory](../glassbox/adapters/outbound/memory/)
 
 **Composition Root**
 `build_runtime(config, adapter_set)` — the single place adapters are wired to ports to produce a `GovernanceRuntime`.
@@ -307,7 +307,7 @@ Metadata indicating how confident the governance pipeline is in its own decision
 
 **Velocity Breaker**
 Circuit breaker that trips if the decision request rate exceeds a threshold (e.g., > 10K decisions/sec). Prevents DoS attacks and resource exhaustion.
-- See: [governance/velocity_breaker.py](../glassbox/governance/velocity_breaker.py), [FEATURES/velocity_breaker_details.md](FEATURES/velocity_breaker_details.md)
+- See: [governance/velocity_breaker.py](../glassbox/governance/velocity_breaker.py), [FEATURES/velocity_breaker.md](FEATURES/velocity_breaker.md)
 
 ---
 

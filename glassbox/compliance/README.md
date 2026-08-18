@@ -1,5 +1,8 @@
 # glassbox/compliance
 
+> **Legacy compatibility module:** This catalogue integrates with the original
+> synchronous pipeline. Current guarantees are tracked in `docs/CLAIMS.md`.
+
 Compliance catalogue and evidence mapping helpers.
 
 ## Key Modules

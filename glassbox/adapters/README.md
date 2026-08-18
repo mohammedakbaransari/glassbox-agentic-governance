@@ -1,35 +1,31 @@
-# glassbox/adapters
+# Adapters
 
-Platform and Spark adapters for running governance in varied compute environments.
+Adapters connect GlassBox runtime contracts to transports and infrastructure.
 
-## Key Modules
+## Current Architecture
 
-- `platforms.py`: platform detection and adapter classes
-- `spark.py`: Spark dataframe/stream governance helpers
+- [`inbound/http`](inbound/http/README.md): Flask transport for `DecisionService`
+- [`outbound`](outbound/README.md): implementations for memory, identity,
+  PostgreSQL, Redis, KMS, OpenTelemetry, Delta Lake, Spark, and WORM storage
 
-## Quick Start
+Inbound adapters translate requests. Outbound adapters implement ports. Neither
+location owns domain policy or risk semantics.
 
-```python
-from glassbox.adapters.platforms import auto_detect_adapter
+## Compatibility Modules
 
-adapter = auto_detect_adapter()
-pipeline = adapter.create_pipeline()
-```
+`platforms.py` and the top-level `spark.py` support the original synchronous
+`GovernancePipeline`. They remain tested for compatibility. New v2 adapters
+belong under `inbound` or `outbound` and must satisfy the enforced dependency
+contracts.
 
-## Operational Notes
-
-- Use explicit adapter selection when environment detection is ambiguous.
-- For Spark-scale governance, prefer partition-based processing patterns.
-- Validate cluster/runtime resource sizing before high-volume runs.
-
-## Testing
+## Verification
 
 ```bash
-python -m pytest tests/test_integrations.py -q
-python -m pytest tests/test_performance.py -q
+python -m pytest tests/test_layering.py tests/test_memory_adapters.py -q
 ```
 
-## Related Docs
+## Related Documentation
 
-- [docs/DEPLOYMENT/guide.md](../../docs/DEPLOYMENT/guide.md)
-- [docs/DEPLOYMENT/performance_tuning.md](../../docs/DEPLOYMENT/performance_tuning.md)
+- [Architecture](../../docs/ARCHITECTURE.md)
+- [Ports](../ports/README.md)
+- [Deployment](../../docs/DEPLOYMENT/README.md)

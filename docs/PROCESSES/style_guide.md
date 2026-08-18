@@ -9,7 +9,9 @@ Applies to:
 - `README.md`
 - `CONTRIBUTING.md`
 - `docs/**/*.md`
-- `glassbox/*/README.md`
+- `glassbox/**/README.md`
+- `examples/README.md`
+- `sdk/**/README.md`
 
 ## Core Principles
 
@@ -17,6 +19,8 @@ Applies to:
 - Prefer clarity over marketing language.
 - Keep examples runnable or obviously marked as pseudocode.
 - Avoid hardcoded counts that drift quickly (for example, exact test totals) unless automatically generated.
+- Distinguish current, legacy compatibility, adapter-available, and operator-owned behavior.
+- Back public guarantees with code and executable tests in `docs/CLAIMS.md`.
 
 ## Standard Document Structure
 
@@ -48,12 +52,15 @@ For module READMEs, keep sections short and actionable.
 - Use `python -m ...` command style consistently.
 - Do not include commands that reference missing files/tests.
 
-## Versioning Guidance
+## Version and Architecture Guidance
 
-- This is a single, unreleased codebase — do not add version numbers,
-  version badges, or "as of vX.Y.Z" framing to documentation.
-- Do not describe current behavior as a change relative to an earlier
-  release; state what the code does today.
+- Do not add release-history narratives or "as of vX.Y.Z" framing to general
+  documentation.
+- Use **v2/current** and **v1/legacy compatibility** only to distinguish the two
+  implementation families that coexist in this repository.
+- Put the architecture-track label near the top of every compatibility document.
+- Never imply that v1 and v2 routes, identity, evidence, or extension contracts
+  are interchangeable.
 - Canonical package version (for packaging/build purposes only) is
   `pyproject.toml`; it should not appear in prose documentation.
 
@@ -62,15 +69,18 @@ For module READMEs, keep sections short and actionable.
 - Prefer relative links within docs.
 - Every new/changed link must resolve in the repository.
 - Avoid references to non-existent files (for example, removed changelog/version folders).
-- For API behavior, keep `glassbox/api/README.md` and `docs/API/endpoint_reference.md` aligned.
+- For current API behavior, keep `glassbox/adapters/inbound/http/README.md` and
+  `docs/API/v2_endpoint_reference.md` aligned.
+- For legacy API behavior, keep `glassbox/api/README.md` and
+  `docs/API/endpoint_reference.md` aligned.
 
 ## Consistency Rules
 
-- Terminology should be consistent:
-  - "governance pipeline"
-  - "decision request/response"
-  - "policy violations"
-  - "pending review"
+- Current-runtime terminology should be consistent: `DecisionService`, governed
+  action, verified principal, mandate, decision effect, intent receipt, and
+  require approval.
+- Use `GovernancePipeline`, decision type, final status, and pending review only
+  in explicitly labeled compatibility material.
 - Use the same heading capitalization style within a file.
 - Keep list formatting consistent and single-level.
 
@@ -80,17 +90,23 @@ For module READMEs, keep sections short and actionable.
 - [ ] No stale file/test references.
 - [ ] No version numbers, badges, or "vX.Y.Z" framing added to prose.
 - [ ] API docs match implemented routes.
+- [ ] Current and legacy behavior are clearly separated.
+- [ ] Capability status and deployment responsibilities are explicit.
+- [ ] New or changed guarantees are reflected in `CLAIMS.md`.
 - [ ] Related links resolve.
 - [ ] Grammar/spelling pass completed.
 
 ## Suggested Validation Commands
 
 ```bash
-# quick grep for obvious stale references
-rg -n "runtime-decision-governance|CHANGELOG\.md|test_velocity_distributed\.py" docs glassbox README.md CONTRIBUTING.md
+# Quick grep for obvious stale references.
+git grep -n -E "runtime-decision-governance|CHANGELOG\.md|test_velocity_distributed\.py" -- '*.md'
 
-# enumerate markdown files
-rg --files -g "*.md"
+# Enumerate tracked Markdown files.
+git ls-files '*.md'
+
+# Verify claim citations.
+python -m pytest tests/test_claims_coverage.py -q
 ```
 
 ## Ownership

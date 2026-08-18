@@ -1,36 +1,29 @@
-# Features Index
+# Capability Index
 
-Feature docs focus on behavior and operational implications rather than release-history snapshots.
+Feature documentation describes current runtime behavior and its operational
+boundary.
 
-## Feature Deep Dives
+## Current Capabilities
 
-- [enterprise.md](enterprise.md)
-- [velocity_breaker_readme.md](velocity_breaker_readme.md)
-- [velocity_breaker_details.md](velocity_breaker_details.md)
+- [Enterprise capability and maturity model](enterprise.md)
+- [Distributed limits and behavioral baselines](velocity_breaker.md)
+- [Architecture and decision lifecycle](../ARCHITECTURE.md)
+- [Evidence-backed claims](../CLAIMS.md)
 
-## Cross-Cutting Capabilities
+## Reading Maturity
 
-- policy enforcement and decision dispositioning
-- anomaly-aware and velocity-aware safety controls
-- auditability and traceability primitives
-- extensibility for adapters, rules, and orchestration
+| Label | Meaning |
+|---|---|
+| Verified | Code and focused tests exist; see `CLAIMS.md` |
+| Adapter available | Integration code exists; deployment assurance remains environment-specific |
+| Operator-owned | Required external platform/process capability |
+| Legacy | Retained synchronous implementation, not the default for new work |
 
-## Suggested Reading Paths
+No maturity label is a compliance certification or production-readiness
+attestation for a particular deployment.
 
-For architects:
+## Paths
 
-1. [../ARCHITECTURE.md](../ARCHITECTURE.md)
-2. [enterprise.md](enterprise.md)
-3. [../DEPLOYMENT/deployment_reference.md](../DEPLOYMENT/deployment_reference.md)
-
-For operators:
-
-1. [velocity_breaker_readme.md](velocity_breaker_readme.md)
-2. [../DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md)
-3. [../SECURITY/hardening.md](../SECURITY/hardening.md)
-
-For developers:
-
-1. [../DEVELOPMENT/implementation_guide.md](../DEVELOPMENT/implementation_guide.md)
-2. [velocity_breaker_details.md](velocity_breaker_details.md)
-3. [../API/endpoint_reference.md](../API/endpoint_reference.md)
+- Architects: [architecture](../ARCHITECTURE.md) -> [enterprise](enterprise.md)
+- Operators: [deployment](../DEPLOYMENT/README.md) -> [distributed controls](velocity_breaker.md)
+- Developers: [extension guide](../DEVELOPMENT/implementation_guide.md) -> [testing](../DEVELOPMENT/testing.md)

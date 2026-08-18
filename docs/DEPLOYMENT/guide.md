@@ -1,80 +1,114 @@
-# Deployment Guide
+# Deployment Workflow
 
-This guide is the practical runbook for getting GlassBox into a stable deployment.
+Use this workflow to turn an application integration into an environment that
+can support the `prod` assurance profile.
 
-## 1. Install
+## 1. Establish the Enforcement Boundary
+
+Inventory every agent, workflow, tool gateway, batch process, and administrative
+path capable of causing the governed side effect. Route all of them through one
+of the current application methods or the v2 HTTP adapter. Remove or constrain
+direct credentials to target systems.
+
+## 2. Build and Verify the Package
 
 ```bash
-pip install -e .
-# add optional extras as needed
-# pip install -e .[api,yaml,crypto,redis,spark,authoring]
-```
-
-## 2. Verify Runtime and Tests
-
-```bash
+python -m venv .venv
+python -m pip install --upgrade pip
+pip install -e .[dev]
 python -m pytest tests -q
-python -m pytest tests --cov=glassbox --cov-report=term-missing
 ```
 
-For structured batch execution and artifacts:
+For release artifacts, build and install the wheel in an isolated environment:
 
 ```bash
-python scripts/run_test_batches.py
+python -m build --sdist --wheel --outdir dist
 ```
 
-## 3. Start API Service
+CI verifies wheel and editable installation on Python 3.10-3.13.
 
-```bash
-python -m glassbox.api.app
+## 3. Provision External Capabilities
+
+Provision and govern:
+
+- PostgreSQL for append-only evidence, tenant isolation, and dispatch ledger;
+- Redis for distributed limits and baselines;
+- OIDC/JWKS or mTLS identity trust;
+- managed KMS key for evidence MAC operations;
+- signed policy and action-catalogue storage;
+- immutable/WORM anchor storage;
+- effect-system credentials and durable idempotency;
+- telemetry collector and protected log storage.
+
+Use `docker compose up -d` only for local integration work.
+
+## 4. Construct Production Configuration
+
+Prefer a secret-aware configuration provider that produces a nested mapping or
+environment variables consumed by `GlassBoxConfig.from_env()`. Do not log raw
+DSNs, tokens, certificates, or key material.
+
+```python
+from glassbox.app.config import GlassBoxConfig
+
+config = GlassBoxConfig.from_env()
 ```
 
-Validate health endpoints:
+Unknown `GLASSBOX_*` variables and malformed booleans fail validation. See the
+[configuration reference](deployment_reference.md).
 
-```bash
-curl http://localhost:8000/health
-curl http://localhost:8000/ready
+## 5. Assemble the Adapter Set
+
+The process entry point selects factories for all fourteen required ports and
+passes them to `build_runtime`. Keep this wiring outside `glassbox.app`.
+
+```python
+from glassbox.app.composition import build_runtime
+
+runtime = build_runtime(config, production_adapter_set)
 ```
 
-## 4. Configure Runtime
+`production_adapter_set` is deployment-specific. Mark it `dev_only=False` only
+after its storage, key custody, distribution, and failure properties have been
+validated. Protocol shape alone does not establish production assurance.
 
-Important runtime controls:
+## 6. Create and Serve the HTTP App
 
-- API host/port env vars
-- max payload size control
-- log level and log directory
-- authentication mode and secret provisioning
+```python
+from glassbox.adapters.inbound.http.app import create_app
 
-Use environment-specific config management (Kubernetes secrets, vault, cloud parameter store).
+app = create_app(runtime)
+```
 
-## 5. Production Hardening
+Serve the factory result with an organization-approved WSGI server. Configure
+worker count only after validating database/Redis pools and dispatcher capacity.
+At ingress enforce TLS, body limits, timeouts, connection limits, and network
+policy. The repository does not ship a default server command.
 
-- place app behind reverse proxy/ingress
-- enforce HTTPS
-- enable authentication and route-level authorization
-- apply ingress-level rate limits in addition to app-level limits
-- configure persistent audit repository
-- monitor `/health`, `/ready`, `/metrics`
+## 7. Validate Before Traffic
 
-## 6. Rollout Strategy
+1. Check `/healthz` for the expected profile and component types.
+2. Run a governed no-effect or sandbox action for each decision effect.
+3. Prove identity/tenant mismatch is denied and evidenced.
+4. Interrupt evidence/KMS/Redis dependencies and prove fail-closed behavior.
+5. Reuse an idempotency key and prove the effect is not repeated.
+6. Verify an evidence segment and its signer key identity.
+7. Exercise replay and prove no target-system call occurs.
 
-- deploy canary environment first
-- replay representative decision traffic in staging
-- compare block rates and latency against baseline
-- promote only after policy and anomaly thresholds are verified
+## 8. Roll Out Gradually
 
-## 7. Incident Readiness
+Use a limited tenant/action cohort, monitor denial reasons and dependency
+failures, then expand. Do not run a permissive shadow path that can dispatch.
+Shadow evaluation must remain side-effect-free.
 
-Keep runbooks for:
+## 9. Operate and Recover
 
-- spike in `blocked` decisions
-- degraded audit persistence
-- sudden latency increase in specific stages
-- rate-limit saturation/false positives
+- Back up and restore PostgreSQL under measured recovery objectives.
+- Preserve policy, catalogue, mandate, tool-registry, and key-version history.
+- Treat Redis loss according to the fail-closed runbook.
+- Rotate signing keys without losing historical verification metadata.
+- Roll back application code and governed bundles independently.
+- Never repair evidence by updating or deleting historical rows.
 
-## Related Docs
-
-- [deployment_reference.md](deployment_reference.md)
-- [performance_tuning.md](performance_tuning.md)
-- [../API/endpoint_reference.md](../API/endpoint_reference.md)
-- [../SECURITY/hardening.md](../SECURITY/hardening.md)
+See [operations](../OPERATIONS/README.md) and
+[security hardening](../SECURITY/hardening.md).

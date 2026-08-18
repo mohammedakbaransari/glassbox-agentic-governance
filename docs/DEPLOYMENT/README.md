@@ -1,280 +1,114 @@
-# Deployment & Operations
+# Deployment and Operations
 
-This directory contains guides for deploying, configuring, and operating GlassBox in production.
+GlassBox provides a governance library, application composition model, Flask
+application factory, infrastructure adapters, and local integration services.
+It does not provide a turnkey production platform, cloud account baseline,
+Kubernetes manifests, Terraform modules, or a preassembled production
+`AdapterSet`.
 
-## 📖 Contents
+Production readiness therefore has two parts:
 
-### Getting Started
-- **[guide.md](guide.md)** - Deployment step-by-step
-  - System requirements
-  - Installation procedures
-  - Configuration management
-  - Verification & testing
+1. the runtime must satisfy GlassBox's enforced configuration and adapter
+   contracts;
+2. the surrounding platform must satisfy the organization's availability,
+   identity, network, key-custody, evidence-retention, and incident controls.
 
-### Performance Tuning
-- **[performance_tuning.md](performance_tuning.md)**
-  - Performance monitoring
-  - Bottleneck identification
-  - Optimization techniques
-  - Benchmark results
+## Documentation Map
 
-### Deployment Reference
-- **[deployment_reference.md](deployment_reference.md)**
-  - Platform-specific deployments
-  - Configuration options
-  - Environment variables
-  - Scaling considerations
+- [guide.md](guide.md): staged deployment workflow
+- [deployment_reference.md](deployment_reference.md): profiles, settings, and environment variables
+- [performance_tuning.md](performance_tuning.md): measurement and scaling guidance
+- [../OPERATIONS/README.md](../OPERATIONS/README.md): SLOs and incident runbooks
+- [../SECURITY/hardening.md](../SECURITY/hardening.md): production security controls
 
-## 🚀 Deployment Paths
+## Supported Runtime Baseline
 
-### Development
-```
-Local Machine / Docker
-├── Single instance
-├── SQLite database
-├── Local logging
-└── No Redis required (uses fallback)
-```
+- Python 3.10-3.13, as declared and built in CI
+- Linux or Windows for the Python package; production platform qualification is
+  operator-owned
+- Optional service clients installed from the matching extras
+- One validated `GovernanceRuntime` per process
 
-### Testing/Staging
-```
-Kubernetes or VM
-├── Multiple replicas
-├── PostgreSQL database
-├── Redis for distributed state
-├── Comprehensive logging
-└── Monitoring enabled
-```
+## Assurance Profiles
 
-### Production
-```
-Enterprise Platform
-├── Kubernetes / VM cluster
-├── HA database (PostgreSQL/Cloud)
-├── Redis cluster
-├── Multiple replicas
-├── Full monitoring/alerting
-├── Disaster recovery
-└── Compliance audit trail
+| Profile | Purpose | Assurance |
+|---|---|---|
+| `dev` | Local development and deterministic testing | None; unsafe switches and memory adapters may be used |
+| `prod` | Enforced production posture | Requires external evidence, WORM anchor, distributed limits/baselines, managed signing, signed policy registry, and safe switches |
+
+The profile has no default. It must be selected explicitly. A development-only
+adapter set is rejected by `prod` before factories are called.
+
+## Production Dependency Model
+
+```mermaid
+flowchart LR
+    Client[Agent or workflow] --> Ingress[TLS ingress and request controls]
+    Ingress --> API[GlassBox v2 process]
+    API --> IdP[OIDC/JWKS or mTLS trust]
+    API --> PG[(PostgreSQL evidence and dispatch ledger)]
+    API --> Redis[(Redis limits and baselines)]
+    API --> KMS[Managed signing key]
+    API --> Policy[Signed policy bundle registry]
+    API --> WORM[Immutable evidence anchor]
+    API --> Target[Effect system]
+    API --> OTel[Telemetry collector]
 ```
 
-## 🏗️ Architecture Deployment Models
+Every effectful path must enter through the governance boundary. A direct path
+from an agent to a target system bypasses all GlassBox guarantees.
 
-### Single Instance
-Best for: Development, small deployments
-```
-Client → GlassBox (single)
-         ├→ Policy Engine
-         ├→ Velocity Breaker (local)
-         └→ Database (SQLite)
-```
+## Repository-Provided Local Services
 
-### Multi-Instance with Distributed VB
-Best for: Production, high throughput
-```
-Load Balancer
-    ├→ GlassBox-1 ┐
-    ├→ GlassBox-2 ├→ Redis (shared state)
-    └→ GlassBox-3 ┘      ↓
-                    Policy Store
-                    Decision Store
-```
+`docker-compose.yml` starts PostgreSQL 16, Redis 7, and MinIO for local
+integration work:
 
-### Kubernetes Multi-Tenant
-Best for: Enterprise, multi-customer
-```
-Ingress Controller
-    ├→ Pod 1 ────┐
-    ├→ Pod 2 ────┼→ Redis Cluster
-    └→ Pod 3 ────┤
-              ConfigMap (policies)
-              Secret (credentials)
-```
-
-## 📋 Pre-Deployment Checklist
-
-- [ ] System meets requirements (Python 3.9+, memory, CPU)
-- [ ] Dependencies installed (optional: flask, redis, pyyaml)
-- [ ] Database configured and tested
-- [ ] Redis configured (if distributed VB used)
-- [ ] Environment variables set
-- [ ] SSL certificates ready (if HTTPS required)
-- [ ] Policies defined and tested
-- [ ] Backup strategy documented
-- [ ] Monitoring tools configured
-- [ ] Team trained on operations
-
-## 🔧 System Requirements
-
-### Minimum (Single Instance)
-- **CPU**: 2 cores
-- **RAM**: 2 GB
-- **Storage**: 10 GB (50+ GB for audit logs)
-- **Network**: 100 Mbps
-- **Python**: 3.9, 3.10, 3.11, 3.12
-
-### Recommended (Production)
-- **CPU**: 8+ cores
-- **RAM**: 16 GB+
-- **Storage**: 500 GB+ (SSD recommended)
-- **Network**: 1 Gbps
-- **Database**: PostgreSQL 12+
-- **Cache**: Redis 6.0+
-- **Load Balancer**: 2+ instances behind LB
-
-### Enterprise (High Scale)
-- **Kubernetes cluster**: 3+ nodes
-- **CPU per node**: 16+ cores
-- **RAM per node**: 64 GB+
-- **Database cluster**: 3+ nodes (HA)
-- **Redis cluster**: 3+ nodes (HA)
-- **Network**: 10 Gbps interconnect
-- **CDN**: For distributed deployments
-
-## 📊 Configuration Examples
-
-### Development Config
-```env
-GLASSBOX_ENV=development
-GLASSBOX_LOG_LEVEL=DEBUG
-GLASSBOX_DATABASE_URL=sqlite:///decisions.db
-GLASSBOX_VELOCITY_BREAKER=local
-```
-
-### Production Config
-```env
-GLASSBOX_ENV=production
-GLASSBOX_LOG_LEVEL=INFO
-GLASSBOX_DATABASE_URL=postgresql://user:pass@db-cluster:5432/glassbox
-GLASSBOX_REDIS_URL=redis://redis-cluster:6379/0
-GLASSBOX_VELOCITY_BREAKER=distributed
-GLASSBOX_MAX_WORKERS=32
-GLASSBOX_AUDIT_RETENTION=90d
-```
-
-### Enterprise Config
-```env
-GLASSBOX_ENV=production
-GLASSBOX_LOG_LEVEL=WARNING
-GLASSBOX_DATABASE_URL=postgresql://...
-GLASSBOX_REDIS_CLUSTER=redis-cluster:6379
-GLASSBOX_MULTITENANCY=enabled
-GLASSBOX_AUDIT_ENCRYPTION=enabled
-GLASSBOX_COMPLIANCE_MODE=HIPAA
-GLASSBOX_MAX_TENANTS=100
-GLASSBOX_WORKERS_PER_TENANT=4
-```
-
-## 🔍 Monitoring & Observability
-
-### Key Metrics
-- **Decision throughput** - Decisions/second
-- **Pipeline latency** - P50, P95, P99
-- **Policy evaluation rate** - ms per policy
-- **Velocity breaker hits** - Rate-limited requests
-- **Anomaly detection** - Outliers detected
-- **Audit log size** - GB/day
-
-### Health Checks
 ```bash
-# System health
-curl http://localhost:8000/api/v1/health
-
-# Metrics
-curl http://localhost:8000/api/v1/metrics
-
-# Status
-curl http://localhost:8000/api/v1/status
+docker compose config
+docker compose up -d
+docker compose ps
 ```
 
-### Logging
-- **glassbox.governance** - Core decision pipeline
-- **glassbox.api** - API layer
-- **glassbox.security** - Security events
-- **glassbox.audit** - Decision audit trail
+The credentials are public development defaults. Do not expose this stack or
+reuse it in production. MinIO supplies an S3-shaped local endpoint but does not
+prove production WORM/Object Lock semantics; local WORM contract tests use the
+filesystem adapter.
 
-## 🚨 Troubleshooting
+## Pre-Deployment Gate
 
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| High latency | Blocked policy evaluation | Check [performance_tuning.md](performance_tuning.md) |
-| Memory leak | Unbounded cache growth | Restart service, check settings |
-| Redis unavailable | Connection issues | VB uses local fallback |
-| Database full | Audit logs grow | Configure retention policy |
-| Rate limiting | Too many requests | Check velocity_breaker config |
+- [ ] `RuntimeProfile.PROD` configuration validates with no violations.
+- [ ] A complete non-development `AdapterSet` passes protocol and conformance tests.
+- [ ] Identity derives tenant and subject from governed trust roots.
+- [ ] PostgreSQL schema, row-level security, backups, restore, and retention are verified.
+- [ ] Redis persistence/HA and atomic limit behavior are verified across processes.
+- [ ] KMS key policy separates use, administration, and audit responsibilities.
+- [ ] Policy and catalogue bundles are versioned, signed, activated, and rollback-capable.
+- [ ] WORM retention and legal-hold settings are tested on the actual target service.
+- [ ] Dispatcher idempotency survives process and replica failure.
+- [ ] TLS, request-size, network, and denial-of-service controls exist at ingress.
+- [ ] Telemetry redaction, cardinality, sampling, and retention are approved.
+- [ ] SLOs, alerts, runbooks, backup restore, and rollback have been exercised.
+- [ ] Claims used in risk or compliance material are backed by [CLAIMS.md](../CLAIMS.md).
 
-See [../USER/troubleshooting.md](../USER/troubleshooting.md) for more.
+## Release Validation
 
-## 📈 Scaling Guidelines
-
-### Vertical Scaling (bigger machine)
-- Add CPU → faster policy evaluation
-- Add RAM → larger caches
-- SSD storage → faster audit logging
-
-### Horizontal Scaling (more machines)
-- Load balance traffic
-- Share Redis state
-- Coordinate policies
-- Distributed decision store
-
-## 🔐 Production Security
-
-1. **Network** - TLS/SSL for all communication
-2. **Auth** - API key validation on endpoints
-3. **Audit** - All decisions logged immutably
-4. **Secrets** - Use env vars, not config files
-5. **Encryption** - Optional field-level encryption
-6. **Updates** - Regular security patches
-7. **Compliance** - Maintain audit trail for regulators
-
-See: [../SECURITY/hardening.md](../SECURITY/hardening.md)
-
-## 🔄 Disaster Recovery
-
-### Backup Strategy
-- Daily database backups
-- Weekly full system snapshots
-- Monthly archive to S3/Cloud
-- Off-site backup replication
-
-### Recovery
-- RPO (Recovery Point Objective): 1 hour
-- RTO (Recovery Time Objective): 30 minutes
-- Test recovery quarterly
-- Document runbooks
-
-## 🚀 Deployment Orchestration
-
-### Docker
 ```bash
-docker build -t glassbox:1.1.0 .
-docker run -e GLASSBOX_ENV=production glassbox:1.1.0
+black --check --line-length 100 glassbox tests
+isort --check-only --profile black --line-length 100 glassbox tests
+lint-imports
+ruff check glassbox tests
+mypy glassbox --ignore-missing-imports --no-error-summary
+python -m pytest tests -q
 ```
 
-### Kubernetes
-```bash
-kubectl apply -f k8s/glassbox-deployment.yaml
-kubectl autoscale deployment glassbox --min=2 --max=10
-```
+Run environment-backed PostgreSQL and Redis tests against isolated deployment
+resources before promotion.
 
-### Terraform (Infrastructure as Code)
-```hcl
-module "gla ssbox" {
-  source = "terraform-glassbox"
-  version = "1.1.0"
-  environment = "production"
-  min_replicas = 2
-  max_replicas = 10
-}
-```
+## Known Boundaries
 
-## 📚 Related Documentation
-
-- **Getting started**: [guide.md](guide.md)
-- **Performance**: [performance_tuning.md](performance_tuning.md)
-- **Configuration**: [deployment_reference.md](deployment_reference.md)
-- **Security**: [../SECURITY/hardening.md](../SECURITY/hardening.md)
-- **Compliance**: [../COMPLIANCE/requirements.md](../COMPLIANCE/requirements.md)
-
-
+- `/healthz` reports successful composition; it is not a deep dependency probe.
+- Approval completion is external to the current v2 HTTP adapter.
+- The repository does not assemble a complete production adapter set.
+- Infrastructure availability and disaster recovery depend on the deployed
+  services, not the Python library alone.
+- Compliance mappings are engineering traceability aids, not certification.

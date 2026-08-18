@@ -1,5 +1,8 @@
 # glassbox/rules
 
+> **Legacy compatibility module:** YAML rules here feed the v1 policy engine;
+> they are not current signed policy bundles.
+
 Declarative rule loading and registration for policy-as-data workflows.
 
 ## Key Modules

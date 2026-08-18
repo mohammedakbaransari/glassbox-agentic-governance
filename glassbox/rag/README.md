@@ -1,5 +1,8 @@
 # glassbox/rag
 
+> **Legacy compatibility module:** This RAG integration uses the v1 pipeline.
+> Current systems should govern effectful actions, not retrieval alone.
+
 Governance helpers for retrieval-augmented generation flows.
 
 ## Key Modules

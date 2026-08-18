@@ -1,5 +1,8 @@
 # glassbox/events
 
+> **Legacy compatibility module:** This event bus serves the original
+> `GovernancePipeline`; current telemetry uses `glassbox.app.telemetry`.
+
 Event publication and subscription utilities for governance outcomes.
 
 ## Key Modules

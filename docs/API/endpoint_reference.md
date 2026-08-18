@@ -1,6 +1,13 @@
-# GlassBox — REST API Reference
+# Legacy GovernancePipeline HTTP API (v1)
 
-**Start:** `python3 -m glassbox.api.app` → `http://localhost:8000`
+> **Compatibility reference:** This document describes the retained synchronous
+> API implemented in `glassbox/api/app.py`. New integrations should use the
+> [DecisionService HTTP API (v2)](v2_endpoint_reference.md). The two route sets,
+> identity models, and request contracts are not interchangeable.
+
+**Application factory:** `glassbox.api.app.create_app`. This package does not
+ship a module-level process launcher; the deployment must choose and configure a
+WSGI server.
 
 ---
 
@@ -8,7 +15,11 @@
 
 ### API Authentication
 
-GlassBox API endpoints are currently **unauthenticated** in the default distribution. For production deployment, implement authentication:
+The legacy API enables authentication by default outside test mode and refuses
+startup without `GLASSBOX_API_KEY`. `auth_required=False` is intended only for
+controlled non-production use. The custom middleware below is illustrative for
+deployments that replace the built-in v1 API-key check; it does not apply to the
+v2 `IdentityVerifier` contract.
 
 ```python
 # Example: Add API key validation in Flask

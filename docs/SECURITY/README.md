@@ -1,286 +1,84 @@
-# Security & Hardening
+# Security Model
 
-This directory contains security documentation, hardening guides, and best practices.
+GlassBox is a governance enforcement component, not a complete security
+platform. Its guarantees depend on all effectful paths using the component and
+on correctly governed identity, storage, key management, policy, and network
+services.
 
-## 📖 Contents
+## Security Objectives
 
-### Security Hardening Guide
-- **[hardening.md](hardening.md)**
-  - Authentication & authorization
-  - Encryption (at rest & in transit)
-  - Input validation & sanitization
-  - API security
-  - Network security
-  - Vulnerability management
+The current runtime is designed to:
 
-## Security-First Design
+- derive principal and tenant identity from verified credentials;
+- prevent callers from selecting their own consequence, exposure, or policy facts;
+- deny unknown or modified tools and actions;
+- enforce mandate, kill switch, policy, risk, limits, and baselines before effect;
+- persist signed intent evidence before dispatch;
+- prevent replay from executing effects;
+- preserve tenant context and durable idempotency across replicas;
+- fail closed when required safety dependencies are unavailable.
 
-GlassBox follows "Security by Default":
-- All inputs validated (schema allow-lists, structural payload limits)
-- All state protected by locks (RLock, per-agent lock pool)
-- All decisions audited (immutable HMAC/SHA-256 hash chain)
-- All API requests authenticatable (Bearer token middleware)
-- All traffic encryptable (AES-256-GCM field-level)
-- No hardcoded credentials or secrets
-- Principle of least privilege (RBAC with role hierarchy)
-- **Policy exception messages sanitized** — internal stack traces never reach callers
-- **Sanctions lists runtime-configurable** — no code deployment needed
-- **Tamper-evident audit** — HMAC/SHA-256 hash chaining detects any record modification
+Each product guarantee is mapped to code and tests in [CLAIMS.md](../CLAIMS.md).
 
-## 🛡️ Security Layers
+## Trust Boundaries
 
-### Layer 1: Input Security
-- **Payload Sanitization** - Validate & clean inputs
-- **Schema Validation** - Per-decision-type schemas
-- **Type Checking** - Prevent injection attacks
-- **Size Limits** - Prevent buffer overflows
-- **SQL Injection** - Parameterized queries
-
-### Layer 2: Access Control
-- **API Authentication** - Bearer token validation
-- **Role-Based Access Control** - RBAC policies
-- **Multi-Tenancy** - Complete data isolation
-- **Audit Logging** - Track all access
-- **Rate Limiting** - Prevent abuse
-
-### Layer 3: Data Protection
-- **Encryption at Rest** - AES-256 (optional)
-- **Encryption in Transit** - TLS 1.2+ required
-- **Key Management** - Secure key storage
-- **Data Retention** - Configurable purging
-- **Backup Encryption** - All backups encrypted
-
-### Layer 4: Application Security
-- **Thread Safety** - All shared state locked
-- **Memory Safety** - Python GC protects
-- **Error Handling** - No sensitive data leaked
-- **Dependency Security** - Minimal dependencies
-- **Code Review** - Peer review required
-
-### Layer 5: Infrastructure Security
-- **Network Segmentation** - Isolated VPCs
-- **Firewall Rules** - Whitelist access
-- **Intrusion Detection** - Monitor anomalies
-- **DDoS Protection** - Rate limiting
-- **Backup Integrity** - Verify backups
-
-## 🔐 Security Controls
-
-### Authentication
-
-API endpoints are unauthenticated in the default distribution. Add a Bearer-token middleware for production:
-
-```python
-# Bearer token middleware (add to glassbox/api/app.py or a reverse proxy)
-from functools import wraps
-from flask import request, jsonify
-import os
-
-def require_api_key(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = request.headers.get("Authorization", "")
-        expected = f"Bearer {os.environ.get('GLASSBOX_API_KEY', '')}"
-        if token != expected:
-            return jsonify({"error": "unauthorized"}), 401
-        return f(*args, **kwargs)
-    return decorated
+```mermaid
+flowchart LR
+    Untrusted[Agent input, token,<br/>headers, parameters] --> Inbound[Inbound adapter]
+    Inbound --> Service[DecisionService]
+    Service --> Trust[Identity, catalogue,<br/>policy, mandate, tool registry]
+    Service --> State[Limits, baselines,<br/>evidence, KMS]
+    Service -->|receipt-gated| Dispatch[Dispatcher]
+    Dispatch --> Target[Target system]
 ```
 
-### Encryption
+Untrusted inputs remain untrusted until the owning control verifies or derives
+them. Transport headers may assert tenant or subject values but cannot establish
+them.
 
-Field-level AES-256-GCM encryption is provided by `glassbox.governance.encryption`:
+## Threats and Controls
 
-```python
-from glassbox.governance.encryption import FieldEncryptor
-import os
+| Threat | Control |
+|---|---|
+| Caller lowers action risk | Consequence/exposure derived from governed catalogue |
+| Tenant spoofing | Verified principal plus assertion/resource tenant checks |
+| Tool rug pull | Registered definition digest and quarantine state |
+| Excess authority | Time-bounded mandate and tool grants |
+| Burst or distributed bypass | Atomic shared limit store and cooldown |
+| Cold-start anomaly bypass | Peer-group baseline prior; no silent skip |
+| Evidence loss before effect | Durable intent receipt required by dispatcher |
+| Evidence forgery | Canonical keyed MAC chain, signer identity, segment verification |
+| Duplicate side effect | Durable idempotency ledger and receipt validation |
+| Replay causes effect | Structurally separate replay path with no dispatcher call |
+| Dependency outage permits effect | Production safety switches and fail-closed errors |
 
-encryptor = FieldEncryptor(password=os.environ["GLASSBOX_ENCRYPT_PASSWORD"])
+## Responsibility Boundary
 
-# Encrypt a sensitive field before storing
-ciphertext = encryptor.encrypt("patient-id-12345")
+GlassBox does not by itself provide TLS termination, DDoS protection, identity
+issuance, secrets management, database encryption, KMS administration, SIEM,
+approval completion, host hardening, vulnerability response, backup/restore, or
+disaster recovery. These are required platform and organizational controls.
 
-# Decrypt on retrieval
-plaintext = encryptor.decrypt(ciphertext)
-```
+## Security Validation
 
-### Access Control
-
-RBAC is in `glassbox.governance.access_control`:
-
-```python
-from glassbox.governance.access_control import AccessController, Role, Permission
-
-controller = AccessController()
-
-# Create roles
-admin_role = Role("admin")
-viewer_role = Role("viewer")
-
-# Assign permissions
-admin_role.add_permission(Permission("policy:write"))
-viewer_role.add_permission(Permission("decision:read"))
-
-# Grant roles to users
-controller.assign_role("user-123", viewer_role)
-controller.assign_role("admin-456", admin_role)
-
-# Enforce at runtime
-if not controller.has_permission("user-123", "policy:write"):
-    raise PermissionError("Insufficient privileges")
-```
-
-## ✅ Security Checklist
-
-### Pre-Deployment
-- [ ] Change all default credentials
-- [ ] Generate strong API keys
-- [ ] Configure encryption keys (not in code)
-- [ ] Review access control policies
-- [ ] Enable audit logging
-- [ ] Configure backups
-- [ ] Test disaster recovery
-- [ ] Run security scan
-- [ ] Penetration test (recommended)
-- [ ] Security team review
-
-### Ongoing
-- [ ] Monitor audit logs daily
-- [ ] Review access logs weekly
-- [ ] Update dependencies monthly
-- [ ] Rotate encryption keys quarterly
-- [ ] Security training annually
-- [ ] Vulnerability scans monthly
-- [ ] Penetration tests annually
-- [ ] Compliance audits (per framework)
-
-## 🚨 Common Vulnerabilities & Prevention
-
-| Vulnerability | Risk | Prevention |
-|---------------|------|-----------|
-| SQL Injection | HIGH | Use parameterized queries |
-| XSS Attacks | MEDIUM | Input validation, output encoding |
-| CSRF | MEDIUM | CSRF tokens, SameSite cookies |
-| DoS | MEDIUM | Rate limiting, timeout configs |
-| Weak Auth | HIGH | Strong keys, MFA, TLS |
-| Data Breach | CRITICAL | Encryption, access controls |
-| Privilege Escalation | HIGH | RBAC, audit logging |
-| Insecure Dependencies | MEDIUM | Regular updates, scanning |
-
-## 🔍 Security Monitoring
-
-### Key Metrics
-- **Failed auth attempts** - Track unauthorized access
-- **Rate limit triggers** - Identify abuse patterns
-- **Audit log volume** - Verify all decisions logged
-- **Encryption coverage** - Verify protected data
-- **Patch currency** - Ensure updates applied
-- **Vulnerability scan results** - Track open issues
-
-### Alerting
-Configure alerts for:
-- Failed authentication (3+ failures)
-- Rate limit exceeded
-- Encryption key rotation needed
-- Backup verification failed
-- Access control policy changes
-- Vulnerability detected
-
-## 🛠️ Security Tools
-
-### Built-In Tools
-```python
-# Payload Sanitizer
-from glassbox.security.sanitizer import PayloadSanitizer
-sanitizer = PayloadSanitizer()
-clean_payload = sanitizer.sanitize(raw_payload)
-
-# Schema Validator
-from glassbox.governance.schema_validator import SchemaValidator
-validator = SchemaValidator()
-validator.validate(payload, decision_type)
-
-# Audit Logger
-from glassbox.governance.audit_logger import AuditLogger
-logger = AuditLogger()
-logger.record_decision(decision_record)
-```
-
-### External Tools
-- **OWASP ZAP** - Web application scanning
-- **SonarQube** - Code quality & security
-- **Snyk** - Dependency vulnerability scanning
-- **HashiCorp Vault** - Secrets management
-- **AWS KMS / GCP Cloud KMS** - Key management
-
-## 🔑 Key Management
-
-### Generating Encryption Keys
 ```bash
-# Generate new encryption key
-openssl enc -aes-256-cbc -S $(openssl rand -hex 8) -P -pass pass:secret
-
-# Store securely
-export GLASSBOX_ENCRYPTION_KEY="your-key-here"
-# Better: Use secrets manager (Vault, AWS Secrets Manager, etc.)
+bandit -r glassbox --skip B101,B311 --severity-level medium --confidence-level medium
+python -m pytest tests/test_adversarial_suite.py -q
+python -m pytest tests/test_prompt_injection.py tests/test_oidc_identity.py -q
+python -m pytest tests/test_hash_chain_tamper.py tests/test_sealing.py -q
 ```
 
-### Key Rotation
-- Rotate encryption keys: Quarterly
-- Rotate API keys: Annually (or upon compromise)
-- Rotate database credentials: Annually
-- Rotate SSL/TLS certs: Before expiration
+Dependency and secret scanning also run in CI.
 
-## 🧪 Security Testing
+## Reporting Vulnerabilities
 
-### Unit Testing
-```python
-def test_payload_sanitization():
-    """Verify payloads are sanitized."""
-    malicious = "<script>alert('xss')</script>"
-    sanitized = PayloadSanitizer().sanitize({'value': malicious})
-    assert '<script>' not in str(sanitized)
-```
+Do not open a public issue. Use the repository owner's private GitHub Security
+Advisory workflow and include impact, affected component, reproduction steps,
+and suggested remediation where possible. See [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
-### Integration Testing
-```python
-def test_authentication_required():
-    """Verify API requires authentication."""
-    response = requests.get('/api/v1/decisions')
-    assert response.status_code == 401
-```
+## Related Documentation
 
-### Penetration Testing
-- SQL injection attempts
-- Cross-site scripting (XSS)
-- Cross-site request forgery (CSRF)
-- Authentication bypass
-- Authorization bypass
-- Privilege escalation
-- Sensitive data exposure
-
-## 📚 Related Documentation
-
-- **Hardening guide**: [hardening.md](hardening.md)
-- **Compliance**: [../COMPLIANCE/requirements.md](../COMPLIANCE/requirements.md)
-- **Deployment**: [../DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
-- **Architecture**: [../DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md)
-
-## 🤝 Reporting Security Issues
-
-Found a security vulnerability?
-1. **Do NOT** open a public GitHub issue
-2. Open a **private** security advisory at: [github.com/mohammedakbaransari/glassbox-agentic-governance/security/advisories](https://github.com/mohammedakbaransari/glassbox-agentic-governance/security/advisories)
-3. Include: Description, impact, reproduction steps
-4. Credit in release notes (if desired)
-
-## Known Security Considerations
-
-| Item | Risk | Status |
-|---|---|---|
-| `tenant_id` path validation does not verify result stays inside `GLASSBOX_LOG_DIR` after `Path.resolve()` | MEDIUM — mitigated by OS file permissions | Open — fix: add `startswith(base_log_dir)` check |
-| Policy snapshot uses `object.__setattr__` guard; can be bypassed via `object.__setattr__` directly | LOW — requires code access | Accepted risk |
-| GENESIS_SENTINEL (`"0"*64`) hardcoded in advanced audit | LOW — only affects crash recovery edge case | Accepted risk |
-
-
-
+- [Production hardening](hardening.md)
+- [Architecture boundaries](../ARCHITECTURE.md#security-boundaries)
+- [Operations](../OPERATIONS/README.md)
+- [Verified claims](../CLAIMS.md)

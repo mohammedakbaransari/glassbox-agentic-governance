@@ -1,361 +1,113 @@
-# GlassBox — Industry Use-Case Patterns
+# Enterprise Use Patterns
 
-This document describes how GlassBox applies to real enterprise AI governance scenarios. Each pattern includes the business context, the failure mode GlassBox prevents, and an implementation guide.
+GlassBox is most useful at the boundary where an AI-generated recommendation
+could become an operational effect. The domain changes by industry; the
+governance pattern remains stable.
 
-Run all examples: `python3 examples/industry_examples.py`
-
----
-
-## Quick Pattern Selection Guide
-
-**Which pattern matches your use case?**
-
-```
-Do you have a single AI agent?
-├─ YES → Pattern 1: Single Agent Controls
-│        (Procurement, Pricing, Trading, Clinical, etc.)
-│
-└─ NO → Do you have multiple agents in sequence?
-        ├─ YES → Pattern 6: Agent Chains & Orchestration
-        │        (Supply chain, workflow, approval flows)
-        │
-        └─ NO → Do you need distributed transactions with rollback?
-                ├─ YES → Pattern 6 (Saga Variant)
-                │
-                └─ NO → Do you use RAG / retrieval?
-                        ├─ YES → Pattern 9: RAG Governance
-                        │
-                        └─ NO → Do you serve multiple customers/tenants?
-                                ├─ YES → Pattern 10: Multi-Tenant SaaS
-                                │
-                                └─ NO → Do you need batch/historical analysis?
-                                        └─ Pattern 11: Policy Replay / Regression Testing
+```mermaid
+flowchart LR
+    Model[Model or agent] --> Proposal[Proposed action]
+    Proposal --> GlassBox[Identity, mandate, policy,<br/>risk, limits, evidence]
+    GlassBox -->|allow| Effect[Operational effect]
+    GlassBox -->|approval| Human[External approval]
+    GlassBox -->|deny| Stop[No effect]
 ```
 
-### Pattern Matrix
+## Procurement and Payments
 
-| Pattern | Scenario | Agents | Key Feature |
-|---------|----------|--------|-------------|
-| 1 | Single AI agent with risk controls | 1 | Policy enforcement, velocity limits |
-| 2 | Healthcare clinical decisions | 1 | Controlled substance detection, dosage validation |
-| 3 | Manufacturing/production scheduling | 1–N | Resource constraints, maintenance windows |
-| 4 | Insurance underwriting | 1 | Auto-approve/review/block disposition |
-| 5 | Energy grid dispatch | 1–N | Dual authorisation, critical ops |
-| 6 | Multi-agent workflows (chains/DAGs) | N | Orchestration, abort propagation, saga |
-| 7 | LangChain integration | 1–N | Transparent tool governance |
-| 8 | LangGraph workflows | 1–N | Node-level governance, state governance |
-| 9 | RAG systems | 1 | Query/retrieval/action governance |
-| 10 | Multi-tenant SaaS | 1–N per tenant | Tenant isolation, separate policies |
-| 11 | Policy analysis | 1–N | Regression testing, impact analysis, replay |
-| 12 | PySpark / Databricks | 1–N | Batch governance at scale |
+**Actions:** create purchase order, release payment, modify supplier account.
 
----
+**Governed data:** monetary exposure, supplier/resource identity, consequence,
+required supplier/legal attestations, agent mandate, cumulative limits.
 
-## Pattern 1 — Financial Services: Algorithmic Trading Controls
+**Controls:** derive amount from transactional parameters, verify supplier state
+through an attestation provider, apply per-agent and tenant limits, and require
+durable intent evidence before the payment or order API is called.
 
-**Business context:** Quantitative hedge fund with AI agents generating FX orders, treasury transfers, and settlement instructions connected to Bloomberg, Reuters, and prime broker APIs.
+## IT and Cloud Operations
 
-**Failure mode without GlassBox:** A corrupted feed causes the algo to generate a $1.5M currency swap — above the $1M per-ticket limit. The order executes before any human sees it.
+**Actions:** change firewall rule, rotate credential, deploy release, scale
+infrastructure, delete resource.
 
-**GlassBox controls:**
-- `FIN-001`: Single transfer limit $1M
-- `AgentContract(max_amount=500_000)` for FX algo
-- `AI-001`: Block orders with confidence < 0.30 (degraded model)
+**Governed data:** environment, resource scope, blast radius, change-window
+attestation, tool definition digest, rollback capability.
 
-```python
-pipeline.register_contract(AgentContract(
-    agent_id="fx_algo",
-    permitted_types=[DecisionType.FINANCIAL],
-    max_amount=500_000,
-))
-```
+Use a tool registry so a changed tool schema or description is treated as a new,
+unapproved definition. Irreversible/global actions should have stricter mandate,
+risk, approval, and limit policies than reversible single-resource changes.
 
-**Compliance:** NIST CSF 2.0 PR.AA-01, EU AI Act Art. 9, OWASP A04
+## Software Delivery Agents
 
----
+**Actions:** create pull request, merge, publish package, modify CI, promote an
+artifact.
 
-## Pattern 2 — Healthcare: Clinical Prescription Validation
+Pin tool definitions, scope resources to repositories/environments, require
+branch-protection or scan attestations from systems of record, and use the
+dispatcher ledger to prevent repeated publication under retries.
 
-**Business context:** Hospital EHR connected to AI clinical decision support system generating prescription recommendations. AI model has variable confidence depending on patient data completeness.
+## Customer Service and Case Management
 
-**Failure mode without GlassBox:** Model degradation causes AI to recommend 10× overdose of controlled substance. The prescription reaches the pharmacy system.
+**Actions:** issue refund, change account state, disclose record, escalate case.
 
-**GlassBox controls:**
-- Custom `CLIN-001`: Controlled substances require `physician_cosign_id`
-- Custom `CLIN-002`: Dose must not exceed `max_dose_mg`
-- `AI-001`: Block if model confidence < 0.30
+Separate model-generated text from transactional fields. Apply prompt-injection
+inspection only to fields declared as untrusted text in the action definition;
+do not regex-scan ordinary business names and descriptions indiscriminately.
 
-```python
-def controlled_substance_policy(payload, ctx):
-    CONTROLLED = {"morphine","oxycodone","fentanyl","ketamine"}
-    drug = payload.get("drug_name","").lower()
-    if any(c in drug for c in CONTROLLED) and not payload.get("physician_cosign_id"):
-        return PolicyEvaluation("CLIN-001","Controlled Substance","fail",
-            f"Controlled substance '{drug}' requires physician_cosign_id")
-    return PolicyEvaluation("CLIN-001","Controlled Substance","pass","OK")
-```
+## Healthcare and Regulated Decisions
 
-**Compliance:** EU AI Act Art. 9/14, NIST AI RMF MANAGE
+**Actions:** route a case, schedule a service, release a recommendation, modify
+a record.
 
----
+GlassBox can enforce identity, mandate, policy, approval, evidence, and limits.
+It does not establish clinical validity, regulatory authorization, informed
+consent, or organizational compliance. Those controls remain external inputs
+and attestations governed by qualified owners.
 
-## Pattern 3 — Manufacturing: Smart Factory Production Scheduling
+## Multi-Agent Workflows
 
-**Business context:** Automotive plant AI scheduling agents manage production runs, raw material procurement, and maintenance windows. Demand surge causes scheduling agent to order 3× normal materials from unapproved spot-market supplier.
+Govern each effectful step rather than granting a workflow blanket authority.
+Preserve `causation_id` across the chain, verify each acting principal, and give
+each agent a mandate limited to its role. A coordinator's authority must not be
+implicitly inherited by worker agents.
 
-**GlassBox controls:**
-- `PROC-002`: Supplier must be on approved registry (warning for spot market)
-- Custom `MFG-001`: Production units cannot exceed shift capacity
-- Custom `MFG-002`: Line shutdown requires `maintenance_window_id`
-- `ITOPS-001`: Destructive operations require change window
+## MCP and Tool Gateways
 
-**Compliance:** IEC 62443 SR 2.1, NERC CIP-007 (for plant OT), Purdue L3-L4
+Register each tool name and definition digest. At invocation, validate the
+presented digest before catalogue resolution. A missing, modified, or
+quarantined tool is denied before downstream policy or dispatch.
 
----
+## Batch and Data Platforms
 
-## Pattern 4 — Insurance: Automated Underwriting
+Preauthorize bounded batches using serializable functions, then retain
+per-record evidence and idempotency where effects occur. Delta Bronze/Silver
+adapters support evidence analytics; they are downstream of the transactional
+decision path and do not replace durable intent persistence.
 
-**Business context:** Commercial property insurer using AI for underwriting decisions. AI approves policies up to $5M automatically; larger policies route to human review.
+## Historical Policy Analysis
 
-**GlassBox controls:**
-- Custom `UW-001`: Auto-approve limit $5M; block above $20M
-- Custom `UW-002`: Risk class must be in valid classification set
-- `AI-001`: Require confidence ≥ 0.30
+Use replay to compare historical principal/action inputs against current
+mandate, policy, risk, limit, and baseline wiring. Replay records a new result
+and cannot call the dispatcher. It is appropriate for impact analysis, not for
+retrying failed effects.
 
-**WorkflowEngine integration:**
-Decisions with `HUMAN_REVIEW` disposition automatically create workflow instances:
-```python
-wfe = WorkflowEngine(default_sla_minutes=120)  # 2-hour SLA
-pipeline = GovernancePipeline(workflow_engine=wfe)
-# Large policies get WorkflowInstance created automatically
-pending = wfe.list_pending()
-wfe.approve(wf_id, actor="senior_underwriter@co.com", notes="Verified")
-```
+## Design Checklist
 
----
+For each use case, define:
 
-## Pattern 5 — Energy / Utilities: Grid Dispatch Governance
+1. exact effectful actions and resources;
+2. consequence class and exposure derivation;
+3. trusted identity and tenant source;
+4. mandate owner and revocation process;
+5. policy/catalogue/tool bundle lifecycle;
+6. external attestations and their systems of record;
+7. distributed limits and baseline peer groups;
+8. approval owner and completion workflow;
+9. dispatch idempotency and target-system credentials;
+10. evidence retention, key custody, WORM anchoring, and incident response.
 
-**Business context:** Regional utility with AI managing grid dispatch, renewable trading, and demand response. Critical grid operations require dual authorisation from operator and supervisor.
+## Runnable Compatibility Scenarios
 
-**Failure mode:** Cyberattack injects malicious grid dispatch command attempting to trip a critical 345kV transmission line without dual authorisation.
-
-**GlassBox controls:**
-- Custom `GRID-001`: Critical grid operations require `operator_auth_code` AND `supervisor_auth_code`
-- Custom `GRID-002`: Energy trading position limit $2M per trade
-- `ITOPS-001`: Change window for all infrastructure changes
-
-**Security layer:** The malicious command payload is checked for SQL injection and script patterns before reaching Stage 0.
-
-**Compliance:** NERC CIP-007/010, IEC 62443 SR 1.1/2.1, AEMO AESCSF
-
----
-
-## Pattern 6 — Multi-Agent Chain: Treasury Operations
-
-**Business context:** 4-agent treasury workflow: `demand_agent` → `selection_agent` → `approval_agent` → `execution_agent`. Each agent's output feeds the next.
-
-**Chain governance with AgentOrchestrator:**
-
-```python
-orch = AgentOrchestrator(pipeline)
-nodes = [
-    AgentNode("forecast", "demand_agent",    DecisionType.PROCUREMENT,
-              lambda ctx: {"amount": forecast_amount(ctx), "category": "raw_materials"}),
-    AgentNode("select",   "selection_agent", DecisionType.PROCUREMENT,
-              lambda ctx: {"amount": ctx["forecast.payload"]["amount"],
-                           "supplier_id": select_supplier(ctx)}),
-    AgentNode("approve",  "approval_agent",  DecisionType.FINANCIAL,
-              lambda ctx: {"amount": ctx["select.payload"]["amount"],
-                           "reference": "TRY-REF-001"}),
-    AgentNode("execute",  "execution_agent", DecisionType.FINANCIAL,
-              lambda ctx: {"amount": ctx["approve.payload"]["amount"],
-                           "destination_account": "ACC-TREASURY"}),
-]
-result = orch.run_chain(nodes, abort_on_block=True)
-# If approval_agent is blocked, execution_agent never runs
-```
-
-**Chain abort propagation:** If any node is blocked, subsequent nodes are skipped. The `OrchestrationResult` shows which node caused the abort and why.
-
-**Compliance:** NIST CSF 2.0 PR.AA-01, Zero Trust ZTA.TE-02
-
----
-
-## Pattern 7 — LangChain Integration
-
-**Business context:** LangChain agent with tools for procurement, pricing, and financial operations. Every tool call must be governed.
-
-```python
-from langchain.tools import Tool
-from glassbox.integrations.adapters import LangChainAdapter
-
-pipeline = GovernancePipeline()
-adapter  = LangChainAdapter(pipeline, agent_id="lc_procurement_agent",
-                            decision_type_map={"place_order": DecisionType.PROCUREMENT})
-
-# Wrap existing tools — governance is transparent
-governed_tools = adapter.wrap_tools([
-    Tool(name="place_order", func=erp_place_order, description="..."),
-    Tool(name="update_price", func=catalog_update_price, description="..."),
-    Tool(name="transfer_funds", func=treasury_transfer, description="..."),
-])
-
-# Tool.run() calls are now governed — blocked calls raise GovernanceBlockedError
-# LangChain catches this and includes it in the agent's observation
-```
-
----
-
-## Pattern 8 — LangGraph Workflow with Governance
-
-**Business context:** LangGraph state machine for procurement approval with nodes: validate → enrich → approve → execute.
-
-```python
-from langgraph.graph import StateGraph
-from glassbox.integrations.adapters import LangGraphAdapter
-
-adapter = LangGraphAdapter(pipeline)
-
-# Govern the execute node — validates state before committing
-governed_execute = adapter.wrap_node(
-    execute_fn,
-    agent_id          = "procurement_execute",
-    decision_type     = DecisionType.PROCUREMENT,
-    payload_extractor = lambda state: {
-        "amount":      state["order"]["total"],
-        "supplier_id": state["order"]["supplier"],
-        "category":    state["order"]["category"],
-    },
-)
-
-graph = StateGraph(ProcurementState)
-graph.add_node("execute", governed_execute)   # governance transparent to graph
-```
-
----
-
-## Pattern 9 — Agentic RAG Governance
-
-**Business context:** Clinical AI using RAG to retrieve drug interaction data before making prescription recommendations. RAG retrieval from knowledge base must be governed.
-
-```python
-from glassbox.rag.governance import (
-    RAGQueryGovernor, RAGRetrievalGovernor,
-    AgenticRAGOrchestrator, ApprovedSourceRegistry
-)
-
-# Register approved document sources
-registry = ApprovedSourceRegistry(approved_sources=["clinical_kb","approved_formulary"])
-registry.block_source("unverified_web")  # block internet sources
-
-query_gov     = RAGQueryGovernor(allowed_topics=["drug","dose","clinical"])
-retrieval_gov = RAGRetrievalGovernor(
-    source_registry = registry,
-    min_relevance   = 0.5,
-    max_age_days    = 365,  # medical docs must be < 1 year old
-)
-
-rag = AgenticRAGOrchestrator(pipeline, query_gov, retrieval_gov, retriever_fn=clinical_kb.search)
-result = rag.run(
-    agent_id    = "clinical_ai",
-    initial_query = "Maximum safe dose morphine adult patient kidney impairment",
-    action_fn   = lambda ctx: generate_prescription(ctx),
-    action_decision_type = DecisionType.CUSTOM,
-)
-```
-
----
-
-## Pattern 10 — Multi-Tenant SaaS
-
-**Business context:** ISV offering GlassBox-powered AI governance as a service to multiple enterprises. Each enterprise must be completely isolated — separate policies, velocity counters, anomaly baselines, and audit records.
-
-```python
-from glassbox.governance.multitenancy import TenantRegistry, MultiTenantPipeline
-
-registry = TenantRegistry(
-    velocity_config={"max_decisions": 500, "window_seconds": 60},
-)
-
-# Register tenant-specific policies
-registry.register_policy("acme_corp", acme_spending_policy)
-registry.register_policy("globex",    globex_spending_policy)
-
-mt_pipeline = MultiTenantPipeline(
-    registry,
-    base_pipeline_fn=lambda comps: GovernancePipeline(
-        policy_engine    = comps.policy_engine,
-        velocity_breaker = comps.velocity_breaker,
-        anomaly_detector = comps.anomaly_detector,
-    )
-)
-
-# Completely isolated — ACME's velocity does not affect Globex
-resp_acme   = mt_pipeline.process(acme_request,  tenant_id="acme_corp")
-resp_globex = mt_pipeline.process(globex_request, tenant_id="globex")
-```
-
----
-
-## Pattern 11 — Policy Replay / Regression Testing
-
-**Business context:** Finance compliance team proposes tightening procurement limit from $500K to $200K. Before deploying, they replay last month's decisions to quantify impact.
-
-```python
-from glassbox.governance.decision_replay import DecisionReplay
-
-# Get historical decisions from SQLite
-historical = audit_repo.query(decision_type="procurement", final_status="executed")
-
-# Build pipeline with proposed new policy
-new_engine = PolicyEngine()
-new_engine.disable("PROC-001")
-new_engine.register(Policy("PROC-001-STRICT", "Strict Limit",
-    [DecisionType.PROCUREMENT], lambda p,c: PolicyEvaluation(
-        "PROC-001-STRICT","Strict","fail" if float(p.get("amount",0)) > 200_000
-        and not p.get("contract_id") else "pass","...")))
-
-replay_pipeline = GovernancePipeline(policy_engine=new_engine)
-replay          = DecisionReplay(replay_pipeline)
-
-# Parallel replay for speed
-results = replay.replay_many(records_from_audit, parallel=True, max_workers=8)
-summary = replay.compare_summary(results)
-print(f"Impact: {summary['outcomes_changed']}/{summary['total_replayed']} decisions would change")
-```
-
----
-
-## Pattern 12 — PySpark Scale Governance (Databricks/Fabric)
-
-**Business context:** Enterprise running batch AI decision governance across millions of records in a Databricks Lakehouse or Microsoft Fabric workspace.
-
-```python
-# On Databricks / Fabric — spark session auto-available
-from glassbox.adapters.spark import GlassBoxSparkAdapter
-
-adapter = GlassBoxSparkAdapter(spark)   # log path auto-detected for DBFS/Lakehouse
-
-# Govern entire DataFrame — each row is one AI decision
-decisions_df = spark.read.table("ai_agent_decisions")
-governed_df  = adapter.govern_dataframe(decisions_df, partition_mode=True)
-
-# Write governed decisions to Delta Lake
-governed_df.write.format("delta").mode("append").saveAsTable("governed_decisions")
-
-# Structured Streaming for real-time governance
-stream = spark.readStream.format("delta").table("incoming_decisions")
-query  = adapter.govern_stream(
-    stream,
-    output_path = "/lakehouse/default/Tables/governed_decisions",
-    checkpoint  = "/lakehouse/default/checkpoints/glassbox",
-    trigger_secs= 5,
-)
-```
-
----
-
-*GlassBox · Apache 2.0*
-
-
+The scripts in [examples](../../examples/README.md) demonstrate 18 industry
+patterns using the retained v1 API. Treat their policy IDs as examples, not
+product claims. New integrations should follow the
+[current quick start](quick_start.md).

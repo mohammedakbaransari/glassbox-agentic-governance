@@ -1,92 +1,113 @@
-# Operations: SLOs and runbooks
+# Operations and Runbooks
 
-Every metric named below is emitted by `glassbox.app.telemetry.GovernanceMetrics`
-once a real backend is installed via `glassbox.adapters.outbound.otel.configure.configure_otel`.
+Operational targets must be set from measured deployment behavior. The
+repository does not publish a universal latency or availability SLA. It does
+publish invariants that must remain true under load and failure.
 
-## Published SLOs
+## Invariant Indicators
 
-| SLO | Target | Metric |
-|---|---|---|
-| Decision latency | p99 < 50 ms | `glassbox.stage.duration_ms` (sum across a decision's stages) |
-| Evidence durability | 100% — no dispatch without a receipt | `glassbox.evidence.write_latency_ms` (presence proves the write happened; `DecisionService` never dispatches without one — see `tests/test_decision_service.py::TestEvidenceBeforeEffect`) |
-| Fail-open events | 0 | `glassbox.dependency.fail_closed_total` should be the *only* dependency-outage signal; any denial reason other than `dependency_unavailable`/`limit_exceeded` on a dependency outage is a regression |
+| Indicator | Required condition |
+|---|---|
+| Dispatch without durable intent | Zero |
+| Replay-triggered effects | Zero |
+| Cross-tenant state/evidence access | Zero |
+| Duplicate effects for one idempotency key | Zero |
+| Mandatory stage silently absent | Zero |
+| Safety dependency outage that permits an effect | Zero |
 
-## Alerting guidance
+Available telemetry includes decision counts/denials, stage duration, evidence
+write latency, dependency fail-closed counts, limit rejections, and mandatory
+stage skips when a real backend is installed through the OpenTelemetry adapter.
+Metric availability and export are deployment-specific.
 
-| Alert | Condition | Metric |
-|---|---|---|
-| Decision latency SLO breach | p99(`glassbox.stage.duration_ms` summed per decision) > 50 ms over 5 min | `glassbox.stage.duration_ms` |
-| Evidence write degraded | p99(`glassbox.evidence.write_latency_ms`) > 200 ms over 5 min | `glassbox.evidence.write_latency_ms` |
-| Fail-closed spike | `glassbox.dependency.fail_closed_total` rate > baseline | `glassbox.dependency.fail_closed_total` |
-| Denial rate spike | `glassbox.decisions.denied_total` rate > baseline, grouped by `reason` | `glassbox.decisions.denied_total` |
-| Limit rejections spike | `glassbox.limits.rejected_total` rate > baseline | `glassbox.limits.rejected_total` |
-| Mandatory stage skipped | `glassbox.stages.mandatory_skipped_total` > 0 | `glassbox.stages.mandatory_skipped_total` |
+## Alert Classes
 
-## Runbooks, one per dependency failure mode
+- identity verification and assertion mismatch spikes;
+- policy/catalogue/tool/mandate dependency failures;
+- Redis limit or baseline errors and denial spikes;
+- evidence commit or KMS signing failures;
+- mandatory stage skips;
+- dispatcher saturation, timeout, and indeterminate outcomes;
+- evidence verification failures;
+- kill-switch state changes;
+- p95/p99 latency or error rates outside measured SLOs.
 
-### Postgres (evidence store) unavailable
+## PostgreSQL or Evidence Failure
 
-**Symptom:** `glassbox.dependency.fail_closed_total` rising; decisions failing
-with `DenialReason.DEPENDENCY_UNAVAILABLE` or `EvidenceWriteError` propagating
-to callers (non-advisory actions only — see `ConsequenceClass.may_degrade_on_dependency_failure`).
+**Expected:** no effect dispatches without a receipt.
 
-**Expected behaviour:** every non-advisory action is denied; the dispatcher is
-never called (`tests/test_decision_service.py::TestEvidenceBeforeEffect`).
-Advisory actions may continue to be evaluated.
+1. Pause or shed incoming effectful traffic if denial volume threatens callers.
+2. Restore database connectivity and verify schema/tenant policy state.
+3. Confirm evidence chain integrity and sequence allocation.
+4. Re-submit business requests with their original idempotency keys where the
+   business owner decides retry is appropriate.
+5. Do not insert, update, or delete historical evidence as a repair.
 
-**Response:** restore Postgres connectivity. No decision made during the
-outage needs replaying — a denial due to an unavailable dependency is a
-correct, evidenced outcome, not data loss. Once restored, confirm the
-`dispatch_ledger`/`evidence_intent` schema versions match
-`glassbox.adapters.outbound.postgres.schema.SCHEMA_VERSION` before resuming
-traffic that was previously paused.
+## Redis Failure
 
-### Redis (limits / baseline / mandate revocation) unavailable
+**Expected:** non-advisory effects deny; no local permissive fallback.
 
-**Symptom:** `glassbox.dependency.fail_closed_total` rising with
-`DenialReason.DEPENDENCY_UNAVAILABLE` from the limits or baseline stage.
+1. Verify connectivity, authentication, failover, memory, and eviction.
+2. Confirm all replicas use the same endpoint and key namespace.
+3. Restore service and observe cooldown/baseline recovery.
+4. Treat denied requests as not admitted; retry only through the normal boundary.
 
-**Expected behaviour:** non-advisory actions deny (invariant I4 —
-`LimitStoreUnavailable`/`BaselineStoreUnavailable` never fail open); advisory
-actions degrade (skip, evidenced as `SKIPPED`, reason
-`"... store unavailable; action is advisory"`).
+## KMS or Signing Failure
 
-**Response:** restore Redis. No manual reconciliation needed — limits and
-baselines are external, atomic counters; a denied window during the outage is
-not lost budget (the failed `try_consume` never subtracted anything).
+**Expected:** intent append fails and dispatch does not occur.
 
-### KMS (evidence signing key) unavailable
+1. Check key state, policy, quota, region/endpoint, and network path.
+2. Confirm signer key ID has not drifted from configuration.
+3. Restore signing and verify a new record plus historical records.
+4. Never switch to a local readable key in production.
 
-**Symptom:** `SigningUnavailableError` propagating from `append_intent`; no
-decisions completing at all (identity and mandate stages still run, but the
-evidence write — and therefore any outcome — cannot proceed).
+## Identity or Policy Failure
 
-**Expected behaviour:** the process never falls back to an unkeyed MAC. This
-is total unavailability for effectful actions, by design — see
-`glassbox/adapters/outbound/kms/signer.py`'s circuit-breaker and MAC-cache
-trade-off documentation for the bounded-degradation options available before
-declaring a hard outage.
+**Expected:** no principal or authorization is guessed.
 
-**Response:** restore KMS connectivity or key availability. If the local MAC
-cache and circuit breaker are configured, a short outage may be absorbed
-without visible impact — check `glassbox.evidence.write_latency_ms` for
-elevated (not failed) latency as the first signal before a hard failure.
+1. Check issuer/JWKS, certificate trust, bundle registry, signatures, and activation.
+2. Distinguish invalid data from dependency unavailability in structured errors.
+3. Restore governed data; do not bypass verification with request headers or
+   an emergency allow-all policy.
 
-### Dispatcher timeout storm
+## Dispatcher Timeout or Indeterminate Outcome
 
-**Symptom:** `ExecutionStatus.INDETERMINATE` outcomes rising;
-`glassbox.dispatch` spans (once tool-call/dispatch tracing lands) showing
-elevated duration; `DispatchRefusedError` rising if the in-flight bound
-(`max_in_flight`) is being hit.
+The target effect may have completed even when the response was lost.
 
-**Expected behaviour:** a timeout is recorded as `INDETERMINATE`, never
-`FAILED` — the effect's true state is unknown, and the dispatcher's admission
-bound (`glassbox.adapters.outbound.postgres.dispatcher.PostgresDispatcher`)
-refuses new work rather than queuing it unboundedly
-(`tests/test_batch_admission_control.py`).
+1. Stop blind retries.
+2. Query the durable dispatch ledger and target system using the idempotency key.
+3. Reconcile the true state with an authorized operator.
+4. Record remediation without rewriting original evidence.
 
-**Response:** investigate the downstream effect system. `INDETERMINATE`
-outcomes require manual reconciliation against the downstream system of
-record — GlassBox's own ledger (`dispatch_ledger`) proves whether *this*
-process attempted the effect exactly once, but not whether the downstream
-call actually completed.
+## Kill Switch
+
+Treat activation as a security/operations event. Confirm scope, owner, reason,
+and expected duration. Keep evidence and identity paths available so denied
+attempts remain attributable. Require authorized, auditable deactivation.
+
+## Evidence Verification Failure
+
+1. Preserve the affected segment and surrounding storage snapshots.
+2. Restrict access; do not attempt in-place repair.
+3. Verify signer key metadata and WORM anchor independently.
+4. Determine whether corruption, wrong key/version, software defect, or
+   unauthorized modification caused the failure.
+5. Escalate under the incident and legal/compliance process.
+
+## Routine Exercises
+
+- PostgreSQL backup/restore and chain verification
+- Redis failover with fail-closed behavior
+- KMS outage and key rotation
+- identity key rotation/revocation
+- policy/catalogue rollback
+- kill-switch activation/deactivation
+- duplicate request and indeterminate dispatch reconciliation
+- replay with proof of zero target effects
+
+## Related Documentation
+
+- [Troubleshooting](../USER/troubleshooting.md)
+- [Deployment](../DEPLOYMENT/README.md)
+- [Performance](../DEPLOYMENT/performance_tuning.md)
+- [Security hardening](../SECURITY/hardening.md)
