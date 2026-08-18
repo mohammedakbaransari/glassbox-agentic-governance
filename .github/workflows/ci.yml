@@ -139,7 +139,7 @@ jobs:
 
       - name: Packaging contract tests
         run: |
-          python -m pip install pytest "packaging>=23.0" "tomli>=2.0; python_version < '3.11'"
+          python -m pip install pytest "packaging>=23.0" "setuptools>=68" "tomli>=2.0; python_version < '3.11'"
           GLASSBOX_RUN_BUILD_TESTS=1 python -m pytest tests/test_packaging.py -v --tb=short
 
   security:
