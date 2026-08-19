@@ -523,8 +523,18 @@ class TestRequestContext:
         assert config.get("database.nonexistent", "default") == "default"
 
     def test_config_load_rejects_paths_outside_approved_roots(self):
+        import os
+
+        # A literal "C:/..." path is only absolute on Windows; on POSIX,
+        # os.path.abspath treats it as a relative component under cwd (an
+        # approved root), so the guard silently passes. Build a path that is
+        # genuinely outside every approved root (cwd, home, tempdir,
+        # /etc/glassbox) on whichever OS the suite actually runs on.
+        forbidden = os.path.join(
+            os.path.abspath(os.sep), "glassbox-forbidden-root", "forbidden.json"
+        )
         with pytest.raises(ValueError):
-            Config.load("C:/Windows/System32/forbidden.json")
+            Config.load(forbidden)
 
     def test_config_load_accepts_tempfile_within_approved_root(self):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
