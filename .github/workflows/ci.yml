@@ -156,7 +156,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install security tools
-        run: pip install "bandit>=1.7" "pip-audit>=2.0"
+        run: |
+          python -m pip install --upgrade "pip>=26.1.2" "setuptools>=83.0.0"
+          python -m pip install "bandit>=1.7" "pip-audit>=2.0"
 
       - name: Security scan (bandit)
         run: |

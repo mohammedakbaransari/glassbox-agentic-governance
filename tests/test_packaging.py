@@ -644,6 +644,12 @@ class TestToolchainConfiguration:
             in workflow
         )
 
+    def test_security_job_upgrades_audited_bootstrap_tools(self) -> None:
+        """The runner's bundled pip/setuptools are part of the audited environment."""
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        assert '"pip>=26.1.2"' in workflow
+        assert '"setuptools>=83.0.0"' in workflow
+
     def test_ci_matrix_matches_the_declared_floor(self, project_table: Mapping[str, Any]) -> None:
         """Testing a version we no longer support wastes a job and misleads readers."""
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
