@@ -680,6 +680,22 @@ class TestToolchainConfiguration:
         )
         assert any(str(marker).startswith("slow:") for marker in markers)
 
+    def test_whole_suite_pytest_invocations_have_setuptools_available(self) -> None:
+        """``pytest tests/`` collects ``test_packaging.py``'s build-backend contract
+        tests, which import ``setuptools.build_meta`` -- but Python 3.12+ venvs no
+        longer bundle setuptools by default. This silently failed the "Tests" job
+        the moment CI moved to a single Python 3.13 target across every job."""
+        workflow_dir = REPO_ROOT / ".github" / "workflows"
+        offenders = []
+        for path in sorted(workflow_dir.glob("*.yml")):
+            text = path.read_text(encoding="utf-8")
+            if re.search(r"pytest\s+tests/?(?:\s|$)", text) and "setuptools" not in text:
+                offenders.append(path.name)
+        assert not offenders, (
+            f"these workflows run the whole test suite but never install setuptools: "
+            f"{offenders}"
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Build and install smoke tests (opt-in)

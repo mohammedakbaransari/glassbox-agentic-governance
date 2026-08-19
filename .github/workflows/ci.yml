@@ -188,7 +188,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pytest pytest-cov \
+          pip install pytest pytest-cov "setuptools>=68" \
             "flask>=3.0.0,<5.0" \
             "pyyaml>=6.0,<7.0" \
             "cryptography>=50.0.0,<51.0"
