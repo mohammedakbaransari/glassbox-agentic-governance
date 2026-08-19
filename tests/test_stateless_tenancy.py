@@ -61,8 +61,11 @@ class TestNoPerTenantAttributeSlot:
 
     def test_the_runtime_cannot_gain_an_attribute_either(self) -> None:
         runtime = _runtime()
-        with pytest.raises(AttributeError):
+        # CPython 3.11 raises TypeError for an unknown field on this
+        # frozen+slotted dataclass; newer supported versions raise AttributeError.
+        with pytest.raises((AttributeError, TypeError)):
             runtime.tenant_pipelines = {}  # type: ignore[attr-defined]
+        assert not hasattr(runtime, "tenant_pipelines")
 
 
 class TestConstantThreadCountAcrossTenants:

@@ -1322,8 +1322,12 @@ class TestValueObjectContract:
         assert not offenders, f"domain value objects without __slots__: {offenders}"
 
     def test_unknown_attributes_cannot_be_attached(self) -> None:
-        with pytest.raises(AttributeError):
-            make_principal().smuggled = "payload"  # type: ignore[attr-defined]
+        principal = make_principal()
+        # CPython 3.11's generated setter for frozen+slotted dataclasses raises
+        # TypeError here; 3.12+ raises AttributeError. Both reject the mutation.
+        with pytest.raises((AttributeError, TypeError)):
+            principal.smuggled = "payload"  # type: ignore[attr-defined]
+        assert not hasattr(principal, "smuggled")
 
     def test_instances_carry_no_instance_dict(self) -> None:
         assert not hasattr(make_action(), "__dict__")

@@ -23,10 +23,10 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       # SHA-pinned to actions/setup-python v5.3.0
-      - name: Set up Python 3.11
+      - name: Set up Python 3.13
         uses: actions/setup-python@0acd6d15e3de519e62de48b7f73a07f79e4c0a8
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Install dependencies and test tools
         run: |
@@ -65,10 +65,10 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       # SHA-pinned to actions/setup-python v5.3.0
-      - name: Set up Python 3.11
+      - name: Set up Python 3.13
         uses: actions/setup-python@0acd6d15e3de519e62de48b7f73a07f79e4c0a8
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Install build tools
         run: pip install "build>=1.0" "twine>=5.0"

@@ -25,7 +25,7 @@ For release artifacts, build and install the wheel in an isolated environment:
 python -m build --sdist --wheel --outdir dist
 ```
 
-CI verifies wheel and editable installation on Python 3.10-3.13.
+CI verifies wheel and editable installation on Python 3.13.
 
 ## 3. Provision External Capabilities
 

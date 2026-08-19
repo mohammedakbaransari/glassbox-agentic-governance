@@ -12,10 +12,15 @@ pip install -e .[dev]
 python -m pytest tests -q
 ```
 
-Coverage is enforced at 80 percent in CI:
+Coverage is enforced at 80 percent for the current v2 architecture (`domain`,
+`ports`, `app`, and inbound/outbound adapters). Retained legacy compatibility
+packages are tested but reported separately from this release gate:
 
 ```bash
-python -m pytest tests --cov=glassbox --cov-report=term-missing --cov-fail-under=80
+python -m pytest tests \
+  --cov=glassbox.domain --cov=glassbox.ports --cov=glassbox.app \
+  --cov=glassbox.adapters.inbound --cov=glassbox.adapters.outbound \
+  --cov-report=term-missing --cov-fail-under=80
 ```
 
 ## Test Layers
@@ -58,9 +63,9 @@ keys, or records.
 ## Quality Gates
 
 CI runs formatting, import order, pylint, mypy, strict domain/port typing,
-import-linter, ruff, Bandit, dependency audit, package builds across Python
-3.10-3.13, the full test suite, examples, benchmarks, property tests, and
-environment-backed integration jobs.
+import-linter, ruff, Bandit, dependency audit, a package build/install check on
+Python 3.13 (the single supported version), the full test suite, examples,
+benchmarks, property tests, and environment-backed integration jobs.
 
 Run the relevant focused check immediately after an edit, then run the full
 suite before merging a cross-cutting change.

@@ -365,7 +365,7 @@ class TestProjectMetadata:
     def test_lockfile_covers_direct_dev_dependencies(
         self, project_table: Mapping[str, Any]
     ) -> None:
-        """Offline drift check for the lock's documented Python 3.11 target."""
+        """Offline drift check for the lock's documented Python 3.13 target."""
         lock_path = REPO_ROOT / "requirements-lock.txt"
         assert lock_path.is_file(), "requirements-lock.txt is missing"
         locked = {
@@ -386,7 +386,7 @@ class TestProjectMetadata:
         failures: List[str] = []
         for requirement in direct:
             if requirement.marker and not requirement.marker.evaluate(
-                {"python_version": "3.11", "python_full_version": "3.11.0"}
+                {"python_version": "3.13", "python_full_version": "3.13.0"}
             ):
                 continue
             name = requirement.name.lower().replace("_", "-")
@@ -649,6 +649,19 @@ class TestToolchainConfiguration:
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         assert '"pip>=26.1.2"' in workflow
         assert '"setuptools>=83.0.0"' in workflow
+
+    def test_coverage_gate_targets_the_current_architecture(self) -> None:
+        """Legacy compatibility code must not dilute the v2 coverage signal."""
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        for package in (
+            "glassbox.domain",
+            "glassbox.ports",
+            "glassbox.app",
+            "glassbox.adapters.inbound",
+            "glassbox.adapters.outbound",
+        ):
+            assert f"--cov={package}" in workflow
+        assert "--cov=glassbox \\" not in workflow
 
     def test_ci_matrix_matches_the_declared_floor(self, project_table: Mapping[str, Any]) -> None:
         """Testing a version we no longer support wastes a job and misleads readers."""

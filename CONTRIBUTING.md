@@ -40,7 +40,7 @@ python scripts/run_test_batches.py
 
 ## Code quality expectations
 
-- Keep Python 3.10+ compatibility.
+- Target Python 3.13; it is the only version this project builds, tests, and ships against.
 - Add/maintain type hints for public interfaces.
 - Add tests for new behavior and bug fixes.
 - Avoid adding mandatory runtime dependencies to core.

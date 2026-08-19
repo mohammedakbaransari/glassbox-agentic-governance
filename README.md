@@ -1,7 +1,7 @@
 # GlassBox: Runtime Decision Governance for Autonomous AI Systems
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org)
 
 GlassBox evaluates AI-generated operational decisions before they take
 effect. It verifies the caller's identity, resolves the action against a

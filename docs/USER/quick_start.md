@@ -7,7 +7,7 @@ and `adapters`. For the retained synchronous `GovernancePipeline`, use the
 
 ## Prerequisites
 
-- Python 3.10 or later
+- Python 3.13
 - Git and a virtual environment
 - No external service for the development example
 

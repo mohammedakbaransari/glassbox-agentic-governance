@@ -23,7 +23,7 @@ Production readiness therefore has two parts:
 
 ## Supported Runtime Baseline
 
-- Python 3.10-3.13, as declared and built in CI
+- Python 3.13 only, as declared and built in CI
 - Linux or Windows for the Python package; production platform qualification is
   operator-owned
 - Optional service clients installed from the matching extras
