@@ -33,7 +33,7 @@ classifiers = [
 api    = ["flask>=3.0.0,<5.0"]
 spark  = ["pyspark>=3.3.0,<4.0"]
 yaml   = ["pyyaml>=6.0.1,<7.0"]
-crypto = ["cryptography>=42.0.0,<46.0"]
+crypto = ["cryptography>=50.0.0,<51.0"]
 redis  = ["redis>=5.0.0,<6.0"]
 postgres = ["psycopg[binary,pool]>=3.1,<4.0"]
 kms    = ["boto3>=1.34,<2.0"]

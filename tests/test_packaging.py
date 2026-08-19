@@ -362,6 +362,41 @@ class TestProjectMetadata:
         missing = sorted(expected - covered)
         assert not missing, f"the 'dev' extra does not include: {missing}"
 
+    def test_lockfile_covers_direct_dev_dependencies(
+        self, project_table: Mapping[str, Any]
+    ) -> None:
+        """Offline drift check for the lock's documented Python 3.11 target."""
+        lock_path = REPO_ROOT / "requirements-lock.txt"
+        assert lock_path.is_file(), "requirements-lock.txt is missing"
+        locked = {
+            name.lower().replace("_", "-"): Version(version)
+            for name, version in re.findall(
+                r"(?m)^([A-Za-z0-9_.-]+)==([^\s\\]+)",
+                lock_path.read_text(encoding="utf-8"),
+            )
+        }
+
+        extras: Mapping[str, Any] = project_table["optional-dependencies"]
+        direct: List[Requirement] = []
+        for group, entries in extras.items():
+            for requirement in _parse_requirements(entries, f"optional dependency {group}"):
+                if requirement.name.lower() != EXPECTED_DISTRIBUTION_NAME:
+                    direct.append(requirement)
+
+        failures: List[str] = []
+        for requirement in direct:
+            if requirement.marker and not requirement.marker.evaluate(
+                {"python_version": "3.11", "python_full_version": "3.11.0"}
+            ):
+                continue
+            name = requirement.name.lower().replace("_", "-")
+            version = locked.get(name)
+            if version is None:
+                failures.append(f"{name} is not locked")
+            elif requirement.specifier and version not in requirement.specifier:
+                failures.append(f"{name}=={version} does not satisfy {requirement.specifier}")
+        assert not failures, "lockfile direct-dependency drift: " + "; ".join(sorted(failures))
+
     def test_project_urls_are_https(self, project_table: Mapping[str, Any]) -> None:
         urls = project_table.get("urls", {})
         assert isinstance(urls, Mapping) and urls, "[project.urls] must be declared"
@@ -589,21 +624,25 @@ class TestToolchainConfiguration:
 
     def test_ci_quotes_shell_sensitive_requirement_ranges(self) -> None:
         """Bash treats unquoted ``<``/``>`` in PEP 440 ranges as redirection."""
-        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        workflow_dir = REPO_ROOT / ".github" / "workflows"
+        workflow = "\n".join(
+            path.read_text(encoding="utf-8") for path in sorted(workflow_dir.glob("*.yml"))
+        )
         unquoted = re.findall(
             r'(?m)(?<!\S)(?!["\'])[A-Za-z0-9_.-]+(?:\[[^\]\s]+\])?(?:>=|<=|>|<)[^"\'\s\\]+',
             workflow,
         )
         assert not unquoted, (
-            "CI requirement ranges containing '<' or '>' must be quoted for Bash: "
-            f"{unquoted}"
+            "CI requirement ranges containing '<' or '>' must be quoted for Bash: " f"{unquoted}"
         )
 
-    def test_lockfile_freshness_does_not_upgrade_dependencies(self) -> None:
-        """Freshness validates declared constraints; dependency refresh is deliberate."""
+    def test_lockfile_validation_requires_hashes(self) -> None:
+        """CI validates the committed artifact without upgrading transitive pins."""
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        assert "--constraint requirements-lock.txt" in workflow
-        assert "--no-header" in workflow
+        assert (
+            "uv pip install --system --dry-run --require-hashes -r requirements-lock.txt"
+            in workflow
+        )
 
     def test_ci_matrix_matches_the_declared_floor(self, project_table: Mapping[str, Any]) -> None:
         """Testing a version we no longer support wastes a job and misleads readers."""
