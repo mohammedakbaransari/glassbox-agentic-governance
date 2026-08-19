@@ -58,6 +58,10 @@ PAYLOADS = {
     DecisionType.IT_OPS: {"action": "restart_service", "target": "svc-api"},
     DecisionType.HR: {"action": "address_update", "employee_id": "EMP-001"},
     DecisionType.CUSTOM: {"description": "benchmark decision"},
+    DecisionType.CLINICAL: {"drug_name": "amoxicillin", "dose_mg": 500},
+    DecisionType.TRADING: {"symbol": "EURUSD", "notional": 25000},
+    DecisionType.CONTENT: {"content": "Generated marketing copy for product launch."},
+    DecisionType.LEGAL: {"action": "review_contract"},
 }
 
 
@@ -170,7 +174,12 @@ def bench_policy_accuracy():
         ),
         (
             DecisionType.IT_OPS,
-            {"action": "restart_service", "target": "web-tier"},
+            {
+                "action": "restart_service",
+                "target": "web-tier",
+                "change_window_approved": True,
+                "change_id": "CHG-1001",
+            },
             FinalStatus.EXECUTED,
         ),
         # Should BLOCK
