@@ -34,6 +34,7 @@ crypto = ["cryptography>=50.0.0,<51.0"]
 redis  = ["redis>=5.0.0,<6.0"]
 postgres = ["psycopg[binary,pool]>=3.1,<4.0"]
 kms    = ["boto3>=1.34,<2.0"]
+worm   = ["boto3>=1.34,<2.0"]
 authoring = ["anthropic>=0.25.0,<1.0"]
 delta  = ["deltalake>=0.18,<2.0", "pyarrow>=14.0,<26.0"]
 otel   = ["opentelemetry-api>=1.20,<2.0", "opentelemetry-sdk>=1.20,<2.0"]
@@ -42,7 +43,7 @@ otel   = ["opentelemetry-api>=1.20,<2.0", "opentelemetry-sdk>=1.20,<2.0"]
 # committed source, turning a green build red without a source change. Bump these
 # deliberately, in a commit that also reformats.
 dev    = [
-  "glassbox-governance[api,yaml,crypto,redis,authoring,spark,postgres,kms,delta,otel]",
+  "glassbox-governance[api,yaml,crypto,redis,authoring,spark,postgres,kms,worm,delta,otel]",
   "pytest>=7.0",
   "pytest-cov>=4.0",
   "black==26.5.1",
@@ -147,9 +148,8 @@ line_length = 100
 #   3. tests/test_layering.py::TestContractConsistency asserts (1) and (2) agree,
 #      so the two can never drift apart.
 #
-# `glassbox.adapters` as a whole is NOT a layer: it still contains v1 modules
-# (platforms.py, spark.py) that import glassbox.governance. Only the rebuilt
-# subtree `glassbox.adapters.outbound` participates.
+# `glassbox.adapters` as a whole is NOT a layer: only the rebuilt subtree
+# `glassbox.adapters.outbound` (plus `glassbox.adapters.inbound`) participates.
 # ---------------------------------------------------------------------------
 [tool.importlinter]
 root_package = "glassbox"

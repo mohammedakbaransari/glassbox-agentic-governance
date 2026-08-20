@@ -40,6 +40,8 @@ from glassbox.domain.action import (
     ResourceRef,
 )
 from glassbox.domain.decision import (
+    Approval,
+    ApprovalState,
     AuthorizationDecision,
     AuthorizationRequest,
     DecisionEffect,
@@ -96,6 +98,8 @@ from glassbox.domain.identity import (
 )
 from glassbox.domain.limits import LimitKey, LimitScope, LimitVerdict, Window
 from glassbox.domain.mandate import Mandate, MandateDenialReason, MandateVerdict, ToolGrant
+from glassbox.domain.audit_event import AuditEvent
+from glassbox.domain.tenancy import Tenant, TenantStatus
 from glassbox.domain.risk import (
     CONSEQUENCE_FLOORS,
     MAX_RISK_SCORE,
@@ -115,7 +119,14 @@ __all__ = [
     "Exposure",
     "ProposedAction",
     "ResourceRef",
+    # audit event
+    "AuditEvent",
+    # tenancy
+    "Tenant",
+    "TenantStatus",
     # decision
+    "Approval",
+    "ApprovalState",
     "AuthorizationDecision",
     "AuthorizationRequest",
     "DecisionEffect",

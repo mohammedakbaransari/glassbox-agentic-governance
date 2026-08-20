@@ -50,11 +50,13 @@ Each docs/ subdirectory has its own README with local index:
 ## 🔍 Keyword Index
 
 ### A
-- **Adapters** → [DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md), [DEVELOPMENT/implementation_guide.md](../DEVELOPMENT/implementation_guide.md)
-- **Anomaly Detection** → [DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md), [FEATURES/enterprise.md](../FEATURES/enterprise.md)
-- **API Key** → [API/README.md](../API/README.md), [API/endpoint_reference.md](../API/endpoint_reference.md)
+- **Adapters** → [../ARCHITECTURE.md](../ARCHITECTURE.md), [DEVELOPMENT/implementation_guide.md](../DEVELOPMENT/implementation_guide.md)
+- **Admission Control** → [SECURITY/hardening.md](../SECURITY/hardening.md), [OPERATIONS/README.md](../OPERATIONS/README.md)
+- **Anomaly Detection** → [../ARCHITECTURE.md](../ARCHITECTURE.md), [FEATURES/enterprise.md](../FEATURES/enterprise.md)
+- **API Key** → [API/README.md](../API/README.md), [API/v2_endpoint_reference.md](../API/v2_endpoint_reference.md)
+- **Approval Workflow** → [FEATURES/enterprise.md](../FEATURES/enterprise.md), [API/v2_endpoint_reference.md](../API/v2_endpoint_reference.md), [glassbox/workflow/README.md](../../glassbox/workflow/README.md)
 - **Audit Trail** → [COMPLIANCE/README.md](../COMPLIANCE/README.md), [FEATURES/enterprise.md](../FEATURES/enterprise.md)
-- **Authentication** → [API/endpoint_reference.md](../API/endpoint_reference.md), [SECURITY/hardening.md](../SECURITY/hardening.md)
+- **Authentication** → [API/v2_endpoint_reference.md](../API/v2_endpoint_reference.md), [SECURITY/hardening.md](../SECURITY/hardening.md)
 - **Authorization** → [SECURITY/hardening.md](../SECURITY/hardening.md)
 
 ### B
@@ -72,7 +74,7 @@ Each docs/ subdirectory has its own README with local index:
 
 ### D
 - **Database** → [DEPLOYMENT/deployment_reference.md](../DEPLOYMENT/deployment_reference.md)
-- **Decision** → [DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md), [USER/quick_start.md](../USER/quick_start.md)
+- **Decision** → [../ARCHITECTURE.md](../ARCHITECTURE.md), [USER/quick_start.md](../USER/quick_start.md)
 - **Decision Replay** → [FEATURES/enterprise.md](../FEATURES/enterprise.md)
 - **Deployment** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
 - **Disaster Recovery** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
@@ -94,7 +96,7 @@ Each docs/ subdirectory has its own README with local index:
 - **GDPR** → [COMPLIANCE/requirements.md](../COMPLIANCE/requirements.md)
 - **Getting Started** → [USER/quick_start.md](../USER/quick_start.md)
 - **GlassBox** → [USER/quick_start.md](../USER/quick_start.md)
-- **Governance** → [DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md)
+- **Governance** → [../ARCHITECTURE.md](../ARCHITECTURE.md)
 - **Guide** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
 
 ### H
@@ -104,8 +106,8 @@ Each docs/ subdirectory has its own README with local index:
 
 ### I
 - **Installation** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
-- **Integration** → [API/endpoint_reference.md](../API/endpoint_reference.md)
-- **Internal** → [DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md)
+- **Integration** → [API/v2_endpoint_reference.md](../API/v2_endpoint_reference.md)
+- **Internal** → [../ARCHITECTURE.md](../ARCHITECTURE.md)
 - **Interpreter** → [DEVELOPMENT/implementation_guide.md](../DEVELOPMENT/implementation_guide.md)
 - **ISO 27001** → [COMPLIANCE/requirements.md](../COMPLIANCE/requirements.md)
 
@@ -116,7 +118,7 @@ Each docs/ subdirectory has its own README with local index:
 ### L
 - **Learning Path** → [docs/README.md](../README.md)
 - **Load Balancer** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
-- **Lock** → [DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md)
+- **Lock** → [../ARCHITECTURE.md](../ARCHITECTURE.md)
 - **Logging** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
 
 ### M
@@ -134,7 +136,7 @@ Each docs/ subdirectory has its own README with local index:
 ### P
 - **PCI DSS** → [COMPLIANCE/requirements.md](../COMPLIANCE/requirements.md)
 - **Performance** → [DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md)
-- **Pipeline** → [DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md)
+- **Pipeline** → [../ARCHITECTURE.md](../ARCHITECTURE.md)
 - **Policy** → [USER/quick_start.md](../USER/quick_start.md), [DEVELOPMENT/implementation_guide.md](../DEVELOPMENT/implementation_guide.md)
 - **PostgreSQL** → [DEPLOYMENT/deployment_reference.md](../DEPLOYMENT/deployment_reference.md)
 - **Profiling** → [DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md)
@@ -149,13 +151,14 @@ Each docs/ subdirectory has its own README with local index:
 - **Release** → [PROCESSES/README.md](../PROCESSES/README.md)
 - **Reliability** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
 - **Response Time** → [DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md)
-- **Risk** → [DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md)
+- **Risk** → [../ARCHITECTURE.md](../ARCHITECTURE.md), [FEATURES/enterprise.md](../FEATURES/enterprise.md)
+- **Risk Threshold** → [FEATURES/enterprise.md](../FEATURES/enterprise.md), [SECURITY/hardening.md](../SECURITY/hardening.md)
 - **Rollback** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
 
 ### S
 - **Scenario** → [USER/use_cases.md](../USER/use_cases.md)
 - **Scaling** → [DEPLOYMENT/README.md](../DEPLOYMENT/README.md)
-- **Schema** → [DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md)
+- **Schema** → [../ARCHITECTURE.md](../ARCHITECTURE.md)
 - **Secrets** → [SECURITY/hardening.md](../SECURITY/hardening.md)
 - **Security** → [SECURITY/hardening.md](../SECURITY/hardening.md)
 - **SOC 2** → [COMPLIANCE/requirements.md](../COMPLIANCE/requirements.md)
@@ -166,7 +169,9 @@ Each docs/ subdirectory has its own README with local index:
 ### T
 - **Telemetry** → [DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md)
 - **Testing** → [DEVELOPMENT/implementation_guide.md](../DEVELOPMENT/implementation_guide.md)
-- **Thread** → [DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md)
+- **Thread** → [../ARCHITECTURE.md](../ARCHITECTURE.md)
+- **Tool Output Quarantine** → [SECURITY/README.md](../SECURITY/README.md), [OPERATIONS/README.md](../OPERATIONS/README.md)
+- **Tenancy** → [GLOSSARY.md](../GLOSSARY.md), [FEATURES/enterprise.md](../FEATURES/enterprise.md)
 - **Throughput** → [DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md)
 - **Timeout** → [USER/troubleshooting.md](../USER/troubleshooting.md)
 - **TLS** → [SECURITY/hardening.md](../SECURITY/hardening.md)

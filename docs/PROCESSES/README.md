@@ -89,13 +89,13 @@ Describe tests added
 ## 🔄 Operational Processes
 
 ### Incident Management
-1. **Detection** - Automated alerts or user report
-2. **Triage** - Assess severity and impact
-3. **Response** - Engage on-call team
-4. **Mitigation** - Reduce impact
+1. **Detection** - Automated alerts, [operational runbook](../OPERATIONS/README.md) triage, or user report
+2. **Triage** - Assess severity and impact using the [diagnostic matrix](../USER/troubleshooting.md#quick-diagnostic-matrix)
+3. **Response** - Engage on-call team; for a denial-volume incident, confirm whether it is a governance denial or a dependency outage before escalating (never bypass fail-closed controls to "unblock" callers)
+4. **Mitigation** - Reduce impact per the matching [operations runbook](../OPERATIONS/README.md) (PostgreSQL/evidence, Redis, KMS, identity, dispatcher, approval, admission control)
 5. **Resolution** - Fix root cause
-6. **Recovery** - Restore service
-7. **Postmortem** - Learn and improve
+6. **Recovery** - Restore service; if evidence or the dispatch ledger was involved, verify segment integrity (`EvidenceStore.verify()`) and reconcile the dispatch ledger against the target system before declaring recovery complete
+7. **Postmortem** - Learn and improve; cite the specific decision ids / segment ids examined, not just a narrative summary
 
 ### Severity Levels
 - **SEV 1**: System down, data loss risk
@@ -112,9 +112,9 @@ Describe tests added
 ## 📞 Communication Procedures
 
 ### Status Page
-- Current status available at status.glassbox.io
-- Updated every 30 minutes during incidents
-- Automatically posts to incident Slack channel
+- Configure a status page for your deployment (this repository does not ship or operate one)
+- Update at a cadence appropriate to your SLA during incidents
+- Route updates to your incident communication channel
 
 ### Escalation Path
 1. Tier 1: Support team

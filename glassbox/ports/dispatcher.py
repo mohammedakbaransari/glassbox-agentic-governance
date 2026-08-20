@@ -45,6 +45,18 @@ class Dispatcher(Protocol):
         * **bound concurrency.** No unbounded submission into a shared pool: v1's
           batch endpoint pushed up to 500 tasks into the pipeline's own executor,
           a trivial self-DoS.
+        * **re-scan textual result content for prompt injection before
+          reporting success.** A tool's result is exactly the content an
+          indirect-injection attack uses to carry instructions to the agent's
+          next reasoning step -- the input-side scan
+          (:func:`glassbox.domain.prompt_injection.scan`) never sees it,
+          because it does not exist until the effect has already run. A
+          flagged result must be reported as
+          :attr:`~glassbox.domain.decision.ExecutionStatus.FAILED` (with
+          :class:`~glassbox.domain.errors.ToolOutputQuarantinedError` as the
+          error class), never as a successful outcome the caller could feed
+          forward as trusted content. The flagged content itself must never
+          be evidenced -- only its digest, exactly as for any other result.
         * report a timeout as
           :attr:`~glassbox.domain.decision.ExecutionStatus.INDETERMINATE`, never
           as ``FAILED``. After a timeout the effect may or may not have occurred,
@@ -66,6 +78,11 @@ class Dispatcher(Protocol):
                 missing, malformed, or does not cover this action.
             glassbox.domain.errors.DispatchTimeoutError: If the adapter cannot
                 determine an outcome within ``timeout_s``.
+            glassbox.domain.errors.ToolOutputQuarantinedError: If the result
+                matched a prompt-injection pattern. Conforming adapters may
+                also report this as a ``FAILED`` outcome directly rather than
+                raising; either way the caller must never receive
+                ``EXECUTED`` for a flagged result.
             glassbox.domain.errors.DispatchError: For non-recoverable dispatch
                 failures.
         """

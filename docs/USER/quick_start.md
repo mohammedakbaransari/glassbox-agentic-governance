@@ -1,9 +1,9 @@
 # Quick Start: DecisionService Runtime
 
-This guide uses the current GlassBox architecture: `domain`, `ports`, `app`,
-and `adapters`. For the retained synchronous `GovernancePipeline`, use the
-[legacy architecture reference](../DEVELOPMENT/architecture.md) and
-[legacy API reference](../API/endpoint_reference.md).
+This guide uses the GlassBox v2 architecture: `domain`, `ports`, `app`, and
+`adapters` — the only implementation in this repository. An earlier
+synchronous `GovernancePipeline` existed during development; it has been
+physically deleted, not merely deprecated.
 
 ## Prerequisites
 
@@ -218,10 +218,12 @@ deployment. The current routes are:
 - `POST /v2/actions/{action_name}`
 - `POST /v2/tools/{tool_name}`
 - `POST /v2/replay`
+- `GET /v2/approvals`, `GET /v2/approvals/{decision_id}`
+- `POST /v2/approvals/{decision_id}/{approve,reject,escalate,revoke}`
 
 See the [v2 endpoint reference](../API/v2_endpoint_reference.md) for request and
-response contracts. Do not use `python -m glassbox.api.app` for v2; that module
-belongs to the legacy compatibility API.
+response contracts. There is no other server module to launch —
+`glassbox/api/` (the earlier synchronous API) has been physically deleted.
 
 ## Move Toward Production
 

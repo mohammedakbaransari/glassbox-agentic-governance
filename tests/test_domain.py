@@ -30,6 +30,8 @@ from glassbox.domain.action import (
     ResourceRef,
 )
 from glassbox.domain.decision import (
+    Approval,
+    ApprovalState,
     AuthorizationDecision,
     AuthorizationRequest,
     DecisionEffect,
@@ -66,7 +68,13 @@ from glassbox.domain.identity import (
     VerifiedPrincipal,
 )
 from glassbox.domain.limits import LimitKey, LimitScope, LimitVerdict, Window
-from glassbox.domain.mandate import Mandate, MandateDenialReason, MandateVerdict, ToolGrant
+from glassbox.domain.mandate import (
+    ActionResourceGrant,
+    Mandate,
+    MandateDenialReason,
+    MandateVerdict,
+    ToolGrant,
+)
 from glassbox.domain.risk import (
     CONSEQUENCE_FLOORS,
     RISK_BANDS,
@@ -82,6 +90,7 @@ from glassbox.domain.serialization import (
     require_identifier,
     require_timestamp,
 )
+from glassbox.ports.baseline import BaselineKey, BaselineScope
 
 # --------------------------------------------------------------------------- #
 # Shared builders (plain functions, not fixtures: the domain needs no setup)
@@ -731,6 +740,95 @@ class TestMandate:
             make_mandate(version=0)
 
 
+class TestResourceScopedGrants:
+    """Joint (action, resource) grants close the independent-set gap.
+
+    Without ``resource_scoped_grants``, ``allowed_actions`` and
+    ``allowed_resources`` are two independent sets: any granted action is
+    implicitly permitted against any granted resource. This is the
+    Workstream F fix that lets a mandate express "this action only, on that
+    resource only" instead.
+    """
+
+    def test_no_scoped_grants_preserves_the_independent_set_behaviour(self) -> None:
+        """Backward compatibility: an empty resource_scoped_grants changes nothing."""
+        mandate = make_mandate()
+        assert mandate.resource_scoped_grants == ()
+        verdict = mandate.permits(make_action(), now=NOW)
+        assert verdict.permitted is True
+
+    def test_a_matching_pair_is_permitted(self) -> None:
+        mandate = make_mandate(
+            resource_scoped_grants=(
+                ActionResourceGrant(
+                    action_pattern="payments.wire_transfer", resource_pattern="account/ACC-1"
+                ),
+            )
+        )
+        verdict = mandate.permits(
+            make_action(resource=ResourceRef(kind="account", id="ACC-1", tenant_id="acme")),
+            now=NOW,
+        )
+        assert verdict.permitted is True
+
+    def test_independently_granted_action_and_resource_are_not_enough_alone(self) -> None:
+        """The whole point: being in both independent sets is not sufficient
+        once a scoped grant exists -- the pair itself must be granted."""
+        mandate = make_mandate(
+            allowed_actions=frozenset({"payments.wire_transfer", "payments.refund"}),
+            allowed_resources=frozenset({"account/ACC-1", "account/ACC-2"}),
+            resource_scoped_grants=(
+                ActionResourceGrant(
+                    action_pattern="payments.wire_transfer", resource_pattern="account/ACC-1"
+                ),
+                ActionResourceGrant(
+                    action_pattern="payments.refund", resource_pattern="account/ACC-2"
+                ),
+            ),
+        )
+        # Both independently granted, but this exact pair was never jointly granted.
+        cross_action = make_action(
+            action="payments.wire_transfer",
+            resource=ResourceRef(kind="account", id="ACC-2", tenant_id="acme"),
+        )
+        verdict = mandate.permits(cross_action, now=NOW)
+        assert verdict.permitted is False
+        assert MandateDenialReason.ACTION_RESOURCE_PAIR_NOT_GRANTED in verdict.reasons
+
+    def test_glob_patterns_still_work_within_a_scoped_grant(self) -> None:
+        mandate = make_mandate(
+            resource_scoped_grants=(
+                ActionResourceGrant(action_pattern="payments.*", resource_pattern="account/ACC-*"),
+            )
+        )
+        verdict = mandate.permits(
+            make_action(resource=ResourceRef(kind="account", id="ACC-99", tenant_id="acme")),
+            now=NOW,
+        )
+        assert verdict.permitted is True
+
+    def test_as_evidence_includes_scoped_grants(self) -> None:
+        mandate = make_mandate(
+            resource_scoped_grants=(
+                ActionResourceGrant(action_pattern="payments.*", resource_pattern="account/*"),
+            )
+        )
+        evidence = mandate.as_evidence()
+        assert evidence["resource_scoped_grants"] == [
+            {"action_pattern": "payments.*", "resource_pattern": "account/*"}
+        ]
+
+    def test_non_grant_members_are_rejected(self) -> None:
+        with pytest.raises(DomainValidationError):
+            make_mandate(resource_scoped_grants=("not-a-grant",))
+
+    def test_empty_patterns_are_rejected(self) -> None:
+        with pytest.raises(DomainValidationError):
+            ActionResourceGrant(action_pattern="", resource_pattern="account/*")
+        with pytest.raises(DomainValidationError):
+            ActionResourceGrant(action_pattern="payments.*", resource_pattern="")
+
+
 class TestToolGrant:
     """Tool identity is the definition digest, not the name."""
 
@@ -830,6 +928,51 @@ class TestLimitKey:
         assert Window(60).start_of(NOW) == NOW - 60.0
 
 
+class TestRedisTenantIsolation:
+    """Tenant-aware key layout must keep per-tenant counters and baselines isolated."""
+
+    def test_limit_store_uses_a_tenant_hash_tag_for_cluster_safe_scoping(self) -> None:
+        from glassbox.adapters.outbound.redis import RedisLimitStore
+
+        class DummyClient:
+            def register_script(self, script):
+                return script
+
+        store = RedisLimitStore(DummyClient(), key_prefix="test:")
+        key = LimitKey(
+            tenant_id="acme",
+            scope=LimitScope.AGENT,
+            subject="agent.treasury-bot",
+            window=Window(60),
+            action="payments.wire_transfer",
+        )
+        assert store._keys(key) == [
+            "test:{acme}:glassbox|limit|acme|agent|agent.treasury-bot|payments.wire_transfer|60s:w",
+            "test:{acme}:glassbox|limit|acme|agent|agent.treasury-bot|payments.wire_transfer|60s:c",
+            "test:{acme}:glassbox|limit|acme|agent|agent.treasury-bot|payments.wire_transfer|60s:cd",
+        ]
+
+    def test_baseline_store_uses_a_tenant_hash_tag_for_cluster_safe_scoping(self) -> None:
+        from glassbox.adapters.outbound.redis import RedisBaselineStore
+
+        class DummyClient:
+            def register_script(self, script):
+                return script
+
+        store = RedisBaselineStore(DummyClient(), key_prefix="test:")
+        key = BaselineKey(
+            tenant_id="acme",
+            scope=BaselineScope.AGENT,
+            subject="agent.treasury-bot",
+            metric="exposure_monetary",
+            window=Window(60),
+        )
+        assert store._redis_key(key) == (
+            "test:{acme}:glassbox|baseline|acme|agent|agent.treasury-bot|"
+            "exposure_monetary|60s"
+        )
+
+
 class TestLimitVerdict:
     """There is deliberately no 'store unavailable' verdict."""
 
@@ -897,6 +1040,45 @@ class TestAuthorizationDecision:
         )
         assert decision.permits_dispatch() is False
         assert decision.is_denied is False
+
+    def test_require_approval_tracks_approval_lifecycle(self) -> None:
+        decision = AuthorizationDecision.require_approval(
+            rationale="dual control",
+            policy_bundle_id="b",
+            policy_bundle_sha256=DIGEST_A,
+            approval_id="approval-8",
+            approval_state=ApprovalState.PENDING,
+        )
+        assert decision.approval_id == "approval-8"
+        assert decision.approval_state is ApprovalState.PENDING
+        assert decision.as_evidence()["approval_state"] == "pending"
+
+    def test_approval_lifecycle_transitions_are_explicit(self) -> None:
+        approval = Approval(
+            approval_id="approval-9",
+            decision_id="decision-9",
+            tenant_id="acme",
+            action=make_action(),
+            requested_at=NOW,
+            rationale="dual control required",
+        )
+        in_review = approval.transition(
+            state=ApprovalState.IN_REVIEW,
+            actor="analyst@example.com",
+            notes="review started",
+            reviewed_at=NOW + 30.0,
+        )
+        approved = in_review.transition(
+            state=ApprovalState.APPROVED,
+            actor="manager@example.com",
+            notes="approved after review",
+            reviewed_at=NOW + 60.0,
+        )
+        assert approval.state is ApprovalState.PENDING
+        assert in_review.state is ApprovalState.IN_REVIEW
+        assert approved.state is ApprovalState.APPROVED
+        assert approved.is_terminal is True
+        assert approved.as_evidence()["approval_id"] == "approval-9"
 
     def test_denial_cannot_carry_obligations(self) -> None:
         obligation = Obligation(kind=ObligationKind.NOTIFY, obligation_id="ob-1")

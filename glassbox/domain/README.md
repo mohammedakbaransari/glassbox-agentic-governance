@@ -11,14 +11,16 @@ lookups, clocks, randomness, or third-party dependencies.
 | Actions | `ProposedAction`, `ResourceRef`, `ConsequenceClass`, `Exposure`, `BlastRadius` |
 | Catalogue | `ActionDefinition` and server-governed action metadata |
 | Identity | `RawCredential`, `VerifiedPrincipal`, credential and delegation semantics |
-| Decisions | authorization requests, effects, denial reasons, stage and execution outcomes |
+| Decisions | authorization requests, effects, denial reasons, stage and execution outcomes, `Approval`/`ApprovalState` |
 | Evidence | immutable intent/outcome records, receipts, model provenance, chain metadata |
-| Risk | validated risk inputs and bounded risk scores |
+| Risk | validated risk inputs and bounded risk scores; `RiskConfig.enforce_threshold`/`deny_level` gating |
 | Limits | scopes, keys, windows, and atomic limit verdicts |
-| Mandates | principal authority over actions and resources |
+| Mandates | principal authority over actions and resources, including resource-scoped `ActionResourceGrant` |
 | Tools | registered tool definitions, digests, and quarantine state |
 | Policy bundles | signed bundle identity, lifecycle, and activation semantics |
-| Integrity | canonical serialization, Merkle proofs, and prompt-injection signals |
+| Tenancy | `Tenant`/`TenantStatus` \u2014 a first-class entity for the onboarded organization boundary |
+| Audit events | `AuditEvent` \u2014 platform/administrative activity, distinct from per-decision evidence |
+| Integrity | canonical serialization, Merkle proofs, and prompt-injection signals (scanned on inbound fields **and** outbound tool-dispatch results) |
 
 ## Core Invariants
 

@@ -200,12 +200,33 @@ class RedisBaselineStore:
         return tuple(float(value) for value in raw)
 
     def _redis_key(self, key: BaselineKey) -> str:
-        return f"{self._key_prefix}{key.canonical_key()}"
+        """Use a tenant hash tag for cluster-safe fan-out across replicas.
+
+        This preserves a single canonical identity for the baseline while
+        guaranteeing that all keys for one tenant are co-located in Redis Cluster,
+        preventing noisy-neighbor eviction across tenant namespaces.
+        """
+        return f"{self._key_prefix}{{{key.tenant_id}}}:{key.canonical_key()}"
 
 
 def build_baseline_store(config: GlassBoxConfig) -> RedisBaselineStore:
-    """Factory used by a durable adapter set."""
+    """Factory used by a durable adapter set.
+
+    Connects through Redis Sentinel when ``config.baseline.sentinel_hosts`` is
+    set, mirroring :func:`~glassbox.adapters.outbound.redis.limits.build_limit_store`
+    -- the same opt-in HA mechanism, applied to the baseline store's connection.
+    """
     import redis  # local import: `redis` is an optional extra
 
-    client = redis.Redis.from_url(config.baseline.url, decode_responses=True)
+    baseline = config.baseline
+    if baseline.sentinel_hosts:
+        from redis.sentinel import Sentinel
+
+        sentinel = Sentinel(
+            list(baseline.sentinel_hosts),
+            socket_timeout=baseline.sentinel_socket_timeout_s,
+        )
+        client = sentinel.master_for(baseline.sentinel_service_name, decode_responses=True)
+    else:
+        client = redis.Redis.from_url(baseline.url, decode_responses=True)
     return RedisBaselineStore(client, min_samples=config.baseline.min_samples)

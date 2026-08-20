@@ -1,43 +1,26 @@
 # Examples
 
-The examples demonstrate the retained `GovernancePipeline` compatibility API.
-They are useful for exploring industry policy patterns, but they are not the
-recommended integration template for the current `DecisionService` runtime.
+## `quick_start_v2.py`
 
-## Industry Scenarios
-
-`industry_examples.py` contains 18 runnable v1 scenarios spanning financial
-services, healthcare, procurement, public sector, industrial operations, and
-other regulated contexts.
+A minimal, runnable, verified end-to-end walk through the v2 decision path:
+identity → mandate → policy → risk → limits → baseline → evidence →
+dispatch, using the in-memory reference adapter set (no database, Redis, or
+KMS required).
 
 ```bash
-python examples/industry_examples.py --list
-python examples/industry_examples.py --id 3
-python examples/industry_examples.py
+pip install -e .
+python examples/quick_start_v2.py
 ```
 
-The policy identifiers and framework labels in these scenarios are examples,
-not certifications or evidence of organizational compliance. Use
-[docs/CLAIMS.md](../docs/CLAIMS.md) for verified product claims and
-[docs/COMPLIANCE/README.md](../docs/COMPLIANCE/README.md) for the control-mapping
-method.
+This is a **development-only configuration** — no durability, no distributed
+state, no managed key custody. See [docs/DEPLOYMENT/guide.md](../docs/DEPLOYMENT/guide.md)
+for a production adapter set (Postgres, Redis, a managed KMS key, and durable
+WORM anchoring), and [docs/USER/quick_start.md](../docs/USER/quick_start.md)
+for the same walkthrough with narrative explanation.
 
-## Distributed Velocity Breaker
+## Further Reading
 
-`distributed_velocity_breaker.py` demonstrates the legacy Redis-backed breaker
-across threads and agent/fleet scopes.
-
-```bash
-pip install -e .[redis]
-python examples/distributed_velocity_breaker.py
-```
-
-It requires Redis on `localhost:6379` and mutates test keys. Use an isolated
-development instance. The current v2 distributed limit contract is represented
-by `glassbox.ports.limits.LimitStore` and the Redis outbound adapter.
-
-## Current Integration Pattern
-
-For new code, start with the root [quick start](../README.md#quick-start), then
-use [application-layer guidance](../glassbox/app/README.md) and the
-[v2 HTTP contract](../docs/API/v2_endpoint_reference.md).
+- [docs/USER/quick_start.md](../docs/USER/quick_start.md) — the annotated version of this example
+- [docs/USER/use_cases.md](../docs/USER/use_cases.md) — governance patterns by industry
+- [glassbox/app/README.md](../glassbox/app/README.md) — the orchestration layer this example exercises
+- [docs/API/v2_endpoint_reference.md](../docs/API/v2_endpoint_reference.md) — the same flow over HTTP

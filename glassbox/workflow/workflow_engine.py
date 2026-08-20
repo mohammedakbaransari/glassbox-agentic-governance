@@ -1,23 +1,31 @@
 """
 GlassBox Framework — Workflow Engine  (v1.0.0)
 ===============================================
-Manages the full lifecycle of decisions that route to HUMAN_REVIEW.
+Manages the full lifecycle of decisions that route to human review.
 
 A WorkflowEngine:
   1. Creates a WorkflowInstance when a decision is pending review
   2. Tracks the approval/rejection steps with full audit trail
   3. Monitors SLA timers and triggers escalation on breach
-  4. Publishes domain events at each state transition
-  5. Provides a query API for review queues and dashboards
+  4. Provides a query API for review queues and dashboards
 
 State machine:
   pending → in_review → approved (decision executes)
                       → rejected (decision blocked)
                       → escalated (routed to escalate_to)
-          → timed_out (SLA breached, auto-escalated)
+          → expired (SLA breached, unreviewed)
+          → revoked (withdrawn before review)
 
 Workflow instances are persisted via WorkflowRepository (SQLite by default).
 SLA monitoring runs as a background thread (opt-in, configurable).
+
+This is one of two modules kept outside the v2 layering (`glassbox.domain` /
+`ports` / `app` / `adapters.outbound`) after the rest of the original
+synchronous implementation was physically deleted: it is the real,
+sanctioned implementation behind `glassbox.ports.workflow.WorkflowGateway`,
+reached by `glassbox.app.approval_service.ApprovalService` — not legacy
+debt. See that port's docstring for the framing, and
+`glassbox/workflow/README.md` for usage.
 
 Author: Mohammed Akbar Ansari — Independent Researcher
 """
@@ -28,19 +36,15 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from glassbox.governance.logging_manager import get_logger
-from glassbox.governance.models import FinalStatus
+from glassbox.app.observability import get_logger
 from glassbox.store.repository import (
     SQLiteWorkflowRepository,
     WorkflowInstance,
     WorkflowRepository,
     WorkflowStep,
 )
-
-if TYPE_CHECKING:
-    from glassbox.events.event_bus import EventBus
 
 log = get_logger("workflow")
 
@@ -71,13 +75,11 @@ class WorkflowEngine:
     def __init__(
         self,
         repository: Optional[WorkflowRepository] = None,
-        event_bus: Optional["EventBus"] = None,
         default_sla_minutes: int = 60,
         monitor_sla: bool = False,
         monitor_interval_s: int = 60,
     ):
         self.repo = repository or SQLiteWorkflowRepository(":memory:")
-        self.event_bus = event_bus
         self.default_sla_minutes = default_sla_minutes
         self._monitor_interval_s = monitor_interval_s
         self._monitor_thread: Optional[threading.Thread] = None
@@ -135,25 +137,11 @@ class WorkflowEngine:
             decision_type=decision_type,
             risk_score=risk_score,
             violations=violations + (warnings or []),
-            sla_minutes=sla_minutes or self.default_sla_minutes,
+            sla_minutes=sla_minutes if sla_minutes is not None else self.default_sla_minutes,
             assigned_to=assigned_to,
             escalate_to=escalate_to,
         )
         self.repo.create(instance)
-
-        if self.event_bus:
-            from glassbox.events.event_bus import DecisionPendingReview
-
-            self.event_bus.publish(
-                DecisionPendingReview(
-                    decision_id=decision_id,
-                    agent_id=agent_id,
-                    decision_type=decision_type,
-                    risk_score=risk_score,
-                    workflow_id=workflow_id,
-                )
-            )
-
         return instance
 
     # ── State transitions ──────────────────────────────────────────────────────
@@ -212,18 +200,6 @@ class WorkflowEngine:
             if inst:
                 inst.approval_actors = list(actors)
                 self.repo.update(inst)
-            if inst and self.event_bus:
-                from glassbox.events.event_bus import DecisionExecuted
-
-                self.event_bus.publish(
-                    DecisionExecuted(
-                        decision_id=inst.decision_id,
-                        agent_id=inst.agent_id,
-                        decision_type=inst.decision_type,
-                        risk_score=inst.risk_score or 0.0,
-                        latency_ms=0.0,
-                    )
-                )
             with self._quorum_lock:
                 self._quorum_state.pop(workflow_id, None)
         else:
@@ -270,18 +246,6 @@ class WorkflowEngine:
         inst = self._transition(
             workflow_id, "reject", actor, notes, "rejected", step_outcome="rejected"
         )
-        if inst and self.event_bus:
-            from glassbox.events.event_bus import DecisionBlocked
-
-            self.event_bus.publish(
-                DecisionBlocked(
-                    decision_id=inst.decision_id,
-                    agent_id=inst.agent_id,
-                    decision_type=inst.decision_type,
-                    violations=[f"Rejected by {actor}: {notes}"],
-                    risk_score=inst.risk_score,
-                )
-            )
         return inst
 
     def escalate(
@@ -308,6 +272,57 @@ class WorkflowEngine:
         inst.add_step(step)
         self.repo.update(inst)
         return inst
+
+    def expire(
+        self,
+        workflow_id: str,
+        actor: str = "system",
+        notes: str = "SLA window elapsed without a reviewer decision",
+    ) -> Optional[WorkflowInstance]:
+        """Transition an SLA-breached, still-pending workflow to ``expired``.
+
+        Refuses a workflow that has already reached a terminal state or that
+        has not actually breached its SLA -- expiry is a fact about elapsed
+        time, not a reviewer action, and must not silently override a real
+        decision that already happened.
+        """
+        inst = self._get(workflow_id)
+        if not inst or inst.state not in ("pending", "in_review"):
+            return None
+        if not inst.is_sla_breached():
+            return None
+        inst = self._transition(
+            workflow_id, "expire", actor, notes, "expired", step_outcome="expired"
+        )
+        return inst
+
+    def revoke(
+        self,
+        workflow_id: str,
+        actor: str,
+        notes: str = "",
+    ) -> Optional[WorkflowInstance]:
+        """Revoke a still-pending approval request before it is reviewed.
+
+        Distinct from :meth:`reject`: a rejection is a reviewer's considered
+        decision; a revocation withdraws the request itself (e.g. the
+        underlying mandate was revoked, or the request is no longer needed).
+        """
+        inst = self._get(workflow_id)
+        if not inst or inst.state not in ("pending", "in_review"):
+            return None
+        return self._transition(
+            workflow_id, "revoke", actor, notes, "revoked", step_outcome="revoked"
+        )
+
+    def expire_overdue(self, actor: str = "system") -> List[WorkflowInstance]:
+        """Expire every currently SLA-breached workflow and return the instances."""
+        expired: List[WorkflowInstance] = []
+        for inst in self.list_sla_breached():
+            result = self.expire(inst.workflow_id, actor=actor)
+            if result is not None:
+                expired.append(result)
+        return expired
 
     def add_comment(
         self,
@@ -379,18 +394,6 @@ class WorkflowEngine:
                 breached = self.list_sla_breached()
                 for wf in breached:
                     elapsed = self._elapsed_minutes(wf)
-                    if self.event_bus:
-                        from glassbox.events.event_bus import SLABreached
-
-                        self.event_bus.publish(
-                            SLABreached(
-                                workflow_id=wf.workflow_id,
-                                decision_id=wf.decision_id,
-                                agent_id=wf.agent_id,
-                                sla_minutes=wf.sla_minutes,
-                                elapsed_minutes=elapsed,
-                            )
-                        )
                     # Auto-escalate if escalate_to is configured
                     if wf.escalate_to and wf.state != "escalated":
                         self.escalate(

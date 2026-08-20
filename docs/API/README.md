@@ -1,42 +1,44 @@
 # HTTP API Documentation
 
-GlassBox contains two HTTP surfaces. They solve the same governance problem but
-use different runtimes and contracts. Choose the surface deliberately; routes
-and request models are not interchangeable.
-
-## Current API: DecisionService v2
-
-New integrations use the hexagonal runtime exposed by
+GlassBox exposes one HTTP surface: the hexagonal runtime in
 `glassbox/adapters/inbound/http/app.py`. A process entry point composes one
-`GovernanceRuntime`, passes it to `create_app(runtime)`, and serves these routes:
+`GovernanceRuntime`, passes it to `create_app(runtime)`, and serves these
+routes:
 
 - `GET /healthz`
 - `POST /v2/actions/{action_name}`
 - `POST /v2/tools/{tool_name}`
 - `POST /v2/replay`
+- `GET /v2/approvals`
+- `GET /v2/approvals/{decision_id}`
+- `POST /v2/approvals/{decision_id}/approve`
+- `POST /v2/approvals/{decision_id}/reject`
+- `POST /v2/approvals/{decision_id}/escalate`
+- `POST /v2/approvals/{decision_id}/revoke`
 
 Identity verification, tenant assertion checks, policy evaluation, evidence
 persistence, and dispatch ordering are enforced by `DecisionService`, not by
-optional transport middleware.
+optional transport middleware. A cheap, in-process admission-control guard
+(`HttpAdmissionController`) runs before identity verification, rejecting a
+request-rate burst with `429` before any governance work is spent on it.
 
-See [v2_endpoint_reference.md](v2_endpoint_reference.md) for the contract and
-[../../glassbox/adapters/inbound/http/README.md](../../glassbox/adapters/inbound/http/README.md)
+See [v2_endpoint_reference.md](v2_endpoint_reference.md) for the full
+contract and [../../glassbox/adapters/inbound/http/README.md](../../glassbox/adapters/inbound/http/README.md)
 for composition guidance.
 
-## Legacy API: GovernancePipeline v1
+## Earlier HTTP Surface
 
-The retained synchronous API in `glassbox/api/app.py` provides the original
-17-route surface, including `/decisions`, `/metrics`, and `/events/stream`. It
-remains tested for compatibility, but new integrations should not assume that
-its routes or security model apply to v2.
-
-See [endpoint_reference.md](endpoint_reference.md) and
-[../../glassbox/api/README.md](../../glassbox/api/README.md).
+An earlier synchronous `GovernancePipeline` HTTP API (`glassbox/api/`,
+17 routes including `/decisions`, `/metrics`, `/events/stream`) existed
+during development. It has been physically deleted from this repository
+(GB-040), not merely deprecated — there is nothing to route requests to any
+more. The historical [TypeScript SDK](../../sdk/typescript/README.md) that
+targeted it is kept only as a reference for organizations still operating an
+old deployment elsewhere.
 
 ## Compatibility Policy
 
-- v2 documentation describes only behavior implemented by the current
-	`DecisionService` path.
-- v1 documentation is labeled **Legacy** and remains separate.
+- This document describes only behavior implemented by the current
+	`DecisionService` path — there is no other path.
 - A capability is not a production guarantee unless it is also represented in
 	[../CLAIMS.md](../CLAIMS.md) or explicitly described as deployment-specific.

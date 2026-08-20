@@ -49,14 +49,17 @@ from glassbox.domain.errors import (
 from glassbox.domain.evidence import (
     GENESIS_PREV_HASH,
     EvidenceReceipt,
+    EvidenceSegment,
     IntegrityReport,
     IntegrityStatus,
     IntentRecord,
     OutcomeRecord,
+    WormAnchor,
 )
 from glassbox.domain.serialization import canonical_bytes
 from glassbox.ports.evidence import EvidenceStore
 from glassbox.ports.keys import MacSigner
+from glassbox.ports.retention import SegmentLeaf
 
 __all__ = ["PostgresEvidenceStore"]
 
@@ -113,11 +116,12 @@ UPDATE evidence_segment
 _UPSERT_OUTCOME = """
 INSERT INTO evidence_outcome (decision_id, status, completed_at, result_digest, error_class)
 VALUES (%s, %s, to_timestamp(%s), %s, %s)
-ON CONFLICT (decision_id) DO NOTHING
+ON CONFLICT (decision_id, completed_at) DO NOTHING
 """
 
 _SELECT_SEGMENT_STATE = """
-SELECT purged_before_seq, sealed_at, merkle_root, worm_anchor_id
+SELECT purged_before_seq, sealed_at, merkle_root, worm_anchor_id,
+       retention_sealed_last_seq, retention_worm_anchor_id, retention_last_leaf_hmac
   FROM evidence_segment
  WHERE segment_id = %s
 """
@@ -164,6 +168,67 @@ _TAMPER_RECORD = """
 UPDATE evidence_intent
    SET record = %s
  WHERE segment_id = %s AND seq = %s
+"""
+
+# --------------------------------------------------------------------------- #
+# EvidenceRetentionStore (GB-007) -- the port-conformant path, namespaced with
+# `retention_` columns and fully independent of the bespoke seal_and_purge
+# above (see the migration 5 docstring in schema.py for why).
+# --------------------------------------------------------------------------- #
+
+_SELECT_SEGMENT_FULL = """
+SELECT tenant_id, opened_at, first_seq, purged_before_seq,
+       retention_sealed_at, retention_sealed_first_seq, retention_sealed_last_seq,
+       retention_merkle_root, retention_seal_signature, retention_worm_anchor_id
+  FROM evidence_segment
+ WHERE segment_id = %s
+"""
+
+_SELECT_LEAVES = """
+SELECT seq, record_hmac
+  FROM evidence_intent
+ WHERE segment_id = %s
+"""
+
+_SELECT_LEAVES_BEFORE = _SELECT_LEAVES + " AND seq < %s"
+
+_SELECT_LEAVES_ORDERED = _SELECT_LEAVES + " ORDER BY seq ASC"
+_SELECT_LEAVES_BEFORE_ORDERED = _SELECT_LEAVES_BEFORE + " ORDER BY seq ASC"
+
+_MARK_SEALED = """
+UPDATE evidence_segment
+   SET retention_sealed_at = to_timestamp(%s),
+       retention_sealed_first_seq = %s,
+       retention_sealed_last_seq = %s,
+       retention_merkle_root = %s,
+       retention_seal_signature = %s,
+       retention_worm_anchor_id = %s,
+       retention_worm_locator = %s,
+       retention_last_leaf_hmac = (
+           SELECT record_hmac FROM evidence_intent
+            WHERE segment_id = %s AND seq = %s
+       )
+ WHERE segment_id = %s
+"""
+
+_SELECT_RETENTION_SEAL = """
+SELECT retention_sealed_last_seq, retention_last_leaf_hmac
+  FROM evidence_segment
+ WHERE segment_id = %s
+   FOR UPDATE
+"""
+
+_DELETE_PURGED_RETENTION = """
+DELETE FROM evidence_intent
+ WHERE segment_id = %s AND seq < %s
+RETURNING seq
+"""
+
+_ADVANCE_PURGE_MARKER = """
+UPDATE evidence_segment
+   SET first_seq = %s,
+       purged_before_seq = %s
+ WHERE segment_id = %s
 """
 
 
@@ -351,6 +416,9 @@ class PostgresEvidenceStore:
                 sealed_at = state[1]
                 sealed_anchor = bytes(state[2]) if state[2] is not None else None
                 worm_anchor_id = state[3]
+                retention_sealed_last_seq = state[4]
+                retention_worm_anchor_id = state[5]
+                retention_last_leaf_hmac = bytes(state[6]) if state[6] is not None else None
 
                 cursor.execute(_SELECT_CHAIN, (segment_id,))
                 rows = cursor.fetchall()
@@ -366,9 +434,19 @@ class PostgresEvidenceStore:
             segment_id,
             rows,
             purged_before=purged_before,
-            sealed=sealed_at is not None,
-            sealed_anchor=sealed_anchor,
-            anchored=worm_anchor_id is not None,
+            # A purge is legitimate if EITHER retention strategy sealed this
+            # range first -- the bespoke seal_and_purge path (sealed_at/
+            # worm_anchor_id) or the port-conformant EvidenceRetentionStore
+            # path (retention_sealed_last_seq/retention_worm_anchor_id). The
+            # two are mutually exclusive per segment by convention, never both.
+            sealed=sealed_at is not None or retention_sealed_last_seq is not None,
+            # The bespoke path's own "anchor" IS the last purged record's raw
+            # MAC (despite living in a column named merkle_root); the
+            # retention path keeps that same value separately, since its
+            # merkle_root is a real Merkle root over the whole sealed set, not
+            # a single leaf's MAC, and cannot serve as the chain-link anchor.
+            sealed_anchor=sealed_anchor if sealed_anchor is not None else retention_last_leaf_hmac,
+            anchored=worm_anchor_id is not None or retention_worm_anchor_id is not None,
             now=now,
         )
 
@@ -413,6 +491,130 @@ class PostgresEvidenceStore:
                 cursor.execute(_DELETE_PURGED, (segment_id, before_seq))
                 purged = cursor.fetchall()
                 cursor.execute(_SEAL_SEGMENT, (before_seq, anchor, before_seq, segment_id))
+                return len(purged)
+        except EvidenceWriteError:
+            raise
+        except Exception as exc:
+            raise EvidenceWriteError(
+                "retention purge failed",
+                segment_id=segment_id,
+                before_seq=before_seq,
+                cause=type(exc).__name__,
+                detail=str(exc),
+            ) from exc
+
+    # ----------------------------------------------------------------- #
+    # EvidenceRetentionStore (GB-007) -- port-conformant path
+    # ----------------------------------------------------------------- #
+
+    def segment_state(self, segment_id: str) -> Optional[EvidenceSegment]:
+        """Return the segment's current state, or ``None`` if it does not exist."""
+        try:
+            with self._provider.transaction() as cursor:
+                cursor.execute(_SELECT_SEGMENT_FULL, (segment_id,))
+                row = cursor.fetchone()
+        except Exception as exc:
+            raise EvidenceWriteError(
+                "could not read segment state",
+                segment_id=segment_id,
+                cause=type(exc).__name__,
+                detail=str(exc),
+            ) from exc
+        if row is None:
+            return None
+        (
+            tenant_id,
+            opened_at,
+            first_seq,
+            _purged_before_seq,
+            retention_sealed_at,
+            retention_sealed_first_seq,
+            retention_sealed_last_seq,
+            retention_merkle_root,
+            retention_seal_signature,
+            retention_worm_anchor_id,
+        ) = row
+        return EvidenceSegment(
+            segment_id=segment_id,
+            tenant_id=tenant_id,
+            opened_at=opened_at.timestamp(),
+            first_seq=first_seq,
+            sealed_at=retention_sealed_at.timestamp() if retention_sealed_at else None,
+            last_seq=retention_sealed_last_seq,
+            merkle_root=bytes(retention_merkle_root) if retention_merkle_root else None,
+            seal_signature=bytes(retention_seal_signature) if retention_seal_signature else None,
+            worm_anchor_id=retention_worm_anchor_id,
+        )
+
+    def segment_leaves(
+        self, segment_id: str, *, before_seq: Optional[int] = None
+    ) -> Sequence[SegmentLeaf]:
+        """Return the segment's live record MACs in sequence order."""
+        try:
+            with self._provider.transaction() as cursor:
+                if before_seq is None:
+                    cursor.execute(_SELECT_LEAVES_ORDERED, (segment_id,))
+                else:
+                    cursor.execute(_SELECT_LEAVES_BEFORE_ORDERED, (segment_id, before_seq))
+                rows = cursor.fetchall()
+        except Exception as exc:
+            raise EvidenceIntegrityError(
+                "could not read segment leaves",
+                segment_id=segment_id,
+                cause=type(exc).__name__,
+                detail=str(exc),
+            ) from exc
+        return [SegmentLeaf(seq=seq, record_hmac=bytes(record_hmac)) for seq, record_hmac in rows]
+
+    def mark_sealed(self, segment_id: str, anchor: WormAnchor, *, locator: str) -> None:
+        """Record that a segment prefix has been sealed and anchored."""
+        try:
+            with self._provider.transaction() as cursor:
+                cursor.execute(
+                    _MARK_SEALED,
+                    (
+                        anchor.sealed_at,
+                        anchor.first_seq,
+                        anchor.last_seq,
+                        anchor.merkle_root,
+                        anchor.root_signature,
+                        anchor.anchor_id,
+                        locator,
+                        segment_id,
+                        anchor.last_seq,
+                        segment_id,
+                    ),
+                )
+        except Exception as exc:
+            raise EvidenceWriteError(
+                "could not record the seal",
+                segment_id=segment_id,
+                anchor_id=anchor.anchor_id,
+                cause=type(exc).__name__,
+                detail=str(exc),
+            ) from exc
+
+    def purge_before(self, segment_id: str, *, before_seq: int) -> int:
+        """Delete records below ``before_seq``, refusing an unanchored range.
+
+        Re-reads the sealed boundary inside the same transaction rather than
+        trusting the caller, mirroring the in-memory reference store: this is
+        the last point at which an unattested deletion can be stopped.
+        """
+        try:
+            with self._provider.transaction() as cursor:
+                cursor.execute(_SELECT_RETENTION_SEAL, (segment_id,))
+                row = cursor.fetchone()
+                if row is None or row[0] != before_seq - 1:
+                    raise EvidenceWriteError(
+                        "refusing to purge a range that is not covered by a durable anchor",
+                        segment_id=segment_id,
+                        before_seq=before_seq,
+                    )
+                cursor.execute(f"SET LOCAL {RETENTION_PURGE_GUC} = 'on'", ())
+                cursor.execute(_DELETE_PURGED_RETENTION, (segment_id, before_seq))
+                purged = cursor.fetchall()
+                cursor.execute(_ADVANCE_PURGE_MARKER, (before_seq, before_seq, segment_id))
                 return len(purged)
         except EvidenceWriteError:
             raise

@@ -43,6 +43,13 @@ Metric availability and export are deployment-specific.
    business owner decides retry is appropriate.
 5. Do not insert, update, or delete historical evidence as a repair.
 
+**Evidence lifecycle (retention scheduler / maintenance CLI):** evidence
+tables are monthly-partitioned (`evidence_intent`, `evidence_outcome`).
+`glassbox.app.retention_scheduler` seals a segment (WORM anchor) before
+purging it; `glassbox/adapters/inbound/cli/maintenance.py` is the operator
+entry point for manual partition/retention maintenance. Never purge a segment
+whose anchor write has not been confirmed durable.
+
 ## Redis Failure
 
 **Expected:** non-advisory effects deny; no local permissive fallback.
@@ -51,6 +58,12 @@ Metric availability and export are deployment-specific.
 2. Confirm all replicas use the same endpoint and key namespace.
 3. Restore service and observe cooldown/baseline recovery.
 4. Treat denied requests as not admitted; retry only through the normal boundary.
+
+**Per-tenant quota exhaustion:** if `LimitsConfig.max_tenant_subjects` is set
+and a tenant's own distinct-subject count exceeds it, the oldest subjects for
+that tenant are evicted (their counters reset), not another tenant's. A
+tenant reporting unexpectedly-reset counters likely means this bound is set
+too low for its real cardinality — raise the bound, don't disable it.
 
 ## KMS or Signing Failure
 
@@ -84,6 +97,45 @@ The target effect may have completed even when the response was lost.
 Treat activation as a security/operations event. Confirm scope, owner, reason,
 and expected duration. Keep evidence and identity paths available so denied
 attempts remain attributable. Require authorized, auditable deactivation.
+
+## Tool Output Quarantined
+
+**Expected:** `execution.status` is `FAILED` with `error_class ==
+"ToolOutputQuarantinedError"`; `decision.effect` remains whatever it was
+(usually `ALLOW` — the action was correctly authorised, the *result* is what
+was flagged).
+
+1. This is not a governance denial — do not treat it as a policy bug.
+2. Retrieve the matched pattern context from the raised error (never from
+   evidence: the flagged content itself is never persisted, only its digest).
+3. Decide, out of band, whether the tool/endpoint that produced the flagged
+   content needs to be reviewed, patched, or removed from the registry.
+4. Do not retry the same call expecting a different governance outcome — the
+   underlying effect already ran once.
+
+## HTTP Admission Control Rejected (429)
+
+**Expected:** the request never reached `DecisionService`; no evidence exists
+for it.
+
+1. Confirm this is `HttpAdmissionController` (per-process, pre-identity) and
+   not a `LimitStore` denial (distributed, post-identity, evidenced) — check
+   whether an `IntentRecord` exists for the caller's idempotency key.
+2. A sustained 429 rate from one client key usually indicates a genuine
+   retry storm or a misconfigured caller, not an outage.
+3. Adjust `max_requests`/`window_seconds` per replica capacity, not by
+   removing the guard.
+
+## Approval Awaiting Review
+
+**Expected:** `execution.status` is `PENDING_APPROVAL`; no effect has dispatched.
+
+1. Query `ApprovalService.list_pending()` / `list_sla_breached()` for the
+   review queue and SLA state.
+2. Resolution is always an explicit `approve`/`reject`/`escalate`/`revoke`
+   call — there is no automatic timeout-to-approve.
+3. `expire_overdue()` (scheduled externally) transitions a still-pending,
+   SLA-breached workflow to `expired`; it does not approve or execute it.
 
 ## Evidence Verification Failure
 

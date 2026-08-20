@@ -43,14 +43,18 @@ them.
 | Caller lowers action risk | Consequence/exposure derived from governed catalogue |
 | Tenant spoofing | Verified principal plus assertion/resource tenant checks |
 | Tool rug pull | Registered definition digest and quarantine state |
-| Excess authority | Time-bounded mandate and tool grants |
-| Burst or distributed bypass | Atomic shared limit store and cooldown |
+| Indirect prompt injection via tool output | Tool results re-scanned after dispatch (`prompt_injection.scan()`); flagged results raise `ToolOutputQuarantinedError` and are never fed forward as trusted content |
+| Excess authority | Time-bounded mandate and tool grants; resource-scoped grants (`ActionResourceGrant`) narrow authority to a specific resource, not just an action name |
+| Burst or distributed bypass | Atomic shared limit store and cooldown, with a per-tenant subject quota (`max_tenant_subjects`) preventing one tenant's burst from evicting another's state |
+| HTTP-layer request flood | In-process admission-control guard (`HttpAdmissionController`) rejects a burst before identity verification |
 | Cold-start anomaly bypass | Peer-group baseline prior; no silent skip |
 | Evidence loss before effect | Durable intent receipt required by dispatcher |
-| Evidence forgery | Canonical keyed MAC chain, signer identity, segment verification |
+| Evidence forgery | Canonical keyed MAC chain, signer identity, segment verification (intent records only — outcome records are an accepted gap, see CLAIMS.md) |
 | Duplicate side effect | Durable idempotency ledger and receipt validation |
 | Replay causes effect | Structurally separate replay path with no dispatcher call |
 | Dependency outage permits effect | Production safety switches and fail-closed errors |
+| Unauthorized dispatch of a high-risk decision | `DecisionEffect.REQUIRE_APPROVAL` + `ApprovalService`; dual-control quorum via `WorkflowEngine.quorum_approve` |
+| Risk score silently ignored | Opt-in `RiskConfig.enforce_threshold`/`deny_level` gate (`DenialReason.RISK_THRESHOLD_EXCEEDED`) |
 
 ## Responsibility Boundary
 
@@ -65,7 +69,7 @@ disaster recovery. These are required platform and organizational controls.
 bandit -r glassbox --skip B101,B311 --severity-level medium --confidence-level medium
 python -m pytest tests/test_adversarial_suite.py -q
 python -m pytest tests/test_prompt_injection.py tests/test_oidc_identity.py -q
-python -m pytest tests/test_hash_chain_tamper.py tests/test_sealing.py -q
+python -m pytest tests/test_sealing.py -q
 ```
 
 Dependency and secret scanning also run in CI.

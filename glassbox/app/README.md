@@ -24,7 +24,9 @@ Concrete adapters are selected by a process entry point and passed inward as an
 | `composition.py` | Defines `AdapterSet`, `GovernanceRuntime`, required components, and `build_runtime` |
 | `config.py` | Parses strict configuration and enforces `DEV`/`PROD` safety profiles |
 | `decision_service.py` | Orchestrates action, tool, and replay decisions |
+| `approval_service.py` | Turns `ApprovalState` into an operable lifecycle (approve/reject/escalate/expire) via the `WorkflowGateway` port; never dispatches an effect |
 | `sealer.py` | Seals evidence segments and coordinates retention eligibility |
+| `retention_scheduler.py` | Background service that seals and purges evidence once its retention period has elapsed |
 | `observability.py` | Structured startup, request, and error logging |
 | `telemetry.py` | Dependency-free tracing and metrics protocols with no-op defaults |
 

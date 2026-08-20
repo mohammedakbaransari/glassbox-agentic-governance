@@ -9,16 +9,19 @@ infrastructure, policy ownership, approval workflows, and operational controls.
 | Capability | Current implementation | Maturity boundary |
 |---|---|---|
 | Verified workload identity | `IdentityVerifier`, OIDC/JWKS and mTLS-oriented adapters | Trust roots and lifecycle are operator-owned |
-| Tenant isolation | Required domain tenant, assertion checks, PostgreSQL tenant context/RLS | Database roles and policies must be deployed correctly |
+| Tenant isolation | Required domain tenant, assertion checks, PostgreSQL tenant context/RLS, first-class `Tenant`/`TenantStatus` entity | Database roles and policies must be deployed correctly |
 | Governed action catalogue | Versioned action definitions, schemas, exposure derivation, attestations | Durable catalogue registry composition is deployment-specific |
-| Tool governance | Registration, definition digest, quarantine, mandate grants | Tool inventory ownership is organizational |
-| Mandates and kill switch | Time-bounded authority and emergency denial | Approval/revocation process is organizational |
+| Tool governance | Registration, definition digest, quarantine, mandate grants, **output re-scanning** (`ToolOutputQuarantinedError` on flagged tool results, not just input) | Tool inventory ownership is organizational |
+| Mandates and kill switch | Time-bounded authority, emergency denial, and resource-scoped grants (`ActionResourceGrant` on a specific `(action, resource_kind, resource_id)` tuple) | Approval/revocation process is organizational |
 | Policy decision point | Port plus memory reference and bundle domain model | Production signed registry/PDP wiring is deployment-specific |
-| Risk scoring | Deterministic risk port and reference engine | Model governance and thresholds are organizational |
-| Distributed limits | Redis atomic limit adapter | Redis HA, persistence, and capacity are operator-owned |
+| Risk scoring | Deterministic risk port and reference engine; opt-in threshold gating (`RiskConfig.enforce_threshold`/`deny_level`, `DenialReason.RISK_THRESHOLD_EXCEEDED` — wired and tested, off by default) | Model governance and thresholds are organizational |
+| Distributed limits | Redis atomic limit adapter with a per-tenant subject quota (`max_tenant_subjects`) bounding one tenant's own footprint | Redis HA, persistence, and capacity are operator-owned |
 | Behavioral baselines | Redis and memory baseline adapters with cold-start prior | Peer-group governance and model monitoring are organizational |
+| HTTP admission control | Cheap in-process, pre-identity request-rate guard (`HttpAdmissionController`) | Platform-level rate limiting/DoS protection is operator-owned |
+| Human approval workflow | `ApprovalService` + `WorkflowGateway`; dual-control quorum approval, escalation, expiry, revocation | Reviewer roster and SLA policy are organizational |
 | Evidence-before-effect | Intent receipt required before dispatch | Database durability and KMS availability determine assurance |
-| Tamper evidence | Keyed MAC chain, segment sealing, Merkle proofs | Independent key custody and WORM retention are operator-owned |
+| Tamper evidence | Keyed MAC chain (intent records), segment sealing, Merkle proofs, S3 Object Lock WORM anchoring (`S3WormAnchorStore`) | Outcome records are not yet MAC-chained (accepted gap, see CLAIMS.md); independent key custody is operator-owned |
+| Evidence lifecycle | Postgres monthly partitioning (intent and outcome tables) + a real retention scheduler and maintenance CLI | Retention policy and legal hold are organizational |
 | Idempotent dispatch | Durable PostgreSQL dispatch ledger | Target system should honor idempotency too |
 | Replay | Side-effect-free re-evaluation with new evidence | Historical data access policy is operator-owned |
 | Observability | Structured logs and optional OpenTelemetry adapter | Export, redaction, retention, and alerting are operator-owned |

@@ -17,6 +17,12 @@ should come from the storage system (S3 Object Lock in compliance mode, an
 immutable blob container, a WORM appliance) for the same reason the evidence
 table has a database trigger and not merely a code path: a guarantee enforced
 only by the process that benefits from breaking it is not a guarantee.
+
+:class:`S3WormAnchorStore` is that production-grade adapter: it leans on S3
+Object Lock in compliance mode, which even the AWS account root user cannot
+shorten or remove for the retention period. Importing this module never
+requires ``boto3``; only constructing :class:`S3WormAnchorStore` does, so the
+core keeps its zero-mandatory-dependency install.
 """
 
 from __future__ import annotations
@@ -25,8 +31,9 @@ import json
 import os
 import stat
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from glassbox.domain.errors import EvidenceIntegrityError, EvidenceWriteError
 from glassbox.domain.evidence import WormAnchor
@@ -34,9 +41,22 @@ from glassbox.domain.evidence import WormAnchor
 __all__ = [
     "InMemoryWormAnchorStore",
     "FilesystemWormAnchorStore",
+    "S3WormAnchorStore",
+    "WormStoreUnavailableError",
     "anchor_to_json",
     "anchor_from_json",
 ]
+
+
+class WormStoreUnavailableError(EvidenceWriteError):
+    """The S3 driver is not installed, or the bucket cannot be reached.
+
+    A subclass of :class:`~glassbox.domain.errors.EvidenceWriteError`, so a
+    caller that already fails closed on evidence-write problems needs no
+    change to handle this adapter.
+    """
+
+    code = "worm_store_unavailable"
 
 
 def anchor_to_json(anchor: WormAnchor) -> str:
@@ -261,3 +281,237 @@ class FilesystemWormAnchorStore:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+
+
+def _error_code(exc: Exception) -> str:
+    """Return the S3/botocore error code for ``exc``, however it was raised.
+
+    Modeled S3 errors (e.g. a missing key) arrive as a dynamically generated
+    exception class named after the code (``NoSuchKey``); others arrive as a
+    generic ``ClientError`` carrying the code in its response body. Checking
+    both means this adapter does not need to import ``botocore`` types at all.
+    """
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        code = response.get("Error", {}).get("Code")
+        if code:
+            return str(code)
+    return type(exc).__name__
+
+
+_NOT_FOUND_CODES = frozenset({"NoSuchKey", "404"})
+_CONFLICT_CODES = frozenset({"PreconditionFailed", "412"})
+
+
+class S3WormAnchorStore:
+    """Anchors stored in Amazon S3 with Object Lock in compliance mode.
+
+    This is the production-grade implementation the module docstring points
+    to: the write-once guarantee is enforced by the storage system itself
+    (S3 Object Lock, compliance mode -- not even the bucket owner's root
+    account can shorten or remove the retention period before it expires),
+    not by application code that could be bypassed by whatever compromises
+    this process.
+
+    The bucket must have both versioning and Object Lock enabled -- Object
+    Lock cannot be turned on after bucket creation, so this is a
+    deployment-time prerequisite this adapter cannot arrange on your behalf.
+
+    Args:
+        bucket: The S3 bucket name.
+        prefix: Key prefix under which anchors are stored (e.g.
+            ``"anchors/"``).
+        retention_days: How long each anchor is locked for after being
+            written, counted from the anchor's own ``sealed_at``. Chosen
+            independently of the evidence retention period: an anchor must
+            outlive the segment it attests to. Defaults to 2555 days (~7
+            years), a common regulatory floor.
+        retention_mode: ``"COMPLIANCE"`` (default) cannot be shortened or
+            removed by anyone, including the AWS account root user, for the
+            retention period. ``"GOVERNANCE"`` allows a separately-permissioned
+            principal to override it and is deliberately not the default.
+        region_name: AWS region. Defaults to the ambient configuration.
+        client: A pre-built boto3 S3 client, mainly for injecting a
+            configured session or a fake in tests.
+        connect_timeout_s: Connection timeout. Bounded, because an unbounded
+            wait on the sealing path stalls retention purge behind it.
+        read_timeout_s: Read timeout.
+        max_attempts: SDK-level retry budget for transient errors.
+
+    Raises:
+        WormStoreUnavailableError: If ``boto3`` (the ``worm`` extra) is not
+            installed, ``retention_mode`` is invalid, or the client cannot be
+            constructed.
+    """
+
+    __slots__ = ("_client", "_bucket", "_prefix", "_retention_days", "_retention_mode")
+
+    def __init__(
+        self,
+        bucket: str,
+        *,
+        prefix: str = "",
+        retention_days: int = 2555,
+        retention_mode: str = "COMPLIANCE",
+        region_name: Optional[str] = None,
+        client: Optional[Any] = None,
+        connect_timeout_s: float = 3.0,
+        read_timeout_s: float = 5.0,
+        max_attempts: int = 3,
+    ) -> None:
+        if retention_mode not in ("COMPLIANCE", "GOVERNANCE"):
+            raise WormStoreUnavailableError(
+                "retention_mode must be COMPLIANCE or GOVERNANCE",
+                retention_mode=retention_mode,
+            )
+        self._bucket = bucket
+        self._prefix = prefix
+        self._retention_days = retention_days
+        self._retention_mode = retention_mode
+        if client is not None:
+            self._client = client
+            return
+        try:
+            import boto3
+            from botocore.config import Config
+        except ImportError as exc:
+            raise WormStoreUnavailableError(
+                "the S3 WORM anchor store requires the 'worm' extra",
+                remedy="pip install 'glassbox-governance[worm]'",
+            ) from exc
+        try:
+            self._client = boto3.client(
+                "s3",
+                region_name=region_name,
+                config=Config(
+                    connect_timeout=connect_timeout_s,
+                    read_timeout=read_timeout_s,
+                    retries={"max_attempts": max_attempts, "mode": "standard"},
+                ),
+            )
+        except Exception as exc:
+            raise WormStoreUnavailableError(
+                "could not construct the S3 client",
+                cause=type(exc).__name__,
+                detail=str(exc),
+            ) from exc
+
+    def _key_for(self, anchor_id: str) -> str:
+        """Return the object key for an anchor id, encoded like the filesystem adapter."""
+        safe = anchor_id.replace(":", "__").replace("/", "_")
+        return f"{self._prefix}{safe}.json"
+
+    def put(self, anchor: WormAnchor) -> str:
+        """Store ``anchor``, locked under Object Lock for ``retention_days``.
+
+        Storing the identical anchor twice succeeds idempotently, matching the
+        other adapters' contract; storing a *different* anchor under an
+        existing id raises.
+
+        Raises:
+            EvidenceWriteError: If a different anchor already exists under
+                this id, or the write could not be made durable.
+        """
+        if not isinstance(anchor, WormAnchor):
+            raise EvidenceWriteError(
+                "put requires a WormAnchor", offending_type=type(anchor).__name__
+            )
+        key = self._key_for(anchor.anchor_id)
+        existing = self.get(anchor.anchor_id)
+        if existing is not None:
+            if existing != anchor:
+                raise EvidenceWriteError(
+                    "an anchor already exists under this id and differs; storage is write-once",
+                    anchor_id=anchor.anchor_id,
+                )
+            return f"s3://{self._bucket}/{key}"
+
+        payload = anchor_to_json(anchor)
+        retain_until = datetime.fromtimestamp(anchor.sealed_at, tz=timezone.utc) + timedelta(
+            days=self._retention_days
+        )
+        try:
+            self._client.put_object(
+                Bucket=self._bucket,
+                Key=key,
+                Body=payload.encode("utf-8"),
+                ContentType="application/json",
+                ObjectLockMode=self._retention_mode,
+                ObjectLockRetainUntilDate=retain_until,
+                # A conditional write: S3 refuses if the key already exists, so
+                # a racing writer loses the race rather than silently
+                # overwriting an existing attestation -- the same guarantee
+                # the filesystem adapter gets from O_EXCL.
+                IfNoneMatch="*",
+            )
+        except Exception as exc:
+            if _error_code(exc) in _CONFLICT_CODES:
+                existing = self.get(anchor.anchor_id)
+                if existing is not None and existing != anchor:
+                    raise EvidenceWriteError(
+                        "an anchor already exists under this id and differs; "
+                        "storage is write-once",
+                        anchor_id=anchor.anchor_id,
+                    ) from exc
+                return f"s3://{self._bucket}/{key}"
+            raise EvidenceWriteError(
+                "anchor could not be made durable",
+                anchor_id=anchor.anchor_id,
+                cause=type(exc).__name__,
+                detail=str(exc),
+            ) from exc
+        return f"s3://{self._bucket}/{key}"
+
+    def get(self, anchor_id: str) -> Optional[WormAnchor]:
+        """Return a stored anchor, or ``None`` when the object is absent.
+
+        Raises:
+            EvidenceIntegrityError: If the object exists but cannot be read or
+                parsed. Absence and corruption are different findings and must
+                not be collapsed.
+        """
+        key = self._key_for(anchor_id)
+        try:
+            response = self._client.get_object(Bucket=self._bucket, Key=key)
+        except Exception as exc:
+            if _error_code(exc) in _NOT_FOUND_CODES:
+                return None
+            raise EvidenceIntegrityError(
+                "anchor exists but could not be read",
+                anchor_id=anchor_id,
+                cause=type(exc).__name__,
+            ) from exc
+        body = response["Body"].read()
+        return anchor_from_json(body.decode("utf-8"))
+
+    def list_for_segment(self, segment_id: str) -> Sequence[WormAnchor]:
+        """Return every anchor covering a segment, oldest first.
+
+        Raises:
+            EvidenceIntegrityError: If the bucket cannot be listed, or any
+                anchor found in it cannot be read or parsed.
+        """
+        anchors: List[WormAnchor] = []
+        continuation: Dict[str, str] = {}
+        try:
+            while True:
+                response = self._client.list_objects_v2(
+                    Bucket=self._bucket, Prefix=self._prefix, **continuation
+                )
+                for item in response.get("Contents", []):
+                    obj = self._client.get_object(Bucket=self._bucket, Key=item["Key"])
+                    anchor = anchor_from_json(obj["Body"].read().decode("utf-8"))
+                    if anchor.segment_id == segment_id:
+                        anchors.append(anchor)
+                if not response.get("IsTruncated"):
+                    break
+                continuation = {"ContinuationToken": response["NextContinuationToken"]}
+        except EvidenceIntegrityError:
+            raise
+        except Exception as exc:
+            raise EvidenceIntegrityError(
+                "anchor bucket could not be listed",
+                bucket=self._bucket,
+                cause=type(exc).__name__,
+            ) from exc
+        return sorted(anchors, key=lambda anchor: (anchor.first_seq, anchor.sealed_at))

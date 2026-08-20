@@ -42,7 +42,7 @@ python -m pytest tests \
 lint-imports
 python -m pytest tests/test_layering.py -q
 python -m pytest tests/test_decision_service.py tests/test_http_app.py -q
-python -m pytest tests/test_adversarial_suite.py tests/test_hash_chain_tamper.py -q
+python -m pytest tests/test_adversarial_suite.py -q
 python -m pytest tests/test_claims_coverage.py -q
 ```
 
@@ -53,9 +53,10 @@ Real-service tests skip unless their environment is explicitly configured:
 | Service | Environment variable | Representative tests |
 |---|---|---|
 | PostgreSQL | `GLASSBOX_POSTGRES_DSN` | Evidence, row-level security, dispatcher ledger |
-| Redis | `GLASSBOX_REDIS_URL` | Limits, baselines, multiprocess atomicity |
+| Redis | `GLASSBOX_REDIS_URL` | Limits, baselines, per-tenant quota, multiprocess atomicity |
 | Local Spark job | `GLASSBOX_SPARK_LOCAL_JOB=1` | Optional Spark execution path |
 | Build/install | `GLASSBOX_RUN_BUILD_TESTS=1` | Isolated package installation |
+| P99 benchmark | `GLASSBOX_RUN_BENCHMARKS=1` | `tests/test_performance_benchmarks.py` (not run by default; environment-sensitive) |
 
 Use isolated non-production resources. Integration tests may create schemas,
 keys, or records.

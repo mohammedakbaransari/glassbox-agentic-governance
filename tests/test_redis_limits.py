@@ -78,3 +78,56 @@ class TestRedisLimitStoreOutage:
         )
         with pytest.raises(LimitStoreUnavailable):
             store.try_consume(key, cost=1.0, decision_id="decision-a", now=1_760_000_000.0)
+
+
+@_requires_redis
+class TestRedisLimitStoreTenantQuota:
+    """F-07: a tenant's own footprint is bounded, independent of any ceiling."""
+
+    @pytest.fixture
+    def store(self):
+        import redis
+
+        from glassbox.adapters.outbound.redis import RedisLimitStore
+
+        prefix = f"test:{uuid.uuid4().hex}:"
+        client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        yield RedisLimitStore(
+            client, default_limit=100.0, key_prefix=prefix, max_tenant_subjects=2
+        )
+        client.close()
+
+    def _key(self, subject: str) -> LimitKey:
+        return LimitKey(
+            tenant_id="acme", scope=LimitScope.AGENT, subject=subject, window=Window(60)
+        )
+
+    def test_the_oldest_subject_is_evicted_once_the_cap_is_exceeded(self, store: Any) -> None:
+        now = 1_760_000_000.0
+        store.try_consume(self._key("agent.a"), cost=5.0, decision_id="d-a", now=now)
+        store.try_consume(self._key("agent.b"), cost=5.0, decision_id="d-b", now=now + 1.0)
+        # A third distinct subject exceeds max_tenant_subjects=2: agent.a's own
+        # window/cost/cooldown keys are deleted outright, not merely capped.
+        store.try_consume(self._key("agent.c"), cost=5.0, decision_id="d-c", now=now + 2.0)
+
+        assert store.cumulative(self._key("agent.a"), Window(60), now=now + 2.0) == 0.0
+        assert store.cumulative(self._key("agent.b"), Window(60), now=now + 2.0) == 5.0
+        assert store.cumulative(self._key("agent.c"), Window(60), now=now + 2.0) == 5.0
+
+    def test_a_disabled_quota_never_evicts(self) -> None:
+        import redis
+
+        from glassbox.adapters.outbound.redis import RedisLimitStore
+
+        prefix = f"test:{uuid.uuid4().hex}:"
+        client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        try:
+            unbounded = RedisLimitStore(client, default_limit=100.0, key_prefix=prefix)
+            now = 1_760_000_000.0
+            for index, subject in enumerate(["agent.a", "agent.b", "agent.c"]):
+                key = self._key(subject)
+                unbounded.try_consume(key, cost=5.0, decision_id=f"d-{index}", now=now + index)
+            for subject in ["agent.a", "agent.b", "agent.c"]:
+                assert unbounded.cumulative(self._key(subject), Window(60), now=now + 3.0) == 5.0
+        finally:
+            client.close()

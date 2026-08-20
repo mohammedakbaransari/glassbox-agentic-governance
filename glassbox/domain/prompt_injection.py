@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Pattern, Tuple
+from typing import Any, Mapping, Pattern, Sequence, Tuple
 
 __all__ = ["PromptInjectionReport", "scan"]
 
@@ -63,14 +63,45 @@ class PromptInjectionReport:
     matched_patterns: Tuple[str, ...] = ()
 
 
-def scan(field: str, text: str) -> PromptInjectionReport:
+def _flatten_text_values(value: object) -> Tuple[str, ...]:
+    """Yield every string-like fragment from nested tool or model output.
+
+    Tool results are often structured objects (dicts, lists, nested JSON), so the
+    scanner must inspect the text contained anywhere in the payload instead of
+    assuming a flat string. The outer call site still decides whether a field is
+    untrusted; this helper only extracts candidate text to inspect.
+    """
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Mapping):
+        values: list[str] = []
+        for key, item in value.items():
+            values.extend(_flatten_text_values(key))
+            values.extend(_flatten_text_values(item))
+        return tuple(values)
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
+        values = []
+        for item in value:
+            values.extend(_flatten_text_values(item))
+        return tuple(values)
+    return ()
+
+
+def scan(field: str, text: object) -> PromptInjectionReport:
     """Scan one untrusted-text field's content for injection patterns.
 
     Args:
         field: Name of the parameter being scanned, carried through to the
             report so a caller scanning several fields can attribute a match.
-        text: The field's content. Only ever a field an action's catalogue
-            entry names as ``untrusted_text_fields`` -- never a business field.
+        text: The field's content or a nested tool/model output that contains
+            strings, such as a dict/list returned by an external tool. Only
+            values that are intentionally treated as untrusted are passed here.
     """
-    matched = tuple(pattern.pattern for pattern in _PATTERNS if pattern.search(text))
+    fragments = _flatten_text_values(text)
+    matched = tuple(
+        pattern.pattern
+        for pattern in _PATTERNS
+        for fragment in fragments
+        if pattern.search(fragment)
+    )
     return PromptInjectionReport(field=field, flagged=bool(matched), matched_patterns=matched)

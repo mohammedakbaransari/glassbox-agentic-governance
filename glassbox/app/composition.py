@@ -26,8 +26,8 @@ process entry point, which is the only place allowed to name a concrete adapter.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Tuple
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from glassbox.app.config import GlassBoxConfig
 from glassbox.app.errors import CompositionError, ProfileViolationError
@@ -47,6 +47,7 @@ from glassbox.ports.mandate import MandateStore
 from glassbox.ports.policy import PolicyDecisionPoint
 from glassbox.ports.risk import RiskEngine
 from glassbox.ports.tool_registry import ToolRegistry
+from glassbox.ports.workflow import WorkflowGateway
 
 __all__ = [
     "ComponentFactory",
@@ -157,6 +158,12 @@ class GovernanceRuntime:
     mac_signer: MacSigner
     evidence_store: EvidenceStore
     dispatcher: Dispatcher
+    #: Optional (Workstream D). Approval routing is not every deployment's
+    #: concern, so this is deliberately not in REQUIRED_COMPONENTS -- an
+    #: adapter set that omits it still builds, and a REQUIRE_APPROVAL decision
+    #: simply carries approval metadata with no workflow created. Attach one
+    #: with :meth:`with_workflow_engine`, never by mutating a field directly.
+    workflow_engine: Optional[WorkflowGateway] = None
 
     def component(self, name: str) -> Any:
         """Return a wired component by name.
@@ -176,7 +183,29 @@ class GovernanceRuntime:
             "components": {
                 name: type(getattr(self, name)).__name__ for name, _ in REQUIRED_COMPONENTS
             },
+            "workflow_engine_configured": self.workflow_engine is not None,
         }
+
+    def with_workflow_engine(self, workflow_engine: WorkflowGateway) -> "GovernanceRuntime":
+        """Return a copy of this runtime with an approval workflow gateway attached.
+
+        Frozen runtimes cannot be mutated in place; this is the supported way
+        to add the optional Workstream D collaborator after
+        :func:`build_runtime`, instead of reaching for ``object.__setattr__``.
+
+        Raises:
+            CompositionError: If ``workflow_engine`` does not satisfy
+                :class:`~glassbox.ports.workflow.WorkflowGateway`.
+        """
+        if not isinstance(workflow_engine, WorkflowGateway):
+            raise CompositionError(
+                "workflow_engine does not satisfy WorkflowGateway",
+                failures=[
+                    f"{type(workflow_engine).__name__}: missing "
+                    f"{_missing_members(workflow_engine, WorkflowGateway)}"
+                ],
+            )
+        return replace(self, workflow_engine=workflow_engine)
 
 
 def build_runtime(config: GlassBoxConfig, adapters: AdapterSet) -> GovernanceRuntime:

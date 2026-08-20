@@ -5,12 +5,14 @@ that implements it and the exact test that proves it. A claim without both
 is not documented here. `tests/test_claims_coverage.py` fails the build if a
 citation stops resolving, so this file cannot silently drift from the code.
 
-Claims here are about the code as it exists today. Some modules under
-`glassbox/governance/`, `glassbox/store/` and `glassbox/api/` implement an
-earlier synchronous design that is being superseded by
-`glassbox/app`/`glassbox/domain`/`glassbox/ports`/`glassbox/adapters`; where
-that distinction matters to a claim, it is called out explicitly rather than
-assumed.
+Claims here are about the code as it exists today. `glassbox/governance/`,
+`glassbox/api/` and the other v1 packages that implemented an earlier
+synchronous design have been physically deleted now that
+`glassbox/app`/`glassbox/domain`/`glassbox/ports`/`glassbox/adapters` fully
+supersede them (GB-040). `glassbox/store/` was kept, but trimmed to only
+`WorkflowRepository`/`SQLiteWorkflowRepository` — the sanctioned
+implementation behind `glassbox.ports.workflow.WorkflowGateway` — everything
+else it used to hold was v1-only and was removed with the rest.
 
 ---
 
@@ -29,11 +31,12 @@ assumed.
 | 9 | Evidence is written before the effect, never after | [glassbox/app/decision_service.py:510](../glassbox/app/decision_service.py) `decide_and_dispatch` (evidence `append_intent` before `_dispatch_if_permitted`) | `tests/test_decision_service.py::TestEvidenceBeforeEffect` |
 | 10 | Anomaly detection is not bypassed by a cold-start window | [glassbox/adapters/outbound/memory/governance_state.py:235](../glassbox/adapters/outbound/memory/governance_state.py) `InMemoryBaselineStore` (peer-group cold-start prior) | `tests/test_adversarial_suite.py::TestThreat08AnomalyEvasion`, `tests/test_memory_adapters.py::TestBaselineStore` |
 
-Additional claims that hold: 97 compliance controls across 24 frameworks
-([glassbox/compliance/catalogue.py](../glassbox/compliance/catalogue.py),
-asserted by its own test suite); zero mandatory dependencies
+Additional claims that hold: zero mandatory dependencies
 (`dependencies = []` in [pyproject.toml](../pyproject.toml), asserted by
-`tests/test_packaging.py`).
+`tests/test_packaging.py`). See
+[docs/COMPLIANCE/requirements.md](COMPLIANCE/requirements.md) for the
+97-control, 24-framework crosswalk to the mechanisms in this document (an
+engineering reference, not a certification, and not itself a code claim).
 
 ---
 
@@ -74,6 +77,7 @@ Every row below is a permanent regression test in
 | S1 | Forging any evidence row causes verification to fail | `tests/test_adversarial_suite.py::TestThreat01AuditForgery`, `tests/test_memory_adapters.py::TestEvidenceIntegrity` |
 | S2 | Killing the process between intent and effect loses no evidence | `tests/test_postgres_evidence.py` (durable-before-return transaction shape) |
 | S3 | Purging within retention keeps the chain verifiable | `tests/test_sealing.py` |
+| S3a | A production-grade, object-lock-backed WORM anchor store exists (not just filesystem/in-memory), and its write-once guarantee holds under a losing write race | `tests/test_sealing.py::TestS3Anchors` |
 | S4 | 3 replicas + real Redis never admit more than `max_decisions` | `tests/test_multiprocess_limits.py` |
 | S5 | Redis unavailable ⇒ irreversible actions denied | `tests/test_adversarial_suite.py::TestThreat09VelocityEvasionViaOutage` |
 | S6 | Spoofed `X-Tenant-ID` / `X-User-ID` is rejected | `tests/test_http_app.py`, `tests/test_adversarial_suite.py::TestThreat02TenantImpersonation` |
@@ -87,19 +91,26 @@ Every row below is a permanent regression test in
 
 ## Hardening of the earlier implementation
 
-The following mechanisms in `glassbox/governance/`, `glassbox/security/` and
-`glassbox/adapters/spark.py` were removed or rebuilt because there was no
-safe way to fix them in place. Each is nested inside a module that otherwise
-remains in active use.
+`glassbox/governance/`, `glassbox/security/`, `glassbox/api/`,
+`glassbox/adapters/spark.py` and the other v1 packages this section used to
+describe have been **physically deleted** (GB-040). Each mechanism this
+table previously tracked (an unaudited RBAC impersonation path, an
+unconditional retention `DELETE`, an `UPDATE`/`DELETE` inside a
+tamper-evident log, a plain-text JSONL audit sink, a per-row Spark UDF, and
+overly broad SQL-pattern sanitisation) was hardened — proven inert or
+replaced by its v2 equivalent — before removal, and is preserved in git
+history at the commit that performed this deletion, should the exact
+before/after diff ever need to be re-examined. The v2 equivalents these
+fixes pointed to remain active and covered: `glassbox.app.sealer.SegmentSealer`
+(retention), `glassbox/adapters/outbound/spark/` (Spark), and the append-only
+evidence store's database-level append-only trigger (tamper-evidence) — see
+`tests/test_sealing.py`, `tests/test_spark_serializable.py`, and
+`tests/test_postgres_evidence.py`.
 
-| # | Mechanism | What changed | Test |
-|---|---|---|---|
-| 1 | JSONL audit sink | [glassbox/governance/audit_logger.py](../glassbox/governance/audit_logger.py) `AuditLogger._append_jsonl` and its `log_dir`-driven file creation were removed; plain-text audit output is not tamper-evident. `log_dir`/`fsync_writes` remain accepted (inert) for backward compatibility | `tests/test_core.py::TestAuditLogger::test_concurrent_writes_no_corruption`, `tests/test_security.py::TestAuditLoggerFileSafety::test_concurrent_writes_produce_one_record_per_decision` |
-| 2 | In-process RBAC | [glassbox/governance/access_control.py](../glassbox/governance/access_control.py) `AccessControl.impersonate()` (an unaudited, externally-unrevocable privilege-escalation mechanism) now raises `NotImplementedError`; the permission cache is bounded by `MAX_CACHE_ENTRIES` | `tests/test_enterprise.py::TestAccessControl::test_impersonation_removed`, `test_permission_cache_is_bounded` |
-| 3 | Business-payload regex scanning | [glassbox/security/sanitizer.py](../glassbox/security/sanitizer.py) removed the bare `\b(select\|insert\|update\|...)\b` keyword pattern and the bare `0x[0-9a-fA-F]{4,}` hex pattern from `_SQL_PATTERNS` — both matched ordinary business text with no SQL syntax context. Patterns requiring real SQL syntax (statement separators, function calls, `UNION...SELECT`) remain | `tests/test_comprehensive.py::TestPayloadSanitizerEnhancements::test_ordinary_business_text_with_sql_verbs_not_blocked`, `test_hex_formatted_identifier_not_blocked` |
-| 4 | Per-row Spark UDF | [glassbox/adapters/spark.py](../glassbox/adapters/spark.py) `GlassBoxSparkAdapter._govern_via_udf` and its driver-side pipeline were deleted entirely (cloudpickle cannot serialise a lock/thread-pool/queue held on a stateful object); `govern_dataframe()` always uses `mapPartitions`, where every executor builds its own state locally | `tests/test_core.py::TestSparkAdapter::test_govern_dataframe_always_uses_map_partitions`, `test_adapter_shutdown_is_a_noop` |
-| 5 | Unconditional retention purge | [glassbox/governance/advanced_audit.py](../glassbox/governance/advanced_audit.py) `TamperEvidentAuditLogger.purge_old_records` used to run an unconditional `DELETE` that permanently broke `verify_hash_chain`; it now raises `NotImplementedError` pointing to `glassbox.app.sealer.SegmentSealer`, which seals a signed WORM anchor before purging | `tests/test_edge_cases.py::TestTamperEvidentAuditLogger::test_purge_old_records_removed` |
-| 6 | `UPDATE`/`DELETE` inside a tamper-evident log | `log_action` used to `INSERT` a placeholder row then `UPDATE ... SET record_hash`; it now computes the hash before the row exists and issues a single `INSERT`. No code path in this class runs `UPDATE` or `DELETE` any more | `tests/test_enterprise.py::TestAdvancedAudit`, `tests/test_hash_chain_tamper.py::TestHashChainTampering` |
+`glassbox.workflow` and `glassbox.store` are the two exceptions kept in
+place: they are not v1 debt but the sanctioned implementation behind
+`glassbox.ports.workflow.WorkflowGateway`, reached only through that port by
+the rebuilt layers (see the port's own docstring).
 
 ---
 
@@ -114,24 +125,27 @@ Stated explicitly, rather than left to be assumed:
 - **No automatic obligation discharge.** A `REQUIRE_APPROVAL` decision or an
   unmet blocking obligation is recorded as `PENDING_APPROVAL`; resolving it is
   an external workflow, not something `DecisionService` does itself.
-- **No S3-backed WORM anchor adapter yet.** `WormAnchorStore` has in-memory
-  and filesystem implementations only; an S3 Object Lock adapter is not yet
-  written (`docker-compose.yml`'s MinIO service exists for when one is).
 - **No production Postgres logical-replication CDC source yet.** The CDC
   consumer is fully built and tested against a pluggable source; the
   production Postgres-replication-backed source
   (`psycopg2.extras.LogicalReplicationConnection`) is not yet implemented —
   see `glassbox/adapters/outbound/delta/cdc_consumer.py`'s `ChangeEventSource`
   protocol.
-- **The earlier synchronous implementation is still present.**
-  `glassbox/governance/`, `glassbox/store/`, `glassbox/api/app.py`,
-  `glassbox/adapters/spark.py`, `glassbox/security/sanitizer.py` and related
-  packages remain importable; no claim in this document is made about them
-  beyond the hardening table above, and `tests/test_layering.py` prevents any
-  module under `glassbox/app`, `glassbox/domain`, `glassbox/ports` or
-  `glassbox/adapters/outbound` from depending on them. `process()` remains a
-  live entry point on the original pipeline; it is not a shim over
-  `DecisionService.decide()`.
+- **Outcome records are not MAC-chained.** `append_intent` participates in the
+  signed hash chain; `append_outcome` (`evidence_outcome` rows) does not — an
+  operator with direct database access could alter a recorded execution
+  outcome without breaking the intent chain's integrity check. Accepted gap,
+  not fixed: extending the chain to outcome records needs a schema migration
+  (`prev_hash`/`record_hmac`/`seq` columns) and a dual-chain verification path
+  that deserves its own dedicated, live-Postgres-verified pass rather than a
+  bundled one.
+- **No v2-native MCP tool-poisoning detection.** The legacy
+  `glassbox.integrations.mcp_gateway` (`MCPToolScanner`/`MCPGovernanceGateway`)
+  was physically deleted along with the rest of v1 (GB-040) and was not
+  ported. Retiring it (not porting it) was the deliberate choice: the v2
+  `glassbox.domain.prompt_injection` scanner plus tool-output re-scanning
+  cover the same threat class (untrusted content driving a subsequent
+  decision) generically, not just for MCP-shaped tool calls specifically.
 - **This document is not exhaustive.** It covers the guarantees, threats, and
   success criteria with the highest cost if wrong. A full line-by-line audit
   of every document under `docs/` remains open work.

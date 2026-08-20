@@ -28,8 +28,12 @@ resolving.
   verifiability
 - At-most-once, idempotent dispatch with pure replay — replay never
   re-executes a side effect
-- An HTTP surface, a PostgreSQL evidence/limits backend, Redis-backed
-  limits, KMS-backed signing, and OpenTelemetry tracing/metrics
+- An HTTP surface (with in-process admission control), a PostgreSQL
+  evidence/limits backend, Redis-backed limits (with per-tenant quota),
+  KMS-backed signing, S3 Object Lock WORM anchoring, and OpenTelemetry
+  tracing/metrics
+- An operable human-approval workflow (dual-control quorum, SLA/escalation)
+  and tool-output prompt-injection re-scanning
 - 97 compliance controls mapped across 24 regulatory frameworks
 - Zero mandatory runtime dependencies
 
@@ -38,7 +42,7 @@ resolving.
 ```bash
 pip install -e .
 # Optional extras, install only what you need:
-# pip install -e .[api,postgres,redis,kms,otel,delta,spark,yaml,crypto,authoring]
+# pip install -e .[api,postgres,redis,kms,worm,otel,delta,spark,yaml,crypto,authoring]
 ```
 
 ## Quick start
@@ -85,10 +89,11 @@ python -m pytest tests --cov=glassbox --cov-report=term-missing
   Spark, and an in-memory reference set for local development)
 - `glassbox/adapters/inbound/http/` — the HTTP entry point onto
   `DecisionService`
-- `glassbox/compliance/` — the compliance control catalogue and reporting
-- `glassbox/governance/`, `glassbox/store/`, `glassbox/api/` — the original
-  synchronous implementation, retained for the components documented as
-  preserved in `docs/ARCHITECTURE.md`; new work targets the layers above
+- `glassbox/workflow/`, `glassbox/store/` — the sanctioned implementation
+  behind the `WorkflowGateway` port used by the approval workflow; the rest
+  of the original synchronous implementation (`governance`, `api`,
+  `security`, `compliance`, and related packages) has been physically
+  deleted, not merely deprecated
 - `tests/` — unit, contract/conformance, property-based, adversarial, and
   multi-process integration tests
 - `docs/` — architecture, deployment, security, and API documentation

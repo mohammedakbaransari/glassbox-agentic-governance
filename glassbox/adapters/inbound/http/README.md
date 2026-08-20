@@ -12,9 +12,25 @@ runtime or implement governance policy.
 | `POST /v2/actions/<action_name>` | Evaluate and conditionally dispatch a governed action |
 | `POST /v2/tools/<tool_name>` | Validate a governed tool definition, then evaluate its action |
 | `POST /v2/replay` | Re-evaluate historical inputs without dispatch |
+| `GET /v2/approvals` | List decisions currently awaiting human review |
+| `GET /v2/approvals/<decision_id>` | Read one decision's approval status |
+| `POST /v2/approvals/<decision_id>/approve` | Approve (supports dual-control quorum via `min_approvers`) |
+| `POST /v2/approvals/<decision_id>/reject` | Reject |
+| `POST /v2/approvals/<decision_id>/escalate` | Escalate to a senior reviewer |
+| `POST /v2/approvals/<decision_id>/revoke` | Withdraw a still-pending request |
 
 The complete request, response, identity, and status-code contract is in the
 [v2 endpoint reference](../../../../docs/API/v2_endpoint_reference.md).
+
+## Admission Control
+
+`admission_control.py`'s `HttpAdmissionController` runs before identity
+verification: a cheap, per-process, in-memory sliding-window guard keyed by an
+arbitrary client key. It protects one replica's own CPU/IO budget from a
+request burst — it is not a substitute for the distributed `LimitStore` that
+governs verified-identity actions after the pipeline runs, and it is not a
+replacement for platform-level rate limiting at the ingress. A rejected
+request returns `429` with `Retry-After` and never reaches `DecisionService`.
 
 ## Composition
 
@@ -45,8 +61,9 @@ network controls, and platform-level denial-of-service protection.
 ## Verification
 
 ```bash
-python -m pytest tests/test_http_app.py -q
+python -m pytest tests/test_http_app.py tests/test_http_approvals.py tests/test_http_admission_control.py -q
 ```
 
-The original `glassbox/api` package is a separate v1 compatibility API. Its
-routes and authentication model do not apply here.
+There is no other HTTP surface in this repository. An earlier synchronous
+`glassbox/api` package existed during development; it has been physically
+deleted (GB-040), not merely deprecated.

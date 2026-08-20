@@ -99,6 +99,7 @@ from glassbox.domain.action import (
 )
 from glassbox.domain.catalogue import ActionDefinition
 from glassbox.domain.decision import (
+    ApprovalState,
     AuthorizationDecision,
     AuthorizationRequest,
     DecisionEffect,
@@ -675,6 +676,11 @@ class DecisionService:
             decision = risk_forced_denial
 
         if decision.effect is not DecisionEffect.DENY:
+            risk_threshold_denial = self._check_risk_threshold(risk_score)
+            if risk_threshold_denial is not None:
+                decision = risk_threshold_denial
+
+        if decision.effect is not DecisionEffect.DENY:
             limit_key = self._limit_key_for(principal, action)
             verdict, limits_stage, limits_denial = self._check_limits(
                 limit_key, action, decision_id, now
@@ -703,6 +709,16 @@ class DecisionService:
                     _metrics.fail_closed_total.add(1, {"consequence": action.consequence.value})
                 elif reason is DenialReason.LIMIT_EXCEEDED:
                     _metrics.limit_rejections_total.add(1)
+
+        decision = self._materialize_approval_metadata(
+            principal=principal,
+            action=action,
+            decision=decision,
+            decision_id=decision_id,
+            risk_score=risk_score,
+            now=now,
+            suppress_side_effects=suppress_dispatch,
+        )
 
         record = IntentRecord(
             decision_id=decision_id,
@@ -753,6 +769,61 @@ class DecisionService:
         return DecisionOutcome(
             decision_id=decision_id, decision=decision, receipt=receipt, execution=execution
         )
+
+    def _materialize_approval_metadata(
+        self,
+        *,
+        principal: VerifiedPrincipal,
+        action: ProposedAction,
+        decision: AuthorizationDecision,
+        decision_id: str,
+        risk_score: RiskScore,
+        now: float,
+        suppress_side_effects: bool = False,
+    ) -> AuthorizationDecision:
+        """Bind approval metadata and create a durable workflow when required.
+
+        ``suppress_side_effects`` is set for replay (GB-012): a replay is a
+        read-only re-evaluation and must never create a real, operational
+        workflow row that a reviewer would see in their queue. The decision is
+        still annotated with a synthetic, unpersisted approval id so the replay
+        output remains explainable, but nothing is written anywhere.
+        """
+        if decision.effect is not DecisionEffect.REQUIRE_APPROVAL:
+            return decision
+
+        if decision.approval_id is None:
+            object.__setattr__(decision, "approval_id", _new_id("approval"))
+        if decision.approval_state is None:
+            object.__setattr__(decision, "approval_state", ApprovalState.PENDING)
+
+        if suppress_side_effects:
+            return decision
+
+        workflow_engine = getattr(self._runtime, "workflow_engine", None)
+        if workflow_engine is None or not hasattr(workflow_engine, "create_from_decision"):
+            return decision
+
+        try:
+            workflow = workflow_engine.create_from_decision(
+                decision_id=decision_id,
+                agent_id=principal.agent_ref,
+                decision_type=action.action,
+                risk_score=float(risk_score.value),
+                violations=list(decision.matched_rules),
+                warnings=[decision.rationale],
+                sla_minutes=getattr(workflow_engine, "default_sla_minutes", 60),
+            )
+            object.__setattr__(decision, "approval_id", workflow.workflow_id)
+            object.__setattr__(decision, "approval_state", ApprovalState.PENDING)
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            log_error(
+                _logger,
+                exc,
+                message="approval workflow creation failed; leaving the decision pending approval",
+            )
+
+        return decision
 
     def _dispatch_if_permitted(
         self,
@@ -1182,6 +1253,22 @@ class DecisionService:
                 denial,
             )
 
+    def _check_risk_threshold(self, risk_score: RiskScore) -> Optional[AuthorizationDecision]:
+        """Deny when the configured risk threshold is exceeded."""
+        config = self._runtime.config.risk
+        if not config.enforce_threshold:
+            return None
+        threshold = config.deny_level
+        if risk_score.exceeds(threshold):
+            return AuthorizationDecision.deny(
+                DenialReason.RISK_THRESHOLD_EXCEEDED,
+                rationale=(
+                    f"risk score {risk_score.level.value!r} exceeds configured threshold "
+                    f"{threshold.value!r}"
+                ),
+            )
+        return None
+
     def _check_limits(
         self, key: LimitKey, action: ProposedAction, decision_id: str, now: float
     ) -> Tuple[Optional[LimitVerdict], StageOutcome, Optional[AuthorizationDecision]]:
@@ -1327,7 +1414,7 @@ def _scan_untrusted_text_fields(
     flagged = []
     for field_name in definition.untrusted_text_fields:
         value = parameters.get(field_name)
-        if isinstance(value, str) and scan_for_prompt_injection(field_name, value).flagged:
+        if value is not None and scan_for_prompt_injection(field_name, value).flagged:
             flagged.append(field_name)
     return tuple(flagged)
 

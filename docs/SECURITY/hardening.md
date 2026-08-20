@@ -31,14 +31,26 @@ Never log bearer tokens or client certificate material.
 - Resolve governance attestations from systems of record.
 - Register tool definition digests and quarantine changed or compromised tools.
 - Separate catalogue/tool administration from runtime identities.
+- Tool **output**, not just tool registration, is re-scanned for prompt
+  injection after dispatch (`glassbox.domain.prompt_injection.scan()`); a
+  flagged result raises `ToolOutputQuarantinedError` and is never fed forward
+  as trusted content, and only its digest — never the flagged content — is
+  evidenced.
 
 ## 4. Enforce Authority and Policy
 
-- Issue least-privilege, time-bounded mandates.
+- Issue least-privilege, time-bounded mandates; use `ActionResourceGrant` to
+  scope authority to a specific `(action, resource_kind, resource_id)` tuple
+  where a blanket action grant is too broad.
 - Define rapid revocation and kill-switch ownership.
 - Require signed active policy bundles and deny when unavailable.
 - Review risk thresholds, limit ceilings, and peer groups under change control.
-- Keep approval completion in an authenticated, auditable external workflow.
+  `RiskConfig.enforce_threshold`/`deny_level` is an opt-in, tested control
+  (`DenialReason.RISK_THRESHOLD_EXCEEDED`) — off by default, since risk
+  scoring is otherwise pure observability.
+- Keep approval completion in an authenticated, auditable workflow:
+  `glassbox.app.approval_service.ApprovalService`, backed by
+  `WorkflowEngine.quorum_approve` for dual-control sign-off.
 
 ## 5. Protect Evidence and Keys
 
@@ -51,20 +63,27 @@ Never log bearer tokens or client certificate material.
 - Test legal hold, retention expiry, backup, restore, and independent verification.
 
 Tamper evidence is not immutability. Independent key custody and WORM policy are
-deployment properties.
+deployment properties. **Accepted gap:** only `evidence_intent` rows
+participate in the MAC chain today; `evidence_outcome` rows are appended but
+not yet chain-protected (see [CLAIMS.md](../CLAIMS.md)).
 
 ## 6. Harden Distributed State
 
 - Use authenticated, encrypted Redis connectivity where supported.
 - Configure HA/persistence appropriate to the required availability.
 - Monitor latency, eviction, failover, replication, and memory.
-- Bound subject cardinality and namespace all keys by tenant and scope.
+- Bound subject cardinality and namespace all keys by tenant and scope; set
+  `LimitsConfig.max_tenant_subjects` so one tenant's burst cannot grow
+  without bound and trigger `maxmemory` eviction of another tenant's keys.
 - Never fall back to local counters or baselines during outage.
 
 ## 7. Harden the HTTP Boundary
 
-The v2 adapter verifies workload credentials through `IdentityVerifier`; ingress
-still must provide:
+The v2 adapter verifies workload credentials through `IdentityVerifier` and
+runs a cheap, in-process admission-control guard
+(`glassbox.adapters.inbound.http.admission_control.HttpAdmissionController`)
+before identity verification — a per-replica sliding-window budget, not a
+replacement for platform-level rate limiting. Ingress still must provide:
 
 - TLS with approved protocols/ciphers and certificate lifecycle;
 - request body and header limits;
@@ -118,12 +137,5 @@ The repository ships an application factory, not a hardened public server.
 ```bash
 python -m pytest tests/test_adversarial_suite.py tests/test_decision_service.py -q
 python -m pytest tests/test_stateless_tenancy.py tests/test_dispatcher_idempotency.py -q
-python -m pytest tests/test_hash_chain_tamper.py tests/test_kms_signer.py -q
+python -m pytest tests/test_sealing.py tests/test_kms_signer.py -q
 ```
-
-## Legacy Boundary
-
-`glassbox/security` and the v1 API contain compatibility controls with different
-contracts. Do not copy their middleware, RBAC, sanitization, or encryption
-examples into the current runtime without a new port/adaptor design and threat
-review.

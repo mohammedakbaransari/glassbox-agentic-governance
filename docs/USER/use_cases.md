@@ -105,9 +105,8 @@ For each use case, define:
 9. dispatch idempotency and target-system credentials;
 10. evidence retention, key custody, WORM anchoring, and incident response.
 
-## Runnable Compatibility Scenarios
+## Runnable Example
 
-The scripts in [examples](../../examples/README.md) demonstrate 18 industry
-patterns using the retained v1 API. Treat their policy IDs as examples, not
-product claims. New integrations should follow the
-[current quick start](quick_start.md).
+[examples/quick_start_v2.py](../../examples/quick_start_v2.py) is a minimal,
+verified, runnable walkthrough of the v2 decision path. Follow the
+[current quick start](quick_start.md) for the annotated version.

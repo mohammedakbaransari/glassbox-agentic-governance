@@ -1,8 +1,8 @@
 # User Documentation
 
-Use these guides for the current `DecisionService` runtime. Compatibility
-material for the original `GovernancePipeline` is labeled legacy throughout the
-documentation.
+Use these guides for the `DecisionService` runtime — the only implementation
+in this repository. An earlier synchronous `GovernancePipeline` existed
+during development; it has been physically deleted, not merely deprecated.
 
 ## Start by Role
 
@@ -24,7 +24,6 @@ documentation.
 | Diagnose a denial or dependency failure | [troubleshooting.md](troubleshooting.md) |
 | Implement a port or adapter | [../DEVELOPMENT/implementation_guide.md](../DEVELOPMENT/implementation_guide.md) |
 | Verify a product claim | [../CLAIMS.md](../CLAIMS.md) |
-| Maintain a legacy integration | [../DEVELOPMENT/architecture.md](../DEVELOPMENT/architecture.md) |
 
 ## Core Vocabulary
 
@@ -48,6 +47,5 @@ Documentation distinguishes:
   on deployment configuration and external services.
 - **Operator-owned:** required outside this repository, such as TLS ingress,
   identity governance, disaster recovery, and approval completion.
-- **Legacy compatibility:** retained v1 behavior, not the default for new work.
 
 Framework mappings and examples are not certifications or legal advice.

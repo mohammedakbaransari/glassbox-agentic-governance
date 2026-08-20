@@ -28,6 +28,7 @@ from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional, Tuple, get_type_hints
 
 from glassbox.app.errors import ConfigurationError
+from glassbox.domain.risk import RiskLevel
 from glassbox.domain.serialization import require_identifier
 
 __all__ = [
@@ -38,6 +39,7 @@ __all__ = [
     "SigningConfig",
     "IdentityConfig",
     "PolicyConfig",
+    "RiskConfig",
     "DispatchConfig",
     "ObservabilityConfig",
     "GlassBoxConfig",
@@ -193,18 +195,38 @@ class LimitsConfig:
     """Distributed limit store settings.
 
     Attributes:
-        url: Connection URL for the atomic counter store.
+        url: Connection URL for the atomic counter store. Ignored when
+            ``sentinel_hosts`` is set.
         default_window_seconds: Window applied when a limit declares none.
         fail_closed: **Safety switch.** When ``True``, an unreachable store
             denies every non-advisory action. Turning this off reproduces the v1
             defect in which a Redis outage admitted all traffic.
         cooldown_seconds: How long a tripped breaker stays tripped.
+        sentinel_hosts: ``(host, port)`` pairs for the Sentinel quorum. When
+            non-empty, the adapter discovers and connects to the current
+            master through Sentinel instead of a fixed ``url`` -- removing the
+            single Redis instance as a point of failure (GB-011 HA follow-up).
+            A Sentinel-monitored deployment survives a master failover without
+            the application ever holding a stale connection.
+        sentinel_service_name: The monitored master's name in Sentinel's
+            configuration (Sentinel's ``master-name``). Required whenever
+            ``sentinel_hosts`` is set.
+        sentinel_socket_timeout_s: Timeout for each Sentinel discovery call.
+        max_tenant_subjects: Upper bound on distinct limit-key subjects one
+            tenant may have live at once. ``0`` disables the bound. Caps a
+            tenant's own memory footprint in Redis so a traffic burst from one
+            tenant cannot grow without limit and trigger `maxmemory` eviction
+            of another tenant's keys (F-07).
     """
 
     url: str = ""
     default_window_seconds: int = 60
     fail_closed: bool = True
     cooldown_seconds: int = 300
+    sentinel_hosts: Tuple[Tuple[str, int], ...] = ()
+    sentinel_service_name: str = ""
+    sentinel_socket_timeout_s: float = 0.5
+    max_tenant_subjects: int = 0
 
     def __post_init__(self) -> None:
         violations: List[str] = []
@@ -212,6 +234,12 @@ class LimitsConfig:
             violations.append(f"limits.default_window_seconds={self.default_window_seconds}")
         if self.cooldown_seconds < 0:
             violations.append(f"limits.cooldown_seconds={self.cooldown_seconds}")
+        if self.sentinel_hosts and not self.sentinel_service_name:
+            violations.append("limits.sentinel_service_name is required when sentinel_hosts is set")
+        if self.sentinel_socket_timeout_s <= 0:
+            violations.append(f"limits.sentinel_socket_timeout_s={self.sentinel_socket_timeout_s}")
+        if self.max_tenant_subjects < 0:
+            violations.append(f"limits.max_tenant_subjects={self.max_tenant_subjects}")
         if violations:
             raise ConfigurationError("invalid limit settings", violations=violations)
 
@@ -221,7 +249,8 @@ class BaselineConfig:
     """Behavioural baseline settings.
 
     Attributes:
-        url: Connection URL for the baseline store.
+        url: Connection URL for the baseline store. Ignored when
+            ``sentinel_hosts`` is set.
         anomaly_threshold: Standardised deviation above which an observation is
             anomalous.
         min_samples: Observations required before a subject's own baseline is
@@ -229,12 +258,19 @@ class BaselineConfig:
         peer_group_prior_required: **Safety switch.** When ``True``, a subject
             with too little history falls back to a peer-group prior rather than
             skipping detection -- the v1 cold-start bypass.
+        sentinel_hosts: See :attr:`LimitsConfig.sentinel_hosts`; same HA
+            mechanism, applied to the baseline store's Redis connection.
+        sentinel_service_name: Required whenever ``sentinel_hosts`` is set.
+        sentinel_socket_timeout_s: Timeout for each Sentinel discovery call.
     """
 
     url: str = ""
     anomaly_threshold: float = 3.0
     min_samples: int = 30
     peer_group_prior_required: bool = True
+    sentinel_hosts: Tuple[Tuple[str, int], ...] = ()
+    sentinel_service_name: str = ""
+    sentinel_socket_timeout_s: float = 0.5
 
     def __post_init__(self) -> None:
         violations: List[str] = []
@@ -242,8 +278,47 @@ class BaselineConfig:
             violations.append(f"baseline.anomaly_threshold={self.anomaly_threshold}")
         if self.min_samples < 0:
             violations.append(f"baseline.min_samples={self.min_samples}")
+        if self.sentinel_hosts and not self.sentinel_service_name:
+            violations.append(
+                "baseline.sentinel_service_name is required when sentinel_hosts is set"
+            )
+        if self.sentinel_socket_timeout_s <= 0:
+            violations.append(f"baseline.sentinel_socket_timeout_s={self.sentinel_socket_timeout_s}")
         if violations:
             raise ConfigurationError("invalid baseline settings", violations=violations)
+
+
+@dataclass(frozen=True, slots=True)
+class HttpAdmissionConfig:
+    """HTTP-layer request admission control (Workstream B).
+
+    A coarse, per-process, pre-identity rate guard applied by
+    :func:`~glassbox.adapters.inbound.http.app.create_app` before any request
+    reaches the governance pipeline. Deliberately not a replacement for
+    :class:`LimitsConfig`'s distributed, per-verified-identity limits: this
+    runs *before* identity is verified at all, so a burst of malformed or
+    unauthenticated traffic is rejected with a cheap ``429`` instead of paying
+    for mandate/policy/risk/limits/baseline work that was never going to be
+    admitted. v1 ran the full pipeline before any admission check existed.
+
+    Attributes:
+        enabled: Whether the guard runs at all.
+        max_requests: Requests permitted per client key within ``window_seconds``.
+        window_seconds: The sliding window over which requests are counted.
+    """
+
+    enabled: bool = True
+    max_requests: int = 120
+    window_seconds: float = 10.0
+
+    def __post_init__(self) -> None:
+        violations: List[str] = []
+        if self.max_requests <= 0:
+            violations.append(f"http_admission.max_requests={self.max_requests}")
+        if self.window_seconds <= 0:
+            violations.append(f"http_admission.window_seconds={self.window_seconds}")
+        if violations:
+            raise ConfigurationError("invalid HTTP admission settings", violations=violations)
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +383,42 @@ class PolicyConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RiskConfig:
+    """Risk disposition settings.
+
+    Attributes:
+        enforce_threshold: **Safety switch.** When ``True``, any risk band above
+            ``deny_level`` is refused instead of being allowed to proceed.
+        deny_level: The lowest risk band that is denied when threshold checks are
+            enabled. The comparison is strict: ``CRITICAL`` is denied at a
+            ``HIGH`` threshold, but ``HIGH`` itself is not.
+    """
+
+    enforce_threshold: bool = True
+    deny_level: RiskLevel = RiskLevel.HIGH
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enforce_threshold, bool):
+            raise ConfigurationError(
+                "risk.enforce_threshold must be a bool",
+                violations=[f"risk.enforce_threshold={self.enforce_threshold!r}"],
+            )
+        if not isinstance(self.deny_level, RiskLevel):
+            try:
+                object.__setattr__(
+                    self,
+                    "deny_level",
+                    RiskLevel(str(self.deny_level).strip().lower()),
+                )
+            except ValueError as exc:
+                supported = ", ".join(level.value for level in RiskLevel)
+                raise ConfigurationError(
+                    "risk.deny_level is not a recognised risk level",
+                    violations=[f"risk.deny_level={self.deny_level!r} (supported: {supported})"],
+                ) from exc
+
+
+@dataclass(frozen=True, slots=True)
 class DispatchConfig:
     """Side-effect dispatch settings.
 
@@ -367,6 +478,7 @@ SAFETY_SWITCHES: Tuple[Tuple[str, bool], ...] = (
     ("identity.reject_mismatched_assertions", True),
     ("policy.require_signature", True),
     ("policy.deny_on_bundle_unavailable", True),
+    ("risk.enforce_threshold", True),
     ("dispatch.require_evidence_receipt", True),
 )
 
@@ -397,8 +509,10 @@ class GlassBoxConfig:
     signing: SigningConfig = field(default_factory=SigningConfig)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
+    risk: RiskConfig = field(default_factory=RiskConfig)
     dispatch: DispatchConfig = field(default_factory=DispatchConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
+    http_admission: HttpAdmissionConfig = field(default_factory=HttpAdmissionConfig)
 
     def __post_init__(self) -> None:
         from glassbox.app.errors import ProfileViolationError
@@ -465,7 +579,10 @@ class GlassBoxConfig:
             "baseline_configured": bool(self.baseline.url),
             "signing_key_id": self.signing.key_id or None,
             "policy_registry_configured": bool(self.policy.bundle_registry_dsn),
+            "risk_threshold_enforced": self.risk.enforce_threshold,
+            "risk_deny_level": self.risk.deny_level.value,
             "unsafe_switches": list(self.unsafe_switches()),
+            "http_admission_enabled": self.http_admission.enabled,
         }
 
     # ----------------------------------------------------------------- #
@@ -509,8 +626,10 @@ class GlassBoxConfig:
             "signing": SigningConfig,
             "identity": IdentityConfig,
             "policy": PolicyConfig,
+            "risk": RiskConfig,
             "dispatch": DispatchConfig,
             "observability": ObservabilityConfig,
+            "http_admission": HttpAdmissionConfig,
         }
         for name, section_type in section_types.items():
             provided = values.get(name, {})

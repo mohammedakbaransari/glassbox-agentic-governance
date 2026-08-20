@@ -1,24 +1,23 @@
 """Concurrency tests must assert a domain invariant, not merely "no exceptions" (GB-037).
 
 ``tests/test_velocity_breaker_invariants.py::test_concurrent_checks_from_many_threads``
-launched 500 threads and asserted only ``errors == []`` -- passing exercise
-that a race condition undercounted admissions, forked a hash chain, or lost a
-decision would not have failed this test at all, because none of those bugs
-raises an exception. The same shape recurs across several v1-era test files
-(``test_core.py``, ``test_security.py``, ``test_comprehensive.py``,
-``test_framework.py``, ``test_integrations.py``).
+used to launch 500 threads and assert only ``errors == []`` -- passing
+exercise that a race condition undercounted admissions, forked a hash chain,
+or lost a decision would not have failed this test at all, because none of
+those bugs raises an exception. The same shape recurred across several
+v1-era test files (``test_core.py``, ``test_security.py``,
+``test_comprehensive.py``, ``test_framework.py``, ``test_integrations.py``).
 
-This is a static check, not a rewrite of every offending v1 test: those files
-exercise ``glassbox.governance``/``glassbox.store``, which GB-040 removes
-wholesale. Rewriting throwaway tests for code being deleted is wasted effort;
-what matters is that the debt is enumerated, capped, and cannot grow, and that
-every *new* concurrency test -- everything written for the v2 architecture --
-is held to the real bar immediately. Every v2 concurrency test in this suite
+GB-040 has since removed every one of those files wholesale (they exercised
+``glassbox.governance``/``glassbox.store`` internals that no longer exist),
+so the debt register below is now empty. It is kept, rather than deleted,
+as a permanent regression guard: this file proves mechanically -- not by
+convention -- that no *new* concurrency test, anywhere in this suite, ever
+asserts only the absence of an exception. Every v2 concurrency test
 (``test_memory_adapters.py``, ``test_dispatcher_idempotency.py``,
 ``test_multiprocess_limits.py``, ``test_adversarial_suite.py``, ...) already
 asserts a specific count, a specific set of admitted ids, or an exact matched
-digest -- never merely the absence of an exception -- and this file proves it
-mechanically rather than by convention.
+digest.
 """
 
 from __future__ import annotations
@@ -47,36 +46,14 @@ _CONCURRENCY_CONSTRUCTS = frozenset(
 
 #: The enumerated debt register (GB-037), matching the convention already used
 #: for the invariant-lint and type-debt registers (GB-004a, GB-041): named
-#: module-by-module and function-by-function, never a wildcard, and every
-#: entry here is scheduled for removal by GB-040 (v1 path deletion), not
-#: rewritten in place for code about to be deleted.
-_KNOWN_DEBT: FrozenSet[Tuple[str, str]] = frozenset(
-    {
-        ("test_velocity_breaker_invariants.py", "test_concurrent_checks_from_many_threads"),
-        ("test_core.py", "test_thread_safe_concurrent_register_evaluate"),
-        ("test_core.py", "test_thread_safe_concurrent"),
-        ("test_core.py", "test_500_simultaneous_threads"),
-        ("test_core.py", "test_anomaly_detector_get_stats_thread_safe"),
-        ("test_security.py", "test_policy_engine_concurrent_register_and_evaluate"),
-        ("test_security.py", "test_burst_500_simultaneous_threads"),
-        ("test_comprehensive.py", "test_concurrent_checks_no_race"),
-        ("test_framework.py", "test_concurrent_saves"),
-        ("test_integrations.py", "test_concurrent_multi_tenant_requests"),
-    }
-)
+#: module-by-module and function-by-function, never a wildcard. Empty since
+#: GB-040 physically deleted every v1-era file this register used to name;
+#: kept as a permanent regression guard rather than removed outright.
+_KNOWN_DEBT: FrozenSet[Tuple[str, str]] = frozenset(set())
 
 #: Every entry above belongs to a v1-era file. A rebuilt-layer test file must
-#: never appear here at all.
-_LEGACY_TEST_FILES = frozenset(
-    {
-        "test_velocity_breaker_invariants.py",
-        "test_core.py",
-        "test_security.py",
-        "test_comprehensive.py",
-        "test_framework.py",
-        "test_integrations.py",
-    }
-)
+#: never appear here at all. Empty for the same reason as ``_KNOWN_DEBT``.
+_LEGACY_TEST_FILES: FrozenSet[str] = frozenset(set())
 
 
 def _assertion_call_test_nodes(func_node: ast.FunctionDef) -> List[ast.AST]:

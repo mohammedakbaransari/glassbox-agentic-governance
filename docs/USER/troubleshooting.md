@@ -1,9 +1,7 @@
 # Troubleshooting
 
-This guide covers the current `DecisionService` runtime. For
-`GovernancePipeline` compatibility issues, use the
-[legacy architecture reference](../DEVELOPMENT/architecture.md) and the
-module README associated with the failing v1 component.
+This guide covers the `DecisionService` runtime — the only implementation in
+this repository.
 
 ## Triage Order
 
@@ -27,6 +25,8 @@ development profile with controlled adapters instead.
 | `401` from v2 HTTP | Identity | Credential transport and verifier configuration |
 | `400` from v2 HTTP | Request/domain validation | Required resource and idempotency fields |
 | `403` from v2 HTTP | Governance denial | Decision reasons and stage outcomes |
+| `404`/`409` from `/v2/approvals/*` | Approval workflow | Decision id exists; requested transition is valid from the current state |
+| `429` from v2 HTTP | HTTP admission control | Client-key request rate against the in-process budget |
 | `503` from v2 HTTP | Evidence/signing dependency | Evidence database and KMS availability |
 | Approval remains pending | External workflow | Approval system; current request never dispatches |
 | Duplicate effect concern | Dispatcher ledger | Idempotency key and durable ledger state |
@@ -128,11 +128,9 @@ Replay is not retry: `DecisionService.replay` never dispatches.
 
 | Runtime | Routes |
 |---|---|
-| DecisionService v2 | `/healthz`, `/v2/actions/...`, `/v2/tools/...`, `/v2/replay` |
-| GovernancePipeline v1 | `/health`, `/decisions`, `/stats`, and the legacy route set |
+| DecisionService v2 | `/healthz`, `/v2/actions/...`, `/v2/tools/...`, `/v2/replay`, `/v2/approvals/...` |
 
-The Flask factories are separate. Use the [API overview](../API/README.md) and
-do not mix clients or payloads.
+See the [API overview](../API/README.md) for the full route list.
 
 ## Health Is Green but a Dependency Is Down
 

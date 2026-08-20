@@ -35,6 +35,7 @@ __all__ = [
     "MandateDenialReason",
     "MandateVerdict",
     "ToolGrant",
+    "ActionResourceGrant",
     "Mandate",
 ]
 
@@ -49,6 +50,7 @@ class MandateDenialReason(Enum):
     WRONG_AGENT = "mandate_wrong_agent"
     ACTION_NOT_GRANTED = "action_not_granted"
     RESOURCE_NOT_GRANTED = "resource_not_granted"
+    ACTION_RESOURCE_PAIR_NOT_GRANTED = "action_resource_pair_not_granted"
     CONSEQUENCE_EXCEEDS_CEILING = "consequence_exceeds_ceiling"
     EXPOSURE_EXCEEDS_CEILING = "exposure_exceeds_ceiling"
     TOOL_NOT_GRANTED = "tool_not_granted"
@@ -173,6 +175,56 @@ class ToolGrant:
 
 
 @dataclass(frozen=True, slots=True)
+class ActionResourceGrant:
+    """A joint grant binding one action pattern to one resource pattern.
+
+    ``allowed_actions`` and ``allowed_resources`` on :class:`Mandate` are two
+    independent sets: any granted action is implicitly permitted against any
+    granted resource, so there is no way to express "this action is only
+    permitted against that specific resource" -- an agent authorised for
+    ``payments.wire_transfer`` on ``account/ACC-1`` and, separately,
+    ``payments.refund`` on ``account/ACC-2`` would also be authorised for
+    ``payments.wire_transfer`` on ``account/ACC-2`` under the independent-set
+    model, purely because both halves happen to be granted somewhere.
+
+    ``resource_scoped_grants`` on :class:`Mandate` closes that gap: when a
+    mandate declares at least one :class:`ActionResourceGrant`, an action is
+    permitted only if some grant's ``action_pattern`` **and**
+    ``resource_pattern`` both match the proposed action jointly. A mandate
+    that declares no scoped grants is unaffected -- this is purely additive.
+
+    Attributes:
+        action_pattern: Shell-style glob matched against the action name.
+        resource_pattern: Shell-style glob matched against ``kind/id``.
+    """
+
+    action_pattern: str
+    resource_pattern: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "action_pattern",
+            require_non_empty(self.action_pattern, field="action_pattern"),
+        )
+        object.__setattr__(
+            self,
+            "resource_pattern",
+            require_non_empty(self.resource_pattern, field="resource_pattern"),
+        )
+
+    def matches(self, *, action: str, resource: str) -> bool:
+        """Return whether this grant covers the given action/resource pair."""
+        return fnmatch.fnmatchcase(action, self.action_pattern) and fnmatch.fnmatchcase(
+            resource, self.resource_pattern
+        )
+
+    def as_evidence(self) -> Mapping[str, Any]:
+        """Return the canonical representation stored in evidence."""
+        return {"action_pattern": self.action_pattern, "resource_pattern": self.resource_pattern}
+
+
+@dataclass(frozen=True, slots=True)
 class Mandate:
     """An agent's approved, versioned, time-bounded scope of authority.
 
@@ -193,6 +245,12 @@ class Mandate:
         valid_until: Epoch seconds at which it ends, or ``None`` for open-ended.
         revoked_at: Epoch seconds of revocation, or ``None``.
         approved_by: Identifiers of the approvers who authorised this version.
+        resource_scoped_grants: Optional joint (action, resource) grants. When
+            non-empty, an action must match some grant's action pattern *and*
+            resource pattern together, closing the gap where the independent
+            ``allowed_actions``/``allowed_resources`` sets would otherwise
+            implicitly cross-product every granted action with every granted
+            resource. Empty by default; existing mandates are unaffected.
     """
 
     tenant_id: str
@@ -207,6 +265,7 @@ class Mandate:
     valid_until: Optional[float] = None
     revoked_at: Optional[float] = None
     approved_by: Tuple[str, ...] = field(default=())
+    resource_scoped_grants: Tuple[ActionResourceGrant, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "tenant_id", require_identifier(self.tenant_id, field="tenant_id"))
@@ -274,6 +333,17 @@ class Mandate:
             object.__setattr__(self, "approved_by", tuple(self.approved_by or ()))
         for approver in self.approved_by:
             require_identifier(approver, field="approved_by")
+        if not isinstance(self.resource_scoped_grants, tuple):
+            object.__setattr__(
+                self, "resource_scoped_grants", tuple(self.resource_scoped_grants or ())
+            )
+        for index, grant in enumerate(self.resource_scoped_grants):
+            if not isinstance(grant, ActionResourceGrant):
+                raise DomainValidationError(
+                    "resource_scoped_grants must contain ActionResourceGrant instances",
+                    field=f"resource_scoped_grants[{index}]",
+                    offending_type=type(grant).__name__,
+                )
 
     # ----------------------------------------------------------------- #
     # Lifecycle
@@ -335,6 +405,12 @@ class Mandate:
         resource_name = f"{action.resource.kind}/{action.resource.id}"
         if not self._matches_any(self.allowed_resources, resource_name):
             reasons.append(MandateDenialReason.RESOURCE_NOT_GRANTED)
+
+        if self.resource_scoped_grants and not any(
+            grant.matches(action=action.action, resource=resource_name)
+            for grant in self.resource_scoped_grants
+        ):
+            reasons.append(MandateDenialReason.ACTION_RESOURCE_PAIR_NOT_GRANTED)
 
         if action.consequence > self.max_consequence:
             reasons.append(MandateDenialReason.CONSEQUENCE_EXCEEDS_CEILING)
@@ -400,6 +476,9 @@ class Mandate:
             "version": self.version,
             "allowed_actions": sorted(self.allowed_actions),
             "allowed_resources": sorted(self.allowed_resources),
+            "resource_scoped_grants": [
+                dict(grant.as_evidence()) for grant in self.resource_scoped_grants
+            ],
             "max_consequence": self.max_consequence.value,
             "max_exposure": dict(self.max_exposure.as_evidence()),
             "tool_grants": [grant.as_evidence() for grant in self.tool_grants],

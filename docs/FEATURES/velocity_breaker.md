@@ -7,9 +7,13 @@ anomaly detection:
 - `BaselineStore` compares observations with subject history or a peer-group
   cold-start prior.
 
-The term **VelocityBreaker** belongs to the retained v1 implementation in
-`glassbox/governance/velocity_breaker.py`. New integrations use the ports above
-and their Redis adapters.
+The term **VelocityBreaker** belonged to an earlier synchronous
+implementation (`glassbox/governance/velocity_breaker.py`), physically
+deleted along with the rest of that implementation. It combined what v2
+deliberately keeps as two independently-tunable stores: use the ports above
+and their Redis adapters (which also bound one tenant's own subject
+footprint via `max_tenant_subjects`, so a burst from one tenant cannot
+trigger `maxmemory` eviction of another tenant's keys).
 
 ## Why Both Controls Exist
 

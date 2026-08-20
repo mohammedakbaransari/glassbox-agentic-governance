@@ -1,8 +1,12 @@
 # Development Guide
 
-This section is for engineers extending the current `DecisionService` runtime.
-The repository also retains the original `GovernancePipeline`; its detailed
-reference is explicitly labeled [legacy](architecture.md).
+This section is for engineers extending the `DecisionService` runtime — the
+only implementation in this repository. An earlier synchronous
+`GovernancePipeline` existed during development; it has been physically
+deleted (GB-040), not merely deprecated. Two small modules,
+[`glassbox/workflow`](../../glassbox/workflow/README.md) and
+[`glassbox/store`](../../glassbox/store/README.md), were kept as the
+sanctioned `WorkflowGateway` backend — see [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ## Start by Goal
 
@@ -13,20 +17,20 @@ reference is explicitly labeled [legacy](architecture.md).
 | Run focused and full validation | [Testing strategy](testing.md) |
 | Integrate over HTTP | [v2 API reference](../API/v2_endpoint_reference.md) |
 | Prepare an environment | [Deployment](../DEPLOYMENT/README.md) |
-| Maintain an existing v1 integration | [GovernancePipeline reference](architecture.md) |
 
 ## Current Source Ownership
 
 | Location | Ownership |
 |---|---|
-| `glassbox/domain` | Pure governance values and invariants |
+| `glassbox/domain` | Pure governance values and invariants (includes `tenancy.py`'s `Tenant`, `audit_event.py`'s `AuditEvent`) |
 | `glassbox/ports` | Technology-neutral external capability contracts |
-| `glassbox/app` | Composition, configuration, and decision orchestration |
-| `glassbox/adapters/inbound` | Transport translation |
+| `glassbox/app` | Composition, configuration, and decision orchestration (includes `approval_service.py`, `retention_scheduler.py`, `sealer.py`) |
+| `glassbox/adapters/inbound` | Transport translation (includes the HTTP `admission_control.py` guard, `cli/maintenance.py`) |
 | `glassbox/adapters/outbound` | Infrastructure implementations |
 
-New governance behavior belongs in these layers. Legacy packages are preserved
-for compatibility and are forbidden imports from rebuilt layers.
+New governance behavior belongs in these layers. `glassbox/workflow` and
+`glassbox/store` are forbidden imports from these layers — reach them only
+through `glassbox.ports.workflow.WorkflowGateway`.
 
 ## Non-Negotiable Rules
 
@@ -61,9 +65,9 @@ Run `lint-imports` and `tests/test_layering.py` for any layer or import change.
 - Update deployment/security docs when an operator-controlled assumption changes.
 - Update `CLAIMS.md` when a guarantee or limitation changes.
 
-Documentation must distinguish current, legacy, planned, and
-deployment-specific behavior. Illustrative code must be labeled if it is not
-executable against the repository.
+Documentation must distinguish current, planned, and deployment-specific
+behavior. Illustrative code must be labeled if it is not executable against
+the repository.
 
 ## Related Documentation
 

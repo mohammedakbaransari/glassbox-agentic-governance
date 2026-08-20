@@ -11,12 +11,11 @@ Adapters connect GlassBox runtime contracts to transports and infrastructure.
 Inbound adapters translate requests. Outbound adapters implement ports. Neither
 location owns domain policy or risk semantics.
 
-## Compatibility Modules
-
-`platforms.py` and the top-level `spark.py` support the original synchronous
-`GovernancePipeline`. They remain tested for compatibility. New v2 adapters
-belong under `inbound` or `outbound` and must satisfy the enforced dependency
-contracts.
+`platforms.py` and the top-level `spark.py`, which used to support the
+original synchronous `GovernancePipeline`, have been physically deleted along
+with the rest of that implementation (GB-040). Every adapter now under this
+package belongs under `inbound` or `outbound` and must satisfy the enforced
+dependency contracts.
 
 ## Verification
 

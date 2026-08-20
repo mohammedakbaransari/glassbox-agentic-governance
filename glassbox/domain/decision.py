@@ -35,6 +35,8 @@ from glassbox.domain.serialization import (
 )
 
 __all__ = [
+    "ApprovalState",
+    "Approval",
     "DecisionEffect",
     "DenialReason",
     "ObligationKind",
@@ -91,6 +93,21 @@ class DenialReason(Enum):
     PROMPT_INJECTION_DETECTED = "prompt_injection_detected"
 
 
+class ApprovalState(Enum):
+    """Lifecycle of a human approval for a decision that requires sign-off."""
+
+    PENDING = "pending"
+    IN_REVIEW = "in_review"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in (ApprovalState.APPROVED, ApprovalState.REJECTED, ApprovalState.REVOKED, ApprovalState.EXPIRED)
+
+
 class ObligationKind(Enum):
     """Categories of condition attached to an allowing decision."""
 
@@ -100,6 +117,124 @@ class ObligationKind(Enum):
     DUAL_CONTROL = "dual_control"
     RECORD_JUSTIFICATION = "record_justification"
     POST_EXECUTION_REVIEW = "post_execution_review"
+
+
+@dataclass(frozen=True, slots=True)
+class Approval:
+    """A durable approval record that can be tracked through its lifecycle."""
+
+    approval_id: str
+    decision_id: str
+    tenant_id: str
+    action: ProposedAction
+    rationale: str
+    state: ApprovalState = ApprovalState.PENDING
+    requested_at: float = 0.0
+    reviewed_at: Optional[float] = None
+    reviewed_by: Optional[str] = None
+    notes: str = ""
+    expires_at: Optional[float] = None
+    revoked_at: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "approval_id", require_identifier(self.approval_id, field="approval_id"))
+        object.__setattr__(self, "decision_id", require_identifier(self.decision_id, field="decision_id"))
+        object.__setattr__(self, "tenant_id", require_identifier(self.tenant_id, field="tenant_id"))
+        if not isinstance(self.action, ProposedAction):
+            raise DomainValidationError(
+                "action must be a ProposedAction",
+                field="action",
+                offending_type=type(self.action).__name__,
+            )
+        require_non_empty(self.rationale, field="rationale")
+        if not isinstance(self.state, ApprovalState):
+            raise DomainValidationError(
+                "state must be an ApprovalState",
+                field="state",
+                offending_type=type(self.state).__name__,
+            )
+        object.__setattr__(self, "requested_at", require_timestamp(self.requested_at, field="requested_at"))
+        if self.reviewed_at is not None:
+            object.__setattr__(self, "reviewed_at", require_timestamp(self.reviewed_at, field="reviewed_at"))
+        if self.reviewed_by is not None:
+            object.__setattr__(self, "reviewed_by", require_identifier(self.reviewed_by, field="reviewed_by"))
+        if self.notes is not None and not isinstance(self.notes, str):
+            raise DomainValidationError("notes must be a string", field="notes", offending_type=type(self.notes).__name__)
+        if self.expires_at is not None:
+            object.__setattr__(self, "expires_at", require_timestamp(self.expires_at, field="expires_at"))
+        if self.revoked_at is not None:
+            object.__setattr__(self, "revoked_at", require_timestamp(self.revoked_at, field="revoked_at"))
+        if self.action.tenant_id != self.tenant_id:
+            raise DomainValidationError(
+                "the approval tenant and the action tenant must match",
+                field="action",
+                approval_tenant=self.tenant_id,
+                action_tenant=self.action.tenant_id,
+            )
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.state.is_terminal
+
+    def transition(
+        self,
+        *,
+        state: ApprovalState,
+        actor: Optional[str] = None,
+        notes: str = "",
+        reviewed_at: Optional[float] = None,
+    ) -> "Approval":
+        if not isinstance(state, ApprovalState):
+            raise DomainValidationError(
+                "state must be an ApprovalState",
+                field="state",
+                offending_type=type(state).__name__,
+            )
+        valid_next_states = {
+            ApprovalState.PENDING: {ApprovalState.IN_REVIEW, ApprovalState.REJECTED, ApprovalState.REVOKED, ApprovalState.EXPIRED},
+            ApprovalState.IN_REVIEW: {ApprovalState.APPROVED, ApprovalState.REJECTED, ApprovalState.REVOKED, ApprovalState.EXPIRED},
+            ApprovalState.APPROVED: set(),
+            ApprovalState.REJECTED: set(),
+            ApprovalState.REVOKED: set(),
+            ApprovalState.EXPIRED: set(),
+        }
+        if state not in valid_next_states.get(self.state, set()):
+            raise DomainValidationError(
+                "approval state transition is invalid",
+                field="state",
+                from_state=self.state.value,
+                to_state=state.value,
+            )
+        return Approval(
+            approval_id=self.approval_id,
+            decision_id=self.decision_id,
+            tenant_id=self.tenant_id,
+            action=self.action,
+            rationale=self.rationale,
+            state=state,
+            requested_at=self.requested_at,
+            reviewed_at=reviewed_at if reviewed_at is not None else self.reviewed_at,
+            reviewed_by=actor or self.reviewed_by,
+            notes=notes if notes else self.notes,
+            expires_at=self.expires_at,
+            revoked_at=self.revoked_at,
+        )
+
+    def as_evidence(self) -> Mapping[str, Any]:
+        return {
+            "approval_id": self.approval_id,
+            "decision_id": self.decision_id,
+            "tenant_id": self.tenant_id,
+            "state": self.state.value,
+            "rationale": self.rationale,
+            "requested_at": self.requested_at,
+            "reviewed_at": self.reviewed_at,
+            "reviewed_by": self.reviewed_by,
+            "notes": self.notes,
+            "expires_at": self.expires_at,
+            "revoked_at": self.revoked_at,
+            "action": self.action.as_evidence(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +391,8 @@ class AuthorizationDecision:
     policy_bundle_sha256: Optional[str] = None
     matched_rules: Tuple[str, ...] = ()
     obligations: Tuple[Obligation, ...] = field(default=())
+    approval_id: Optional[str] = None
+    approval_state: Optional[ApprovalState] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.effect, DecisionEffect):
@@ -299,6 +436,26 @@ class AuthorizationDecision:
                 self,
                 "policy_bundle_sha256",
                 require_sha256_hex(self.policy_bundle_sha256, field="policy_bundle_sha256"),
+            )
+        if self.approval_id is not None:
+            object.__setattr__(self, "approval_id", require_identifier(self.approval_id, field="approval_id"))
+        if self.approval_state is not None and not isinstance(self.approval_state, ApprovalState):
+            raise DomainValidationError(
+                "approval_state must be an ApprovalState",
+                field="approval_state",
+                offending_type=type(self.approval_state).__name__,
+            )
+        if self.effect is DecisionEffect.REQUIRE_APPROVAL:
+            object.__setattr__(
+                self,
+                "approval_state",
+                self.approval_state if self.approval_state is not None else ApprovalState.PENDING,
+            )
+        elif self.approval_id is not None or self.approval_state is not None:
+            raise DomainValidationError(
+                "only a require-approval decision may carry approval metadata",
+                field="approval_id",
+                effect=self.effect.value,
             )
 
         if self.effect is DecisionEffect.DENY and not self.reasons:
@@ -375,6 +532,8 @@ class AuthorizationDecision:
         policy_bundle_sha256: str,
         matched_rules: Tuple[str, ...] = (),
         obligations: Tuple[Obligation, ...] = (),
+        approval_id: Optional[str] = None,
+        approval_state: Optional[ApprovalState] = None,
     ) -> "AuthorizationDecision":
         """Build a decision that routes the action to human approval."""
         return cls(
@@ -384,6 +543,8 @@ class AuthorizationDecision:
             policy_bundle_sha256=policy_bundle_sha256,
             matched_rules=tuple(matched_rules),
             obligations=tuple(obligations),
+            approval_id=approval_id,
+            approval_state=approval_state,
         )
 
     # ----------------------------------------------------------------- #
@@ -406,7 +567,7 @@ class AuthorizationDecision:
 
     def as_evidence(self) -> Mapping[str, Any]:
         """Return the canonical ``policy_decision`` payload."""
-        return {
+        evidence = {
             "effect": self.effect.value,
             "reasons": [reason.value for reason in self.reasons],
             "rationale": self.rationale,
@@ -415,6 +576,11 @@ class AuthorizationDecision:
             "matched_rules": list(self.matched_rules),
             "obligations": [obligation.as_evidence() for obligation in self.obligations],
         }
+        if self.approval_id is not None:
+            evidence["approval_id"] = self.approval_id
+        if self.approval_state is not None:
+            evidence["approval_state"] = self.approval_state.value
+        return evidence
 
 
 class StageStatus(Enum):

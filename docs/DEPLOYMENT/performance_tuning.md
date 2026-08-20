@@ -97,9 +97,12 @@ effect count.
 ## Regression Gates
 
 ```bash
-python -m pytest tests/test_performance.py -q
 python -m pytest tests/test_multiprocess_limits.py -q
 python -m pytest tests/test_dispatcher_idempotency.py -q
+
+# Opt-in P99 latency benchmark (not run by default; environment-sensitive)
+$env:GLASSBOX_RUN_BENCHMARKS = "1"
+python -m pytest tests/test_performance_benchmarks.py -q -s
 ```
 
 Environment-backed tests require the variables documented in

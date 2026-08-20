@@ -31,8 +31,9 @@ from typing import Callable, Dict, Optional
 from glassbox.adapters.outbound.postgres.driver import ConnectionProvider, DriverUnavailableError
 from glassbox.domain.action import ProposedAction
 from glassbox.domain.decision import ExecutionOutcome, ExecutionStatus
-from glassbox.domain.errors import DispatchError, DispatchRefusedError
+from glassbox.domain.errors import DispatchError, DispatchRefusedError, ToolOutputQuarantinedError
 from glassbox.domain.evidence import EvidenceReceipt
+from glassbox.domain.prompt_injection import scan as scan_for_prompt_injection
 from glassbox.domain.serialization import canonical_bytes
 from glassbox.ports.dispatcher import Dispatcher
 
@@ -166,6 +167,17 @@ class PostgresDispatcher:
             future: Future = self._pool.submit(handler, action)
             try:
                 result = future.result(timeout=timeout_s)
+                injection = scan_for_prompt_injection("tool_output", result)
+                if injection.flagged:
+                    # Raised, not returned: the effect already ran, but the
+                    # result must never be reported as EXECUTED -- that would
+                    # tell the caller it is safe to feed forward as trusted
+                    # content (indirect prompt injection).
+                    raise ToolOutputQuarantinedError(
+                        "tool output matched a prompt-injection pattern and was quarantined",
+                        action=action.action,
+                        matched_patterns=", ".join(injection.matched_patterns),
+                    )
             except FuturesTimeout:
                 outcome = ExecutionOutcome(
                     status=ExecutionStatus.INDETERMINATE,

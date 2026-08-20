@@ -32,6 +32,7 @@ Accepted booleans are `true/false`, `1/0`, `yes/no`, and `on/off`
 | `GLASSBOX_LIMITS_DEFAULT_WINDOW_SECONDS` | `60` | Positive |
 | `GLASSBOX_LIMITS_FAIL_CLOSED` | `true` | Must remain `true` |
 | `GLASSBOX_LIMITS_COOLDOWN_SECONDS` | `300` | Non-negative |
+| `GLASSBOX_LIMITS_MAX_TENANT_SUBJECTS` | `0` (disabled) | Non-negative; bounds one tenant's live subject count in Redis, evicting oldest on overflow (F-07) |
 | `GLASSBOX_BASELINE_URL` | empty | Required |
 | `GLASSBOX_BASELINE_ANOMALY_THRESHOLD` | `3.0` | Positive |
 | `GLASSBOX_BASELINE_MIN_SAMPLES` | `30` | Non-negative |
@@ -70,9 +71,11 @@ These variables are test harness controls, not `GlassBoxConfig` fields:
 Do not pass them to `GlassBoxConfig.from_env()` in the same environment without
 filtering: unknown `GLASSBOX_*` keys are rejected by design.
 
+| `GLASSBOX_RUN_BENCHMARKS` | Enable the opt-in P99 latency benchmark (`tests/test_performance_benchmarks.py`) |
+
 ## HTTP Routes
 
-The current adapter exposes `/healthz`, `/v2/actions/<action_name>`,
-`/v2/tools/<tool_name>`, and `/v2/replay`. See the
-[v2 API reference](../API/v2_endpoint_reference.md). Routes such as `/health`,
-`/decisions`, and `/metrics` belong to the separate legacy API.
+The adapter exposes `/healthz`, `/v2/actions/<action_name>`,
+`/v2/tools/<tool_name>`, `/v2/replay`, and `/v2/approvals/*`. See the
+[v2 API reference](../API/v2_endpoint_reference.md) for the complete route
+list and contracts.

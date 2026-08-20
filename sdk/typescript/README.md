@@ -1,12 +1,17 @@
 # TypeScript SDK
 
-The TypeScript client in this directory targets the legacy v1
-`GovernancePipeline` HTTP API (`/decisions`, `/stats`, `/policies`, and related
-routes). It does not currently implement the v2 `DecisionService` contract.
+> **Historical, non-functional against this repository.** The TypeScript
+> client in this directory targets the legacy v1 `GovernancePipeline` HTTP
+> API (`/decisions`, `/stats`, `/policies`, and related routes). That server
+> implementation (`glassbox/api/`) has been physically deleted from this
+> repository; this client cannot be pointed at anything this repository now
+> ships. It is kept only as a historical reference for organizations that
+> still operate an old v1 deployment elsewhere. There is no v2 TypeScript SDK
+> yet — integrate with the [v2 HTTP contract](../../docs/API/v2_endpoint_reference.md) directly.
 
 ## Status
 
-- Compatibility asset for existing v1 API deployments
+- Historical reference only; not compatible with the current repository
 - Zero runtime dependencies; requires native `fetch` (Node.js 18+ or a modern browser)
 - Source-only package in this repository; no committed TypeScript compiler configuration
 - Package publication and the registry name are not asserted by this repository

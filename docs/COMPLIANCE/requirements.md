@@ -1,429 +1,328 @@
-# Legacy ComplianceCatalogue Framework Crosswalk
+# Compliance Framework Crosswalk
 
-> **Engineering reference, not certification:** This 97-control crosswalk is
-> maintained by the retained `glassbox.compliance.ComplianceCatalogue` path.
-> Status values describe repository mappings, not an organization's control
-> design, operating effectiveness, legal compliance, or audit opinion. Reconcile
-> every row with [the current evidence model](README.md), [verified claims](../CLAIMS.md),
-> and the deployed environment before using it in an assessment.
+> **Engineering reference, not certification.** This crosswalk maps external
+> compliance-framework controls to the GlassBox v2 mechanism that produces
+> evidence toward them. A ✅ means the runtime mechanism exists, is real code,
+> and is covered by a test cited in [CLAIMS.md](../CLAIMS.md) — not that an
+> auditor has certified your specific deployment. Status values describe
+> repository mappings, not an organization's control design, operating
+> effectiveness, legal compliance, or audit opinion. Reconcile every row with
+> [the evidence model](README.md), [CLAIMS.md](../CLAIMS.md), and your deployed
+> configuration before using it in an assessment.
 
-This document maps every supported compliance standard to GlassBox components and controls. All 97 controls are stored as database records in `ComplianceCatalogue` — no hardcoding.
+GlassBox does not ship pre-built industry policy content (no built-in "35
+policies", no hardcoded sector rules). Every control below maps to either a
+**mechanism** (a real, tested runtime capability) or a **policy hook** (a
+place to attach your own signed [`PolicyBundle`](../ARCHITECTURE.md) rule,
+evaluated and evidenced the same way as every other decision). Rows marked
+**Policy-defined** are not implemented for you; they are a documented seam to
+implement them in.
 
 ---
 
-## How Compliance Works in GlassBox
+## How Compliance Evidence Works in GlassBox v2
 
 ```
-AI Decision ──► GovernancePipeline ──► Disposition
-                       │
-                       ▼
-              _collect_compliance_evidence()
-                       │
-                ┌──────┴──────┐
-                │             │
-          EUAI.A12      AIRM.MG.02    ... (auto-mapped by decision type + outcome)
-                │
-          ComplianceCatalogue (SQLite)
-                │
-          posture_summary() / gap_analysis()
+Proposed action ──► DecisionService.decide_and_dispatch(...)
+                            │
+      identity → mandate → policy → risk → limits → baseline
+                            │
+                    IntentRecord (evidence-before-effect)
+                            │
+              EvidenceStore.append_intent() — MAC-chained, append-only
+                            │
+                    Dispatcher.dispatch() (only if ALLOW)
+                            │
+                    OutcomeRecord — append_outcome()
 ```
 
-Every governed decision automatically produces compliance evidence. The `ComplianceCatalogue` stores which decisions satisfy which controls, enabling auditors to query: "Show me evidence that we comply with EU AI Act Article 12."
+Every governed decision — allowed, denied, or requiring approval — produces a
+durable, signed `IntentRecord` before any effect can occur (invariant: evidence
+before effect). An auditor asks "show me evidence this decision was governed",
+not "show me a control satisfied" — GlassBox proves the former directly;
+mapping that to a specific external control is what this document does.
 
 ---
 
 ## Quick Reference
 
 ```python
-from glassbox.compliance.catalogue import ComplianceCatalogue
+from glassbox.app.decision_service import DecisionService
+from glassbox.domain.decision import DecisionEffect
 
-cat = ComplianceCatalogue()
+outcome = service.decide_and_dispatch(credential, action)
+outcome.decision.effect          # DecisionEffect.ALLOW / DENY / REQUIRE_APPROVAL
+outcome.decision.reasons         # DenialReason values, if denied
+outcome.decision.rationale       # human-readable explanation, always present
+outcome.receipt                  # EvidenceReceipt: segment_id, seq, record_hmac
 
-# Overall posture
-summary = cat.posture_summary()
-# {'NIST AI RMF': {'total': 5, 'implemented': 5, 'coverage_pct': 100.0}, ...}
+# Verify a segment's MAC chain (auditor-facing)
+report = evidence_store.verify(segment_id, now=clock.now())
+report.status  # IntegrityStatus.INTACT / TAMPERED / UNVERIFIABLE
 
-# Gaps
-gaps = cat.gap_analysis()
-
-# All controls for a framework
-controls = cat.list_controls(framework="EU AI Act")
-print(f"Implemented: {sum(1 for c in controls if c['implementation_status'] == 'implemented')}")
-print(f"Partial:     {sum(1 for c in controls if c['implementation_status'] == 'partial')}")
-
-# Evidence for a control
-ev = cat.get_evidence("EUAI.A12")
-
-# Record manual evidence
-cat.record_evidence("EUAI.A16", "manual", notes="Quality management system active")
-
-# All frameworks
-cat.frameworks_list()
+# Pending human review (compliance sign-off) queue
+from glassbox.app.approval_service import ApprovalService
+approvals = ApprovalService(runtime)
+approvals.list_pending()
 ```
 
 ---
 
 ## NIST AI RMF
 
-The AI Risk Management Framework from NIST (2023) defines four core functions.
-
 | Control ID | Function | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| AIRM.GV.01 | GOVERN | Risk management policies | PolicyEngine, PolicyRepository | ✅ Implemented |
-| AIRM.MP.01 | MAP | AI risk identification | DecisionType taxonomy, RiskEvaluator | ✅ Implemented |
-| AIRM.ME.01 | MEASURE | AI risk measurement | RiskEvaluator (0–100 score) | ✅ Implemented |
-| AIRM.MG.01 | MANAGE | AI risk treatment | Disposition (EXECUTE/REVIEW/BLOCK) | ✅ Implemented |
-| AIRM.MG.02 | MANAGE | AI decision audit trail | AuditLogger, SQLiteAuditRepository | ✅ Implemented |
-
----
+| AIRM.GV.01 | GOVERN | Risk management policies | Signed `PolicyBundle` evaluated by the policy decision point on every decision | ✅ Mechanism |
+| AIRM.MP.01 | MAP | AI risk identification | `ConsequenceClass`/`Exposure` on every `ProposedAction`; `RiskInputs` | ✅ Mechanism |
+| AIRM.ME.01 | MEASURE | AI risk measurement | `glassbox.domain.risk.RiskScore` (0–100, deterministic, no clock reads) | ✅ Mechanism |
+| AIRM.MG.01 | MANAGE | AI risk treatment | `DecisionEffect` (ALLOW / DENY / REQUIRE_APPROVAL) + opt-in `RiskConfig.enforce_threshold`/`deny_level` | ✅ Mechanism |
+| AIRM.MG.02 | MANAGE | AI decision audit trail | `EvidenceStore.append_intent`/`append_outcome`, MAC-chained, append-only | ✅ Mechanism |
 
 ## EU AI Act
 
-Applicable to high-risk AI systems operating in the EU (effective 2026).
+Applicable to high-risk AI systems operating in the EU.
 
 | Control ID | Article | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| EUAI.A9 | Art. 9 | Risk management system | RiskEvaluator, PolicyEngine | ✅ Implemented |
-| EUAI.A11 | Art. 11 | Technical documentation | ComplianceCatalogue.posture_summary(), ComplianceReporter | ⚠️ Partial |
-| EUAI.A12 | Art. 12 | Record-keeping | AuditLogger (immutable append-only) | ✅ Implemented |
-| EUAI.A13 | Art. 13 | Transparency | ExecutionTrace, PolicyEvaluation.message | ✅ Implemented |
-| EUAI.A14 | Art. 14 | Human oversight | WorkflowEngine, HUMAN_REVIEW | ✅ Implemented |
-| EUAI.A15 | Art. 15 | Accuracy and robustness | AI-001 confidence threshold, AnomalyDetector, PayloadSanitizer | ⚠️ Partial |
-| EUAI.A16 | Art. 16 | Provider obligations | PolicyRepository versioning, ComplianceCatalogue | ⚠️ Partial |
-| EUAI.A17 | Art. 17 | Quality management | ComplianceCatalogue, DecisionReplay | ⚠️ Partial |
-
----
+| EUAI.A9 | Art. 9 | Risk management system | `RiskScore` + policy bundle evaluation | ✅ Mechanism |
+| EUAI.A11 | Art. 11 | Technical documentation | `AuthorizationDecision.rationale` + policy bundle digest cited on every decision | ⚠️ Partial |
+| EUAI.A12 | Art. 12 | Record-keeping | MAC-chained `IntentRecord`/`OutcomeRecord`; see the accepted gap below | ✅ Mechanism |
+| EUAI.A13 | Art. 13 | Transparency | `AuthorizationDecision.rationale`, always populated, never omitted | ✅ Mechanism |
+| EUAI.A14 | Art. 14 | Human oversight | `DecisionEffect.REQUIRE_APPROVAL` + `ApprovalService` + `WorkflowEngine.quorum_approve` | ✅ Mechanism |
+| EUAI.A15 | Art. 15 | Accuracy and robustness | `glassbox.domain.prompt_injection.scan()` on inbound fields and tool output | ⚠️ Partial |
+| EUAI.A16 | Art. 16 | Provider obligations | Signed, versioned `PolicyBundle`; content-addressed by SHA-256 | ⚠️ Partial |
+| EUAI.A17 | Art. 17 | Quality management | `decide_and_dispatch`'s `replay()`/`diff_outcomes()` for regression testing | ⚠️ Partial |
 
 ## NIST CSF 2.0
 
-The Cybersecurity Framework v2.0 (2024) adds GOVERN as a new sixth function.
-
 | Control ID | Function | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| CSF2.GV.OC-01 | GOVERN | Organisational context | GovernancePipeline(environment=) | ⚠️ Partial |
-| CSF2.GV.RM-01 | GOVERN | Risk management strategy | RiskEvaluator thresholds | ⚠️ Partial |
-| CSF2.ID.AM-01 | IDENTIFY | Asset management | AgentContract registry | ✅ Implemented |
-| CSF2.PR.AA-01 | PROTECT | Identity management | validate_agent_id(), AgentContract | ✅ Implemented |
-| CSF2.PR.DS-01 | PROTECT | Data security | AuditLogger (immutable) | ⚠️ Partial |
-| CSF2.DE.AE-01 | DETECT | Anomaly analysis | AnomalyDetector Z-score baseline | ✅ Implemented |
-| CSF2.DE.CM-01 | DETECT | Continuous monitoring | VelocityBreaker, AnomalyDetector | ✅ Implemented |
-| CSF2.RS.MA-01 | RESPOND | Incident management | VelocityBreaker cooldown, circuit breaker | ⚠️ Partial |
-| CSF2.RC.RP-01 | RECOVER | Recovery planning | DecisionReplay, WorkflowEngine | ⚠️ Partial |
+| CSF2.GV.OC-01 | GOVERN | Organisational context | `GlassBoxConfig.profile` (`dev`/`production`) + `RuntimeProfile` guard | ⚠️ Partial |
+| CSF2.GV.RM-01 | GOVERN | Risk management strategy | `RiskConfig.enforce_threshold`/`deny_level` | ⚠️ Partial |
+| CSF2.ID.AM-01 | IDENTIFY | Asset management | `glassbox.domain.catalogue.ActionCatalogueBundle`, `glassbox.domain.tool_registry.ToolRegistryBundle` | ✅ Mechanism |
+| CSF2.PR.AA-01 | PROTECT | Identity management | `glassbox.ports.identity.IdentityVerifier` + `VerifiedPrincipal` | ✅ Mechanism |
+| CSF2.PR.DS-01 | PROTECT | Data security | MAC-chained evidence; `S3WormAnchorStore` (Object Lock) for sealed anchors | ✅ Mechanism |
+| CSF2.DE.AE-01 | DETECT | Anomaly analysis | `glassbox.ports.baseline.BaselineStore` (z-score) | ✅ Mechanism |
+| CSF2.DE.CM-01 | DETECT | Continuous monitoring | `glassbox.ports.limits.LimitStore` (distributed, atomic, per-tenant quota) | ✅ Mechanism |
+| CSF2.RS.MA-01 | RESPOND | Incident management | Limit-store cooldown; `ToolOutputQuarantinedError` on flagged tool output | ⚠️ Partial |
+| CSF2.RC.RP-01 | RECOVER | Recovery planning | `replay()` re-evaluates a past decision against current config | ⚠️ Partial |
 
----
-
-## OWASP Agentic Top 10 (2026)
-
-Security risks specific to autonomous AI agent systems.
+## OWASP Agentic Top 10
 
 | Control ID | Risk | Title | GlassBox Mitigation | Status |
 |---|---|---|---|---|
-| OWASP.A01 | A01 | Prompt Injection | PayloadSanitizer + AgentContract | ✅ Implemented |
-| OWASP.A02 | A02 | Insecure Output Handling | SchemaValidator, PayloadSanitizer | ✅ Implemented |
-| OWASP.A03 | A03 | Excessive Agency | AgentContract (types/amounts/delegation) | ✅ Implemented |
-| OWASP.A04 | A04 | Uncontrolled Resource Consumption | VelocityBreaker + fleet ecosystem budget | ✅ Implemented |
-| OWASP.A05 | A05 | Tool Integrity Failure | AnomalyDetector, PayloadSanitizer | ✅ Implemented |
-| OWASP.A06 | A06 | Sensitive Data Exposure | AuditLogger.include_payload=False | ⚠️ Partial |
-| OWASP.A07 | A07 | Cascading Agent Failures | AgentOrchestrator chain abort | ✅ Implemented |
-| OWASP.A08 | A08 | Weak Authentication | AgentContract, validate_agent_id() | ✅ Implemented |
-| OWASP.A09 | A09 | Supply Chain Risk | PROC-002 supplier registry | ✅ Implemented |
-| OWASP.A10 | A10 | Multi-Agent Trust | AgentContract delegation limits | ✅ Implemented |
-
----
+| OWASP.A01 | A01 | Prompt Injection | `prompt_injection.scan()` on inbound fields **and** tool output (`ToolOutputQuarantinedError`) | ✅ Mechanism |
+| OWASP.A02 | A02 | Insecure Output Handling | Tool-output re-scanning; flagged content never enters evidence, only its digest | ✅ Mechanism |
+| OWASP.A03 | A03 | Excessive Agency | `Mandate` (max_consequence, max_exposure, allowed_actions) + `ActionResourceGrant` (resource-scoped) | ✅ Mechanism |
+| OWASP.A04 | A04 | Uncontrolled Resource Consumption | Distributed `LimitStore` + per-tenant subject quota + HTTP `admission_control` | ✅ Mechanism |
+| OWASP.A05 | A05 | Tool Integrity Failure | `ToolDefinition` digest pinning (`TOOL_DEFINITION_CHANGED` denial) | ✅ Mechanism |
+| OWASP.A06 | A06 | Sensitive Data Exposure | Evidence stores only a `result_digest`, never raw tool output | ✅ Mechanism |
+| OWASP.A07 | A07 | Cascading Agent Failures | Fail-closed dependency handling (`DenialReason.DEPENDENCY_UNAVAILABLE`) per stage | ✅ Mechanism |
+| OWASP.A08 | A08 | Weak Authentication | `IdentityVerifier` + `RawCredential`/`CredentialType`; no shared bearer keys | ✅ Mechanism |
+| OWASP.A09 | A09 | Supply Chain Risk | Policy-defined (sanctions/supplier checks are not built in; attach via `PolicyBundle`) | ⛔ Policy-defined |
+| OWASP.A10 | A10 | Multi-Agent Trust | `DelegationChain`/`DelegationHop` capability narrowing per hop | ✅ Mechanism |
 
 ## NIST 800-207 — Zero Trust Architecture
 
 | Control ID | Tenet | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| ZTA.TE-01 | 1 | Never trust, always verify | Per-decision governance regardless of source | ✅ Implemented |
-| ZTA.TE-02 | 2 | Least privilege | AgentContract permitted_types, max_amount | ✅ Implemented |
-| ZTA.TE-03 | 3 | Assume breach | PayloadSanitizer on every request | ✅ Implemented |
-| ZTA.PE-01 | — | Dynamic policy evaluation | PolicyEngine.evaluate() per-decision | ✅ Implemented |
-
----
+| ZTA.TE-01 | 1 | Never trust, always verify | Every action re-verified through identity → mandate → policy → risk regardless of caller | ✅ Mechanism |
+| ZTA.TE-02 | 2 | Least privilege | `Mandate.allowed_actions`/`allowed_resources`, `ActionResourceGrant` | ✅ Mechanism |
+| ZTA.TE-03 | 3 | Assume breach | `prompt_injection.scan()` on every untrusted field and every tool result | ✅ Mechanism |
+| ZTA.PE-01 | — | Dynamic policy evaluation | `PolicyDecisionPoint.decide()` per decision, never cached across requests | ✅ Mechanism |
 
 ## ISO 27001:2022
 
-International standard for information security management systems.
-
 | Control ID | Annex A | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| ISO27K.A5.1 | A.5.1 | Policies for information security | PolicyEngine (policy-as-code), PolicyHotReloader | ✅ Implemented |
-| ISO27K.A5.2 | A.5.2 | Information security roles and responsibilities | AgentContract (role-based authority), WorkflowEngine (review roles) | ✅ Implemented |
-| ISO27K.A5.36 | A.5.36 | Compliance with policies, rules and standards | ComplianceCatalogue, ComplianceReporter, DecisionReplay | ✅ Implemented |
-| ISO27K.A8.15 | A.8.15 | Logging | AuditLogger (immutable decision log), SQLiteAuditRepository | ✅ Implemented |
-| ISO27K.A8.16 | A.8.16 | Monitoring activities | AnomalyDetector, VelocityBreaker, OtelExporter | ✅ Implemented |
-
----
+| ISO27K.A5.1 | A.5.1 | Policies for information security | Signed, content-addressed `PolicyBundle` | ✅ Mechanism |
+| ISO27K.A5.2 | A.5.2 | Information security roles | `Mandate` (role-scoped authority) + `ApprovalService` (review roles) | ✅ Mechanism |
+| ISO27K.A5.36 | A.5.36 | Compliance with policies, rules and standards | `replay()` for policy-change regression; evidence chain for verification | ✅ Mechanism |
+| ISO27K.A8.15 | A.8.15 | Logging | MAC-chained `IntentRecord`/`OutcomeRecord` | ✅ Mechanism |
+| ISO27K.A8.16 | A.8.16 | Monitoring activities | `BaselineStore`, `LimitStore`, OTel adapter (`glassbox/adapters/outbound/otel/`) | ✅ Mechanism |
 
 ## ISO/IEC 42001:2023 — AI Management System
 
 | Control ID | Clause | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| ISO42K.6.1 | 6.1 | Actions to address AI risks and opportunities | RiskEvaluator, ComplianceCatalogue risk tolerance | ✅ Implemented |
-| ISO42K.8.4 | 8.4 | AI system impact assessment | PolicySimulator (pre-deployment impact), ComplianceReporter | ✅ Implemented |
-| ISO42K.9.1 | 9.1 | Monitoring, measurement, analysis and evaluation | OtelExporter, AuditLogger.summary_stats, ComplianceReporter | ✅ Implemented |
-| ISO42K.10.1 | 10.1 | Continual improvement | DecisionReplay (policy regression), PolicySimulator, ComplianceCatalogue.gap_analysis | ✅ Implemented |
-
----
+| ISO42K.6.1 | 6.1 | Actions to address AI risks | `RiskScore` + `CONSEQUENCE_FLOORS` | ✅ Mechanism |
+| ISO42K.8.4 | 8.4 | AI system impact assessment | `replay()` against a candidate policy bundle before rollout | ⚠️ Partial |
+| ISO42K.9.1 | 9.1 | Monitoring, measurement, analysis | OTel adapter + evidence store queries | ✅ Mechanism |
+| ISO42K.10.1 | 10.1 | Continual improvement | `diff_outcomes()` policy-change regression | ✅ Mechanism |
 
 ## SOC 2 Type II
 
-AICPA Trust Services Criteria for security, availability, processing integrity, confidentiality, and privacy.
-
 | Control ID | Criteria | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| SOC2.CC6.1 | CC6.1 | Logical access security measures | AgentContract validation, PayloadSanitizer, validate_agent_id | ✅ Implemented |
-| SOC2.CC7.2 | CC7.2 | System monitoring | AnomalyDetector, VelocityBreaker, OtelExporter metrics | ✅ Implemented |
-| SOC2.CC8.1 | CC8.1 | Change management controls | PolicyHotReloader, PolicySimulator, IT-OPS-004 change log | ✅ Implemented |
-| SOC2.CC9.1 | CC9.1 | Risk mitigation activities | RiskEvaluator, WorkflowEngine (human review for high-risk decisions) | ✅ Implemented |
-
----
+| SOC2.CC6.1 | CC6.1 | Logical access security measures | `IdentityVerifier`, `Mandate` validation, HTTP `admission_control` | ✅ Mechanism |
+| SOC2.CC7.2 | CC7.2 | System monitoring | `BaselineStore`, `LimitStore`, OTel metrics | ✅ Mechanism |
+| SOC2.CC8.1 | CC8.1 | Change management controls | Policy bundle versioning (content-addressed SHA-256); `replay()` regression | ✅ Mechanism |
+| SOC2.CC9.1 | CC9.1 | Risk mitigation activities | `RiskScore` + `ApprovalService` human review for high-risk decisions | ✅ Mechanism |
 
 ## HIPAA Security and Privacy Rules
 
-Applicable to healthcare AI decisions involving protected health information (PHI).
-
 | Control ID | Section | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| HIPAA.164.308a1 | §164.308(a)(1) | Security management process | GovernancePipeline, PolicyEngine, AuditLogger | ✅ Implemented |
-| HIPAA.164.308a3 | §164.308(a)(3) | Workforce security | AgentContract (permitted_types), SECURITY-001 (production control) | ✅ Implemented |
-| HIPAA.164.312b | §164.312(b) | Audit controls | AuditLogger (immutable), SQLiteAuditRepository, ExecutionTrace | ✅ Implemented |
-| HIPAA.164.514e | §164.514(e) | Minimum necessary standard | CLIN-001/002 clinical policies, GEN-001 PII detection | ⚠️ Partial |
-
----
+| HIPAA.164.308a1 | §164.308(a)(1) | Security management process | `DecisionService` + policy bundle + evidence store | ✅ Mechanism |
+| HIPAA.164.308a3 | §164.308(a)(3) | Workforce security | `Mandate.allowed_actions`; production-profile guard against dev adapters | ✅ Mechanism |
+| HIPAA.164.312b | §164.312(b) | Audit controls | MAC-chained evidence; `verify()` | ✅ Mechanism |
+| HIPAA.164.514e | §164.514(e) | Minimum necessary standard | Policy-defined (PHI minimisation rules are content, not runtime code) | ⛔ Policy-defined |
 
 ## Colorado AI Act — SB 24-205
 
-Colorado's high-risk AI system law, effective February 2026.
-
 | Control ID | Section | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| COL.SB205.8 | §8 | Risk management policy for high-risk AI | GovernancePipeline, RiskEvaluator, PolicyEngine | ✅ Implemented |
-| COL.SB205.9 | §9 | Human review mechanism | WorkflowEngine (human review queue), quorum_approve | ✅ Implemented |
-| COL.SB205.10 | §10 | Disclosure of high-risk AI use | DecisionExplainer, explanation field in DecisionResponse | ✅ Implemented |
-
----
+| COL.SB205.8 | §8 | Risk management policy for high-risk AI | `RiskScore` + policy bundle | ✅ Mechanism |
+| COL.SB205.9 | §9 | Human review mechanism | `ApprovalService` + `WorkflowEngine.quorum_approve` | ✅ Mechanism |
+| COL.SB205.10 | §10 | Disclosure of high-risk AI use | `AuthorizationDecision.rationale` | ✅ Mechanism |
 
 ## PCI DSS v4.0
 
-Payment Card Industry Data Security Standard, applicable to AI decisions in payment flows.
-
 | Control ID | Requirement | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| PCI4.10.3 | Req. 10.3 | Audit logs are protected from destruction | AuditLogger (append-only, immutable), SQLiteAuditRepository | ✅ Implemented |
-| PCI4.6.3 | Req. 6.3 | Security event detection and response | PayloadSanitizer, EventBus SecurityViolation, VelocityBreaker | ✅ Implemented |
+| PCI4.10.3 | Req. 10.3 | Audit logs protected from destruction | MAC-chained, append-only evidence; DB triggers revoke `UPDATE`/`DELETE` | ✅ Mechanism |
+| PCI4.6.3 | Req. 6.3 | Security event detection and response | `ToolOutputQuarantinedError`, `LimitStore` cooldown, structured logging | ⚠️ Partial |
 
----
-
-## GDPR — EU General Data Protection Regulation
-
-Applicable to AI systems processing personal data of EU data subjects.
+## GDPR
 
 | Control ID | Article | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| GDPR.A5 | Art. 5 | Data minimisation and purpose limitation | AuditLogger.include_payload=False, GEN-001 PII detection, COMPLIANCE-001 | ⚠️ Partial |
-| GDPR.A22 | Art. 22 | Automated individual decision-making | GEN-002 EU Automated Decision Gate (forces human_review_available=True for EU subjects) | ✅ Implemented |
-| GDPR.A33 | Art. 33 | Notification of a personal data breach (72h) | COMPLIANCE-003 breach notification, EventBus SecurityViolation events | ✅ Implemented |
-
----
+| GDPR.A5 | Art. 5 | Data minimisation and purpose limitation | Evidence stores digests, not raw payloads, for tool output | ⚠️ Partial |
+| GDPR.A22 | Art. 22 | Automated individual decision-making | `DecisionEffect.REQUIRE_APPROVAL` gate; policy-defined per jurisdiction | ⛔ Policy-defined |
+| GDPR.A33 | Art. 33 | Notification of a personal data breach (72h) | Policy-defined (external alerting integration, not built in) | ⛔ Policy-defined |
 
 ## DORA — EU Digital Operational Resilience Act
 
-Applicable to EU financial entities; effective January 2025.
-
 | Control ID | Article | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| DORA.Art6 | Art. 6 | ICT risk management framework | RiskEvaluator (0–100 composite), PolicyEngine, ComplianceCatalogue | ✅ Implemented |
-| DORA.Art17 | Art. 17 | ICT-related incident management | EventBus SecurityViolation + CircuitBreakerTripped, VelocityBreaker cooldown | ⚠️ Partial |
-| DORA.Art24 | Art. 24 | Digital operational resilience testing | DecisionReplay (scenario regression), PolicySimulator | ✅ Implemented |
-| DORA.Art28 | Art. 28 | Third-party ICT risk management | PROC-002 supplier check, PROC-006 sanctions/debarment, PROC-003 category risk | ✅ Implemented |
+| DORA.Art6 | Art. 6 | ICT risk management framework | `RiskScore` + policy bundle | ✅ Mechanism |
+| DORA.Art17 | Art. 17 | ICT-related incident management | `LimitStore` cooldown; structured error logging | ⚠️ Partial |
+| DORA.Art24 | Art. 24 | Digital operational resilience testing | `replay()` scenario regression | ✅ Mechanism |
+| DORA.Art28 | Art. 28 | Third-party ICT risk management | Policy-defined (supplier/sanctions checks are not built in) | ⛔ Policy-defined |
 
----
-
-## APRA CPS 234 — Australian Prudential Standard
-
-Information security standard for APRA-regulated financial entities.
+## APRA CPS 234
 
 | Control ID | Paragraph | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| CPS234.15 | Para 15 | Information security controls | AgentContract permitted_types (asset classification), PolicyEngine | ✅ Implemented |
-| CPS234.36 | Para 36 | Notify APRA of material incidents (72h) | EventBus SecurityViolation, COMPLIANCE-003 breach notification, WebhookEventHandler | ⚠️ Partial |
-| CPS234.51 | Para 51 | Information security control testing | DecisionReplay (control regression), PolicySimulator (impact analysis) | ✅ Implemented |
+| CPS234.15 | Para 15 | Information security controls | `Mandate` scoping + policy bundle | ✅ Mechanism |
+| CPS234.36 | Para 36 | Notify regulator of material incidents (72h) | Policy-defined (external alerting integration) | ⛔ Policy-defined |
+| CPS234.51 | Para 51 | Information security control testing | `replay()` control regression | ✅ Mechanism |
 
----
-
-## FFIEC CAT — Financial Institution Cybersecurity Assessment Tool
-
-US federal banking regulators' cybersecurity assessment framework.
+## FFIEC CAT
 
 | Control ID | Domain | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| FFIEC.D1.CC | Domain 1 | Cyber risk identification and classification | RiskEvaluator, DecisionType taxonomy, ComplianceCatalogue | ✅ Implemented |
-| FFIEC.D2.TI | Domain 2 | Threat intelligence | AnomalyDetector (Z-score drift), VelocityBreaker (volumetric anomaly) | ✅ Implemented |
-| FFIEC.D3.CY | Domain 3 | Cybersecurity controls | PolicyEngine (35 built-in controls), PayloadSanitizer, AgentContract | ✅ Implemented |
-| FFIEC.D4.EX | Domain 4 | External dependency management | PROC-002/006 supplier registry and sanctions, MCP Gateway controls | ⚠️ Partial |
-
----
+| FFIEC.D1.CC | Domain 1 | Cyber risk identification and classification | `RiskScore` + `ConsequenceClass` taxonomy | ✅ Mechanism |
+| FFIEC.D2.TI | Domain 2 | Threat intelligence | `BaselineStore` z-score drift + `LimitStore` volumetric anomaly | ✅ Mechanism |
+| FFIEC.D3.CY | Domain 3 | Cybersecurity controls | Policy bundle + `prompt_injection.scan()` + `Mandate` | ✅ Mechanism |
+| FFIEC.D4.EX | Domain 4 | External dependency management | Policy-defined (supplier registry not built in) | ⛔ Policy-defined |
 
 ## FDA 21 CFR Part 11 — Electronic Records
 
-Applicable to AI systems in clinical, pharmaceutical, and regulated laboratory environments.
+| Control ID | Section | Title | GlassBox Mapping | Status |
+|---|---|---|---|---|
+| FDA11.11.10e | §11.10(e) | Audit trails | MAC-chained evidence (SHA-256/HMAC chain, not plain hash) | ✅ Mechanism |
+| FDA11.11.10d | §11.10(d) | System access limited to authorised individuals | `IdentityVerifier` + `Mandate` | ✅ Mechanism |
+| FDA11.11.50 | §11.50 | Signature manifestations | `WorkflowEngine.quorum_approve` records reviewer identity; not a compliant e-signature manifest | ⚠️ Partial |
+
+## MAS TRM
 
 | Control ID | Section | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| FDA11.11.10e | §11.10(e) | Audit trails | TamperEvidentAuditLogger (SHA-256 hash chain), AuditLogger, SQLiteAuditRepository | ✅ Implemented |
-| FDA11.11.10d | §11.10(d) | System access limited to authorised individuals | AgentContract (identity and permitted_types), validate_agent_id() | ✅ Implemented |
-| FDA11.11.50 | §11.50 | Signature manifestations | WorkflowEngine quorum_approve (reviewer identity recorded), AuditLogger (decision lineage) | ⚠️ Partial |
+| MASTRM.5 | Section 5 | Access control | `Mandate` least-privilege scoping | ✅ Mechanism |
+| MASTRM.12 | Section 12 | IT incident management | `LimitStore` cooldown; structured logging | ⚠️ Partial |
+| MASTRM.13 | Section 13 | Outsourcing risk management | Policy-defined (supplier/outsourcing checks not built in) | ⛔ Policy-defined |
 
----
-
-## MAS TRM — Monetary Authority of Singapore Technology Risk Management
-
-Applicable to MAS-regulated financial institutions operating AI systems.
-
-| Control ID | Section | Title | GlassBox Mapping | Status |
-|---|---|---|---|---|
-| MASTRM.5 | Section 5 | Access control | AgentContract permitted_types (least privilege), SECURITY-001 production override guard | ✅ Implemented |
-| MASTRM.12 | Section 12 | IT incident management | EventBus SecurityViolation + CircuitBreakerTripped, VelocityBreaker cooldown | ⚠️ Partial |
-| MASTRM.13 | Section 13 | Outsourcing risk management | PROC-002 supplier known check, PROC-006 sanctions, MCP Gateway controls | ✅ Implemented |
-
----
-
-## NIST SP 800-53 Rev.5 — Security and Privacy Controls
-
-Comprehensive control catalogue for federal information systems; also referenced by FedRAMP.
+## NIST SP 800-53 Rev.5
 
 | Control ID | Family | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| 800-53.AU-2 | Audit | Event logging | AuditLogger (per-decision), EventBus (SecurityViolation, CircuitBreakerTripped) | ✅ Implemented |
-| 800-53.AU-9 | Audit | Protection of audit information | TamperEvidentAuditLogger (SHA-256 hash chain), AuditLogger (append-only) | ✅ Implemented |
-| 800-53.CM-3 | Config Mgmt | Configuration change control | IT-OPS-004 change log requirement, PolicyHotReloader | ✅ Implemented |
-| 800-53.RA-3 | Risk Assess | Risk assessment | RiskEvaluator (0–100 composite), AnomalyDetector, ComplianceCatalogue.gap_analysis | ✅ Implemented |
-| 800-53.SI-3 | System Integrity | Malicious code protection | PayloadSanitizer (injection detection on every request), SchemaValidator | ✅ Implemented |
-
----
+| 800-53.AU-2 | Audit | Event logging | `IntentRecord`/`OutcomeRecord` per decision | ✅ Mechanism |
+| 800-53.AU-9 | Audit | Protection of audit information | MAC-chained, append-only; DB-level `REVOKE UPDATE, TRUNCATE` | ✅ Mechanism |
+| 800-53.CM-3 | Config Mgmt | Configuration change control | Content-addressed `PolicyBundle` (any change is a new, signed digest) | ✅ Mechanism |
+| 800-53.RA-3 | Risk Assess | Risk assessment | `RiskScore` + `BaselineStore` | ✅ Mechanism |
+| 800-53.SI-3 | System Integrity | Malicious code protection | `prompt_injection.scan()` on every request and tool result | ✅ Mechanism |
 
 ## ASD Essential Eight (AU)
 
-Australia's Essential Eight Maturity Model.
-
 | Control ID | Mitigation | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| E8.ML2.01 | App Control | Agent whitelisting | AgentContract permitted decision types | ✅ Implemented |
-| E8.ML2.02 | Patching | Version management | pyproject.toml, repository release history (git tags/commits) | ⚠️ Partial |
-| E8.ML2.03 | Audit Logging | Activity logging | AuditLogger, SQLiteAuditRepository | ✅ Implemented |
-| E8.ML3.01 | MFA | Privileged operations | AgentContract + WorkflowEngine dual-approval | ⚠️ Partial |
+| E8.ML2.01 | App Control | Agent/action allow-listing | `ActionCatalogueBundle` + `ToolRegistryBundle` (only declared actions/tools are governable) | ✅ Mechanism |
+| E8.ML2.02 | Patching | Version management | `pyproject.toml` pins; git tags/commits | ⚠️ Partial |
+| E8.ML2.03 | Audit Logging | Activity logging | MAC-chained evidence | ✅ Mechanism |
+| E8.ML3.01 | MFA | Privileged operations | `ApprovalService` dual-control quorum approval | ⚠️ Partial |
 
----
-
-## NERC CIP — Power Sector
-
-North American Electric Reliability Corporation Critical Infrastructure Protection.
+## NERC CIP (Power Sector)
 
 | Control ID | Standard | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| NERC.CIP007 | CIP-007 | Systems Security Management | IT_OPS decision type, IT-OPS-003 service criticality gate | ⚠️ Partial |
-| NERC.CIP010 | CIP-010 | Configuration Change Management | IT-OPS-002 maintenance window, IT-OPS-004 change log requirement | ⚠️ Partial |
+| NERC.CIP007 | CIP-007 | Systems Security Management | Policy-defined (sector-specific dual-authorisation rules) | ⛔ Policy-defined |
+| NERC.CIP010 | CIP-010 | Configuration Change Management | Policy bundle versioning + `replay()` regression | ⚠️ Partial |
 
----
-
-## IEC 62443 / ISA 99 — Industrial Automation
-
-International standard for industrial cybersecurity.
+## IEC 62443 / ISA 99
 
 | Control ID | Requirement | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| IEC62443.SR1.1 | SR 1.1 | User identification | AgentContract, validate_agent_id() | ✅ Implemented |
-| IEC62443.SR2.1 | SR 2.1 | Authorisation enforcement | PolicyEngine evaluation | ✅ Implemented |
-| IEC62443.SR6.1 | SR 6.1 | Audit log accessibility | AuditRepository.query() | ✅ Implemented |
-
----
+| IEC62443.SR1.1 | SR 1.1 | User identification | `IdentityVerifier` | ✅ Mechanism |
+| IEC62443.SR2.1 | SR 2.1 | Authorisation enforcement | `PolicyDecisionPoint.decide()` | ✅ Mechanism |
+| IEC62443.SR6.1 | SR 6.1 | Audit log accessibility | `EvidenceStore` query surface | ✅ Mechanism |
 
 ## SOCI Act 2018 (AU)
 
-Australian Security of Critical Infrastructure Act.
-
 | Control ID | Section | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| SOCI.S30BC | s30BC | Positive security obligation | ComplianceCatalogue posture, mandatory controls | ⚠️ Partial |
-| SOCI.S30BD | s30BD | Incident reporting | EventBus SecurityViolation → WebhookHandler | ⚠️ Partial |
-
----
+| SOCI.S30BC | s30BC | Positive security obligation | Policy-defined; mandate + evidence provide the enforcement substrate | ⚠️ Partial |
+| SOCI.S30BD | s30BD | Incident reporting | Policy-defined (external alerting integration) | ⛔ Policy-defined |
 
 ## Purdue Model 2.0
 
-Architecture reference for OT/ICS network segmentation.
-
 | Control ID | Level | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| PURDUE.L3-L4 | L3–L4 | OT/Enterprise boundary | AgentContract zone-specific types, IT-OPS-002 maintenance window | ⚠️ Partial |
-| PURDUE.L0-L2 | L0–L2 | OT protection | IT-OPS-004 destructive action change log, WorkflowEngine quorum_approve | ⚠️ Partial |
-
----
+| PURDUE.L3-L4 | L3–L4 | OT/Enterprise boundary | Policy-defined (zone-specific action scoping via `Mandate.allowed_resources`) | ⚠️ Partial |
+| PURDUE.L0-L2 | L0–L2 | OT protection | `ApprovalService` quorum approval for destructive actions | ⚠️ Partial |
 
 ## Cyber Security Act 2024 (AU)
 
 | Control ID | Obligation | Title | GlassBox Mapping | Status |
 |---|---|---|---|---|
-| CSA24.INCIDENT | Mandatory | Incident reporting | EventBus SecurityViolation events | ⚠️ Partial |
+| CSA24.INCIDENT | Mandatory | Incident reporting | Policy-defined (external alerting integration) | ⛔ Policy-defined |
 
 ---
 
-## Adding Custom Controls
+## Adding a Custom Control Mapping
 
-```python
-cat.add_custom_control({
-    "control_id":            "INTERNAL-001",
-    "framework":             "Internal Policy",
-    "category":              "AI Decision Governance",
-    "title":                 "Procurement AI authority limits",
-    "description":           "All AI procurement decisions above $100K require human approval.",
-    "glassbox_mapping":      "AgentContract max_amount + WorkflowEngine",
-    "implementation_status": "implemented",
-    "notes":                 "Implemented as AgentContract for all procurement agents",
-})
-```
-
----
-
-## Compliance Evidence Auto-Collection
-
-GlassBox automatically collects evidence from governed decisions. Every `pipeline.process()` call maps the decision outcome to relevant control IDs and records evidence in the compliance database.
-
-```python
-pipeline = GovernancePipeline(compliance_catalogue=cat)
-pipeline.process(request)        # evidence auto-collected
-
-# Query evidence
-evidence = cat.get_evidence("EUAI.A12")      # all evidence for Art. 12
-posture  = cat.posture_summary()              # framework-level coverage
-gaps     = cat.gap_analysis("NIST CSF 2.0")  # controls with status='gap'
-
-# All controls for a framework (including partial)
-all_controls = cat.list_controls(framework="EU AI Act")
-```
+There is no `ComplianceCatalogue` database to register controls in — a
+mapping is documentation, not runtime state. Add a row to the relevant table
+above (or a new table for a framework not yet listed), citing the real
+mechanism or policy hook it relies on, and cite the test that proves the
+mechanism works if one exists in [CLAIMS.md](../CLAIMS.md).
 
 ---
 
 ## Known Limitations
 
-- **`partial` controls** are not returned by `gap_analysis()` — use `list_controls(framework=...)` and filter by `implementation_status` to view them.
-- **NERC CIP007/CIP010** and **Purdue L0–L2/L3–L4**: GlassBox provides the governance layer; sector-specific dual-authorisation policies (e.g. GRID-001) must be registered as custom policies via `PolicyEngine.register()` (see `examples/industry_examples.py`).
-- **GDPR Art.22**: enforcement requires passing `jurisdiction` on `DecisionContext`. Without it the GEN-002 policy defaults to non-EU.
-- **FDA 21 CFR Part 11 §11.50**: `WorkflowEngine` records reviewer identity but does not yet produce a compliant electronic signature manifest — partial coverage only.
+- **Rows marked "Policy-defined"** describe a seam, not a shipped feature:
+  attach the actual rule as a signed `PolicyBundle` entry, evaluated the same
+  way as every other decision, and evidenced identically.
+- **Outcome records are not yet MAC-chained** — only `evidence_intent` rows
+  participate in the hash chain today; `evidence_outcome` rows are an
+  accepted gap (see [CLAIMS.md](../CLAIMS.md)). An auditor relying on
+  outcome-record tamper-evidence specifically (e.g. FDA 21 CFR Part 11
+  §11.50) should treat that row as partial until this is closed.
+- **GDPR Art. 22 / jurisdiction-scoped gates** require the caller to pass
+  jurisdiction context through a policy rule; GlassBox does not infer
+  jurisdiction from a request.
 
 ---
 
 ## See Also
 
-- **[GLOSSARY.md](../GLOSSARY.md)** — Definitions of compliance and governance terms
-- **[TROUBLESHOOTING.md](../USER/troubleshooting.md#compliance)** — Common compliance issues and solutions
-- **[ARCHITECTURE.md](../ARCHITECTURE.md)** — How compliance checks integrate into the 9-stage pipeline
+- **[GLOSSARY.md](../GLOSSARY.md)** — Definitions of governance terms
+- **[CLAIMS.md](../CLAIMS.md)** — Every guarantee, cited to the test that proves it
+- **[ARCHITECTURE.md](../ARCHITECTURE.md)** — How the decision pipeline produces evidence
+- **[COMPLIANCE/README.md](README.md)** — The evidence model this crosswalk maps onto
 - **[DEPLOYMENT.md](../DEPLOYMENT.md)** — Compliance considerations for production deployment
-- **[compliance/README.md](../../glassbox/compliance/README.md)** — Compliance module documentation
 
 ---
 
 *GlassBox · Apache 2.0*
-

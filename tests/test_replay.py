@@ -142,6 +142,44 @@ class TestReplayNeverDispatches:
         by_stage = {stage.stage: stage for stage in record.stages}
         assert by_stage["catalogue"].status is StageStatus.SKIPPED
 
+    def test_a_replayed_require_approval_decision_stays_pending_and_creates_no_workflow(
+        self, rt: Runtime
+    ) -> None:
+        """Workstream D extension of GB-012: replay must not create a real,
+        operational approval workflow row even when the re-evaluated decision
+        would route to human review."""
+        from glassbox.domain.decision import AuthorizationDecision
+        from glassbox.store.repository import SQLiteWorkflowRepository
+        from glassbox.workflow.workflow_engine import WorkflowEngine
+
+        class RequireApprovalPdp:
+            def decide(self, request: Any) -> Any:
+                return AuthorizationDecision.require_approval(
+                    rationale="dual control required",
+                    policy_bundle_id="b",
+                    policy_bundle_sha256="0" * 64,
+                )
+
+            def active_bundle_digest(self, tenant_id: str) -> str:
+                return "0" * 64
+
+        rt.runtime.mandate_store.put(mandate())
+        rt.seed_baseline()
+        engine = WorkflowEngine(repository=SQLiteWorkflowRepository(":memory:"))
+        rt.runtime = rt.runtime.with_workflow_engine(engine)
+        rt.service._runtime = rt.runtime  # type: ignore[attr-defined]
+        object.__setattr__(rt.runtime, "policy_decision_point", RequireApprovalPdp())
+        principal = _principal(rt)
+        _use_null_dispatcher(rt)
+
+        replayed = rt.service.replay(principal, action(monetary=101.0))
+
+        assert replayed.decision.effect is DecisionEffect.REQUIRE_APPROVAL
+        assert replayed.execution.status is ExecutionStatus.PENDING_APPROVAL
+        assert replayed.decision.approval_id is not None
+        assert engine.get_by_decision(replayed.decision_id) is None
+        assert engine.list_pending() == []
+
 
 class TestDiffOutcomes:
     def test_no_diff_when_the_effect_is_unchanged(self, rt: Runtime) -> None:

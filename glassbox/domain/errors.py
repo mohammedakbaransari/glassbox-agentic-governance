@@ -48,6 +48,11 @@ __all__ = [
     "DispatchError",
     "DispatchTimeoutError",
     "DispatchRefusedError",
+    "ToolOutputQuarantinedError",
+    "ApprovalError",
+    "ApprovalNotFoundError",
+    "ApprovalGatewayUnavailableError",
+    "ApprovalTransitionError",
 ]
 
 
@@ -372,3 +377,53 @@ class DispatchRefusedError(DispatchError):
     """
 
     code = "dispatch_refused_no_evidence"
+
+
+class ToolOutputQuarantinedError(DispatchError):
+    """The dispatched effect ran, but its result matched a prompt-injection
+    pattern and is quarantined -- never fed forward as trusted content.
+
+    The effect itself is not undone: whether it was authorised to run was
+    already decided by mandate/policy/risk before dispatch. This guards a
+    separate, later risk -- indirect prompt injection, where a compromised or
+    malicious tool result carries instructions meant for the agent's next
+    reasoning step. The outcome is recorded as ``FAILED``, and -- like every
+    other result -- only its digest is ever evidenced, never the flagged
+    content itself.
+    """
+
+    code = "tool_output_quarantined"
+
+
+# --------------------------------------------------------------------------- #
+# Approval workflow (Workstream D)
+# --------------------------------------------------------------------------- #
+
+
+class ApprovalError(GlassBoxError):
+    """Base class for approval-workflow failures raised by the app layer."""
+
+    code = "approval_error"
+
+
+class ApprovalNotFoundError(ApprovalError):
+    """No approval workflow exists for the given decision."""
+
+    code = "approval_not_found"
+
+
+class ApprovalGatewayUnavailableError(ApprovalError):
+    """No workflow gateway is wired into this runtime.
+
+    Raised rather than silently no-oping: a caller invoking an approval
+    transition on a runtime with no approval routing configured has a
+    deployment defect, not a business outcome.
+    """
+
+    code = "approval_gateway_unavailable"
+
+
+class ApprovalTransitionError(ApprovalError):
+    """The requested transition is not valid for the approval's current state."""
+
+    code = "approval_transition_invalid"

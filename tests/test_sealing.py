@@ -17,8 +17,9 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import pytest
 
@@ -27,6 +28,8 @@ from glassbox.adapters.outbound.memory.signing import LocalMacSigner
 from glassbox.adapters.outbound.worm import (
     FilesystemWormAnchorStore,
     InMemoryWormAnchorStore,
+    S3WormAnchorStore,
+    WormStoreUnavailableError,
     anchor_from_json,
     anchor_to_json,
 )
@@ -256,6 +259,172 @@ class TestFilesystemAnchors(WormAnchorStoreConformance):
         written.write_text("{ not json", encoding="utf-8")
         with pytest.raises(EvidenceIntegrityError):
             store.get("seg-2026-08:0-4")
+
+
+class _FakeS3Error(Exception):
+    """Mimics a botocore ``ClientError`` closely enough for ``_error_code``.
+
+    Real botocore either raises a dynamically generated class named after the
+    error code, or a generic ``ClientError`` carrying the code in
+    ``.response['Error']['Code']``. This fake covers the second shape, which is
+    what ``S3WormAnchorStore`` actually inspects.
+    """
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
+
+
+class _FakeS3Body:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def read(self) -> bytes:
+        return self._data
+
+
+class FakeS3Client:
+    """Enough of the boto3 S3 client surface to exercise ``S3WormAnchorStore``.
+
+    Models the one behaviour this adapter actually depends on for atomicity:
+    ``IfNoneMatch="*"`` refuses a write to a key that already exists.
+    """
+
+    def __init__(self) -> None:
+        self._objects: Dict[Tuple[str, str], bytes] = {}
+        self.put_calls: List[Dict[str, Any]] = []
+
+    def put_object(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        Body: bytes,
+        ContentType: str = "",
+        ObjectLockMode: str = "",
+        ObjectLockRetainUntilDate: Any = None,
+        IfNoneMatch: Any = None,
+    ) -> Dict[str, Any]:
+        key = (Bucket, Key)
+        if IfNoneMatch == "*" and key in self._objects:
+            raise _FakeS3Error("PreconditionFailed")
+        self._objects[key] = Body
+        self.put_calls.append(
+            {
+                "Bucket": Bucket,
+                "Key": Key,
+                "ObjectLockMode": ObjectLockMode,
+                "ObjectLockRetainUntilDate": ObjectLockRetainUntilDate,
+            }
+        )
+        return {}
+
+    def get_object(self, *, Bucket: str, Key: str) -> Dict[str, Any]:
+        key = (Bucket, Key)
+        if key not in self._objects:
+            raise _FakeS3Error("NoSuchKey")
+        return {"Body": _FakeS3Body(self._objects[key])}
+
+    def list_objects_v2(
+        self, *, Bucket: str, Prefix: str = "", ContinuationToken: Any = None
+    ) -> Dict[str, Any]:
+        contents = [
+            {"Key": key}
+            for (bucket, key) in self._objects
+            if bucket == Bucket and key.startswith(Prefix)
+        ]
+        return {"Contents": contents, "IsTruncated": False}
+
+
+class TestS3Anchors(WormAnchorStoreConformance):
+    """The production-grade adapter: S3 Object Lock in compliance mode."""
+
+    @pytest.fixture
+    def anchors(self) -> S3WormAnchorStore:
+        return S3WormAnchorStore("evidence-bucket", client=FakeS3Client())
+
+    def test_it_never_imports_boto3_to_use_an_injected_client(self) -> None:
+        """Constructing with a fake client must work with no SDK installed."""
+        store = S3WormAnchorStore("evidence-bucket", client=FakeS3Client())
+        assert isinstance(store, WormAnchorStore)
+
+    def test_an_invalid_retention_mode_is_refused_at_construction(self) -> None:
+        with pytest.raises(WormStoreUnavailableError):
+            S3WormAnchorStore("bucket", client=FakeS3Client(), retention_mode="DELETE_ANYTIME")
+
+    def test_object_lock_compliance_mode_is_applied_by_default(self) -> None:
+        client = FakeS3Client()
+        store = S3WormAnchorStore("evidence-bucket", client=client)
+        anchor = make_anchor()
+        store.put(anchor)
+        assert len(client.put_calls) == 1
+        assert client.put_calls[0]["ObjectLockMode"] == "COMPLIANCE"
+
+    def test_the_retention_period_is_computed_from_sealed_at(self) -> None:
+        client = FakeS3Client()
+        store = S3WormAnchorStore("evidence-bucket", client=client, retention_days=30)
+        anchor = make_anchor()
+        store.put(anchor)
+        retain_until = client.put_calls[0]["ObjectLockRetainUntilDate"]
+        expected = datetime.fromtimestamp(anchor.sealed_at, tz=timezone.utc) + timedelta(days=30)
+        assert retain_until == expected
+
+    def test_governance_mode_can_be_selected(self) -> None:
+        client = FakeS3Client()
+        store = S3WormAnchorStore("evidence-bucket", client=client, retention_mode="GOVERNANCE")
+        store.put(make_anchor())
+        assert client.put_calls[0]["ObjectLockMode"] == "GOVERNANCE"
+
+    def test_a_write_that_loses_a_race_is_reported_as_a_conflict(self) -> None:
+        """The pre-check races a concurrent writer; the conditional write on
+        S3 is the real guarantee (mirroring the filesystem adapter's reliance
+        on O_EXCL rather than its own existence check). Models S3's strong
+        read-after-write consistency: the pre-check sees nothing, the
+        conditional write loses the race, and the follow-up read then sees
+        whichever anchor actually won."""
+        winner = make_anchor()
+        loser = make_anchor(merkle_root=b"\xff" * 32)
+
+        class _RacingClient:
+            def __init__(self) -> None:
+                self._get_calls = 0
+
+            def get_object(self, *, Bucket: str, Key: str) -> Dict[str, Any]:
+                self._get_calls += 1
+                if self._get_calls == 1:
+                    raise _FakeS3Error("NoSuchKey")  # pre-check: not yet visible
+                return {"Body": _FakeS3Body(anchor_to_json(winner).encode("utf-8"))}
+
+            def put_object(self, **kwargs: Any) -> Dict[str, Any]:
+                raise _FakeS3Error("PreconditionFailed")  # another writer already won
+
+        store = S3WormAnchorStore("evidence-bucket", client=_RacingClient())
+        with pytest.raises(EvidenceWriteError):
+            store.put(loser)
+
+    def test_a_write_that_loses_a_race_to_an_identical_anchor_is_idempotent(self) -> None:
+        winner = make_anchor()
+
+        class _RacingClient:
+            def __init__(self) -> None:
+                self._get_calls = 0
+
+            def get_object(self, *, Bucket: str, Key: str) -> Dict[str, Any]:
+                self._get_calls += 1
+                if self._get_calls == 1:
+                    raise _FakeS3Error("NoSuchKey")
+                return {"Body": _FakeS3Body(anchor_to_json(winner).encode("utf-8"))}
+
+            def put_object(self, **kwargs: Any) -> Dict[str, Any]:
+                raise _FakeS3Error("PreconditionFailed")
+
+        store = S3WormAnchorStore("evidence-bucket", client=_RacingClient())
+        locator = store.put(winner)
+        assert locator == f"s3://evidence-bucket/{store._key_for(winner.anchor_id)}"  # noqa: SLF001
+
+    def test_a_key_missing_from_s3_reports_absence_not_a_read_error(self) -> None:
+        store = S3WormAnchorStore("evidence-bucket", client=FakeS3Client())
+        assert store.get("seg-missing:0-0") is None
 
 
 class TestAnchorSerialisation:

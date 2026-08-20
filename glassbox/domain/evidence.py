@@ -512,9 +512,14 @@ class EvidenceSegment:
                     sealed_at=self.sealed_at,
                 )
             assert self.last_seq is not None
-            if self.last_seq < self.first_seq:
+            # Equality (`first_seq == last_seq + 1`) is the valid "fully purged"
+            # case -- every sealed record has since been purged and none remain
+            # live -- and matches the Postgres schema's own
+            # `CHECK (last_seq >= first_seq - 1)` constraint exactly; only a
+            # first_seq that has run *past* that point is a real defect.
+            if self.last_seq < self.first_seq - 1:
                 raise DomainValidationError(
-                    "last_seq must not precede first_seq",
+                    "last_seq must not precede first_seq - 1",
                     field="last_seq",
                     first_seq=self.first_seq,
                     last_seq=self.last_seq,

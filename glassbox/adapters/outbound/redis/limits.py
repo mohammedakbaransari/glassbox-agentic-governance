@@ -141,6 +141,34 @@ end
 return #to_remove
 """
 
+# Bound one tenant's distinct live subjects. Touches (adds/refreshes) this
+# subject in the tenant's zset, then evicts the oldest subjects beyond the
+# cap -- deleting their window/cost/cooldown keys outright, so Redis memory
+# is actually freed rather than merely forgotten. KEYS: [tenant subjects
+# zset]. ARGV: [now, subject_prefix, max_subjects].
+_TENANT_QUOTA_SCRIPT = """
+local subjects_key = KEYS[1]
+local now = ARGV[1]
+local subject = ARGV[2]
+local max_subjects = tonumber(ARGV[3])
+redis.call('ZADD', subjects_key, now, subject)
+if max_subjects <= 0 then
+    return 0
+end
+local count = redis.call('ZCARD', subjects_key)
+local evicted = 0
+if count > max_subjects then
+    local overflow = count - max_subjects
+    local oldest = redis.call('ZRANGE', subjects_key, 0, overflow - 1)
+    for _, evicted_subject in ipairs(oldest) do
+        redis.call('DEL', evicted_subject .. ':w', evicted_subject .. ':c', evicted_subject .. ':cd')
+        redis.call('ZREM', subjects_key, evicted_subject)
+        evicted = evicted + 1
+    end
+end
+return evicted
+"""
+
 
 class RedisLimitStore:
     """A :class:`~glassbox.ports.limits.LimitStore` shared across every replica.
@@ -155,6 +183,12 @@ class RedisLimitStore:
         cooldown_seconds: How long a breaker stays tripped after a rejection.
         key_prefix: Prepended to every Redis key, so one server can host
             multiple isolated deployments (or, in tests, multiple test runs).
+        max_tenant_subjects: Upper bound on distinct limit-key subjects one
+            tenant may have live at once (F-07). ``0`` disables the bound.
+            When exceeded, the oldest-touched subjects for that tenant are
+            evicted outright (their Redis keys deleted), bounding one
+            tenant's own footprint so it cannot grow without limit and
+            trigger `maxmemory` eviction of another tenant's keys.
     """
 
     __slots__ = (
@@ -163,9 +197,11 @@ class RedisLimitStore:
         "_default_limit",
         "_cooldown_seconds",
         "_key_prefix",
+        "_max_tenant_subjects",
         "_consume",
         "_cumulative",
         "_release",
+        "_tenant_quota",
     )
 
     def __init__(
@@ -176,15 +212,18 @@ class RedisLimitStore:
         default_limit: float = 100.0,
         cooldown_seconds: float = 300.0,
         key_prefix: str = "",
+        max_tenant_subjects: int = 0,
     ) -> None:
         self._client = client
         self._limits: Dict[str, float] = dict(limits or {})
         self._default_limit = default_limit
         self._cooldown_seconds = cooldown_seconds
         self._key_prefix = key_prefix
+        self._max_tenant_subjects = max_tenant_subjects
         self._consume = client.register_script(_CONSUME_SCRIPT)
         self._cumulative = client.register_script(_CUMULATIVE_SCRIPT)
         self._release = client.register_script(_RELEASE_SCRIPT)
+        self._tenant_quota = client.register_script(_TENANT_QUOTA_SCRIPT)
 
     def try_consume(
         self, key: LimitKey, *, cost: float, decision_id: str, now: float
@@ -195,9 +234,15 @@ class RedisLimitStore:
         ceiling = self._limits.get(canonical, self._default_limit)
         horizon = key.window.start_of(now)
         ttl = int(key.window.seconds + self._cooldown_seconds + _TTL_PADDING_SECONDS)
+        prefixed = self._prefixed(key)
         try:
+            if self._max_tenant_subjects:
+                self._tenant_quota(
+                    keys=[self._tenant_subjects_key(key)],
+                    args=[now, prefixed, self._max_tenant_subjects],
+                )
             admitted, observed, limit, retry_after, cooldown_until = self._consume(
-                keys=self._keys(canonical),
+                keys=[f"{prefixed}:w", f"{prefixed}:c", f"{prefixed}:cd"],
                 args=[now, horizon, member, cost, ceiling, self._cooldown_seconds, ttl],
             )
         except Exception as exc:  # noqa: BLE001 -- any backend failure fails closed
@@ -221,7 +266,7 @@ class RedisLimitStore:
         canonical = key.canonical_key()
         horizon = window.start_of(now)
         try:
-            total = self._cumulative(keys=self._keys(canonical), args=[horizon])
+            total = self._cumulative(keys=self._keys(key), args=[horizon])
         except Exception as exc:  # noqa: BLE001 -- any backend failure fails closed
             raise LimitStoreUnavailable(
                 "redis limit store is unreachable",
@@ -235,7 +280,7 @@ class RedisLimitStore:
         canonical = key.canonical_key()
         suffix = f":{decision_id}"
         try:
-            self._release(keys=self._keys(canonical), args=[suffix])
+            self._release(keys=self._keys(key), args=[suffix])
         except Exception as exc:  # noqa: BLE001 -- any backend failure fails closed
             raise LimitStoreUnavailable(
                 "redis limit store is unreachable",
@@ -247,20 +292,54 @@ class RedisLimitStore:
         """Set the ceiling for one counter."""
         self._limits[key.canonical_key()] = ceiling
 
-    def _keys(self, canonical: str) -> list:
-        prefixed = f"{self._key_prefix}{canonical}"
+    def _keys(self, key: LimitKey) -> list:
+        """Redis keys include a tenant hash tag so one tenant's keys stay colocated.
+
+        Redis Cluster uses the substring between the first "{" and the first "}"
+        as the hash tag, preventing cross-tenant key collisions while keeping the
+        canonical key itself unchanged for downstream evidence and tests.
+        """
+        prefixed = self._prefixed(key)
         return [f"{prefixed}:w", f"{prefixed}:c", f"{prefixed}:cd"]
+
+    def _prefixed(self, key: LimitKey) -> str:
+        return f"{self._key_prefix}{{{key.tenant_id}}}:{key.canonical_key()}"
+
+    def _tenant_subjects_key(self, key: LimitKey) -> str:
+        """The zset tracking every subject (canonical key) live for this tenant."""
+        return f"{self._key_prefix}{{{key.tenant_id}}}:tenant_subjects"
 
 
 def build_limit_store(config: GlassBoxConfig) -> RedisLimitStore:
     """Factory used by a durable adapter set.
 
+    Connects through Redis Sentinel when ``config.limits.sentinel_hosts`` is
+    set -- discovering and following the current master rather than depending
+    on one fixed instance -- and falls back to a plain ``url`` connection
+    otherwise. Making Sentinel opt-in keeps every existing single-instance
+    deployment unaffected.
+
     Raises:
         glassbox.app.errors.CompositionError: Indirectly, via
             :class:`~glassbox.app.composition.AdapterSet` conformance checking,
-            if ``redis`` is not installed or ``config.limits.url`` is empty.
+            if ``redis`` is not installed or neither ``sentinel_hosts`` nor
+            ``config.limits.url`` is set.
     """
     import redis  # local import: `redis` is an optional extra
 
-    client = redis.Redis.from_url(config.limits.url, decode_responses=True)
-    return RedisLimitStore(client, cooldown_seconds=float(config.limits.cooldown_seconds))
+    limits = config.limits
+    if limits.sentinel_hosts:
+        from redis.sentinel import Sentinel
+
+        sentinel = Sentinel(
+            list(limits.sentinel_hosts),
+            socket_timeout=limits.sentinel_socket_timeout_s,
+        )
+        client = sentinel.master_for(limits.sentinel_service_name, decode_responses=True)
+    else:
+        client = redis.Redis.from_url(limits.url, decode_responses=True)
+    return RedisLimitStore(
+        client,
+        cooldown_seconds=float(limits.cooldown_seconds),
+        max_tenant_subjects=limits.max_tenant_subjects,
+    )

@@ -24,7 +24,9 @@ from typing import Any, Mapping, Tuple
 
 from flask import Flask, Response, jsonify, request
 
+from glassbox.adapters.inbound.http.admission_control import HttpAdmissionController
 from glassbox.app.composition import GovernanceRuntime
+from glassbox.app.approval_service import ApprovalService
 from glassbox.app.decision_service import DecisionOutcome, DecisionService
 from glassbox.app.observability import get_logger, log_error
 from glassbox.domain.action import (
@@ -52,6 +54,9 @@ _ERROR_STATUS: Mapping[str, int] = {
     "DomainValidationError": 400,
     "EvidenceWriteError": 503,
     "SigningUnavailableError": 503,
+    "ApprovalNotFoundError": 404,
+    "ApprovalGatewayUnavailableError": 503,
+    "ApprovalTransitionError": 409,
 }
 
 
@@ -69,6 +74,45 @@ def create_app(runtime: GovernanceRuntime) -> Flask:
 
     app = Flask(__name__)
     service = DecisionService(runtime)
+    approvals = ApprovalService(runtime)
+
+    admission = (
+        HttpAdmissionController(
+            clock=runtime.clock,
+            max_requests=runtime.config.http_admission.max_requests,
+            window_seconds=runtime.config.http_admission.window_seconds,
+        )
+        if runtime.config.http_admission.enabled
+        else None
+    )
+
+    if admission is not None:
+
+        @app.before_request
+        def _enforce_admission() -> Any:
+            """Reject an over-budget client before identity or governance runs.
+
+            Keyed by remote address: unlike the verified principal, this is
+            available before any credential is checked, which is the point --
+            this gate exists specifically to protect the pipeline from ever
+            being reached by a client that has not earned admission yet.
+            """
+            if request.path == "/healthz":
+                return None
+            client_key = request.remote_addr or "unknown"
+            verdict = admission.check(client_key)
+            if verdict.admitted:
+                return None
+            response = jsonify(
+                {
+                    "error_class": "AdmissionRejected",
+                    "message": "request rate limit exceeded",
+                    "retry_after_s": verdict.retry_after_s,
+                }
+            )
+            response.status_code = 429
+            response.headers["Retry-After"] = str(int(verdict.retry_after_s) + 1)
+            return response
 
     @app.get("/healthz")
     def healthz() -> Response:
@@ -129,6 +173,76 @@ def create_app(runtime: GovernanceRuntime) -> Flask:
                 causation_id=body.get("causation_id"),
             )
             return jsonify(_serialise(outcome)), 200
+        except GlassBoxError as exc:
+            return _error_response(exc)
+
+    @app.get("/v2/approvals")
+    def list_pending_approvals() -> Tuple[Response, int]:
+        """List every decision currently awaiting human review."""
+        try:
+            records = approvals.list_pending()
+            return jsonify({"pending": [record.as_evidence() for record in records]}), 200
+        except GlassBoxError as exc:
+            return _error_response(exc)
+
+    @app.get("/v2/approvals/<decision_id>")
+    def get_approval_status(decision_id: str) -> Tuple[Response, int]:
+        """Return the current approval status for one decision."""
+        try:
+            record = approvals.get_status(decision_id)
+            if record is None:
+                return jsonify({"error_class": "ApprovalNotFoundError", "decision_id": decision_id}), 404
+            return jsonify(record.as_evidence()), 200
+        except GlassBoxError as exc:
+            return _error_response(exc)
+
+    @app.post("/v2/approvals/<decision_id>/approve")
+    def approve_decision(decision_id: str) -> Tuple[Response, int]:
+        try:
+            body = _json_body(request)
+            record = approvals.approve(
+                decision_id,
+                actor=_require_str(body, "actor"),
+                notes=body.get("notes", ""),
+                min_approvers=int(body.get("min_approvers", 1)),
+            )
+            return jsonify(record.as_evidence()), 200
+        except GlassBoxError as exc:
+            return _error_response(exc)
+
+    @app.post("/v2/approvals/<decision_id>/reject")
+    def reject_decision(decision_id: str) -> Tuple[Response, int]:
+        try:
+            body = _json_body(request)
+            record = approvals.reject(
+                decision_id, actor=_require_str(body, "actor"), notes=body.get("notes", "")
+            )
+            return jsonify(record.as_evidence()), 200
+        except GlassBoxError as exc:
+            return _error_response(exc)
+
+    @app.post("/v2/approvals/<decision_id>/escalate")
+    def escalate_decision(decision_id: str) -> Tuple[Response, int]:
+        try:
+            body = _json_body(request)
+            record = approvals.escalate(
+                decision_id,
+                actor=_require_str(body, "actor"),
+                escalate_to=_require_str(body, "escalate_to"),
+                notes=body.get("notes", ""),
+            )
+            return jsonify(record.as_evidence()), 200
+        except GlassBoxError as exc:
+            return _error_response(exc)
+
+    @app.post("/v2/approvals/<decision_id>/revoke")
+    def revoke_decision(decision_id: str) -> Tuple[Response, int]:
+        try:
+            body = _json_body(request)
+            record = approvals.revoke(
+                decision_id, actor=_require_str(body, "actor"), notes=body.get("notes", "")
+            )
+            return jsonify(record.as_evidence()), 200
         except GlassBoxError as exc:
             return _error_response(exc)
 

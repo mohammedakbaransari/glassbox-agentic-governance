@@ -16,7 +16,7 @@ Start here based on your goal:
 
 ## Documentation Structure
 
-- [API/](API/) - current and legacy endpoint contracts, identity, and error semantics
+- [API/](API/) - the v2 HTTP endpoint contract, identity, and error semantics
 - [USER/](USER/) - onboarding, scenarios, troubleshooting
 - [DEVELOPMENT/](DEVELOPMENT/) - internals and extension implementation
 - [DEVELOPMENT/testing.md](DEVELOPMENT/testing.md) - test layers, service gates, and CI checks
@@ -33,10 +33,8 @@ Start here based on your goal:
 
 When code changes, update docs in the same change set:
 
-- Current HTTP behavior: update `glassbox/adapters/inbound/http/README.md` and
+- HTTP behavior: update `glassbox/adapters/inbound/http/README.md` and
   `docs/API/v2_endpoint_reference.md`
-- Legacy HTTP behavior: update `glassbox/api/README.md` and
-  `docs/API/endpoint_reference.md`
 - Decision-service stages/policies: update `docs/ARCHITECTURE.md` and `docs/DEVELOPMENT/*`
 - Test workflow changes: update `CONTRIBUTING.md` and user/dev command snippets
 - New module capability: add or update the corresponding `glassbox/<module>/README.md`
@@ -47,7 +45,7 @@ When code changes, update docs in the same change set:
 - Application orchestration: `glassbox/app/decision_service.py`, `glassbox/app/composition.py`
 - Domain rules: `glassbox/domain/`
 - HTTP entry point: `glassbox/adapters/inbound/http/app.py`
-- Legacy compliance crosswalk: `glassbox/compliance/catalogue.py`
+- Compliance framework crosswalk: `docs/COMPLIANCE/requirements.md`
 - Current assurance claims: `docs/CLAIMS.md`
 - Test orchestration: `python -m pytest tests -q`
 

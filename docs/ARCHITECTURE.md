@@ -4,9 +4,15 @@ GlassBox is a runtime decision-governance boundary for autonomous AI systems.
 It evaluates a proposed effect before execution, records durable intent
 evidence, and dispatches only when configured controls permit it.
 
-This document describes the current `DecisionService` architecture. The
-original synchronous `GovernancePipeline` remains available for compatibility
-and is documented in [DEVELOPMENT/architecture.md](DEVELOPMENT/architecture.md).
+This document describes the `DecisionService` architecture — the only
+governance implementation in this repository. An earlier synchronous
+`GovernancePipeline` existed during development; it has been physically
+deleted (GB-040), not merely deprecated. Two small modules,
+[`glassbox/workflow`](../glassbox/workflow/README.md) and
+[`glassbox/store`](../glassbox/store/README.md) (trimmed to its workflow
+repository classes), were kept outside the layering below because they are
+the real implementation behind the `WorkflowGateway` port, not legacy debt —
+see that port's docstring.
 
 ## System Context
 
@@ -208,15 +214,18 @@ state belongs behind ports:
 The repository includes development memory adapters and local PostgreSQL/Redis/
 MinIO services. It does not provide turnkey production infrastructure.
 
-## Current and Legacy Implementations
+## Implementation Status
 
-| Track | Location | Status |
-|---|---|---|
-| DecisionService v2 | `domain`, `ports`, `app`, `adapters/inbound`, `adapters/outbound` | Current; use for new integrations |
-| GovernancePipeline v1 | `governance`, `store`, `api`, and related packages | Compatibility; retained and tested |
+`domain`, `ports`, `app`, `adapters/inbound`, and `adapters/outbound` are the
+only implementation. `glassbox/workflow` and `glassbox/store` are kept
+exclusively as the `WorkflowGateway` backend (see
+[GLOSSARY.md](GLOSSARY.md)); every other package from the earlier
+synchronous implementation has been physically deleted.
 
-The route, identity, storage, and extension contracts are not interchangeable.
-Rebuilt layers are mechanically forbidden from importing legacy packages.
+Rebuilt layers are mechanically forbidden from importing any of the deleted
+packages — the ban stays in `tests/test_layering.py` and the import-linter
+contract as a permanent regression guard, at zero cost now that the packages
+no longer exist on disk.
 
 ## Security Boundaries
 
@@ -247,4 +256,4 @@ python -m pytest tests/test_claims_coverage.py -q
 - [Current HTTP API](API/v2_endpoint_reference.md)
 - [Deployment](DEPLOYMENT/README.md)
 - [Verified claims and limitations](CLAIMS.md)
-- [Legacy architecture reference](DEVELOPMENT/architecture.md)
+- [Glossary](GLOSSARY.md)

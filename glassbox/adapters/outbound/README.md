@@ -17,7 +17,7 @@ domain and application contracts consumed by `DecisionService`.
 | `delta` | Bronze/Silver evidence processing with Delta Lake | Analytical path, not the decision transaction |
 | `spark` | Serializable batch preauthorization and control testing | Optional batch path |
 | `replay.py` | Replay-oriented adapter helpers | Cannot dispatch effects |
-| `worm.py` | Immutable anchor integration | Requires object-lock capable storage |
+| `worm.py` | Immutable anchor storage: `InMemoryWormAnchorStore` (dev), `FilesystemWormAnchorStore` (O_EXCL, write-once), `S3WormAnchorStore` (production — S3 Object Lock, compliance mode) | Filesystem/memory adapters are development reference only |
 | `signing.py` | Signing support shared by adapter implementations | Key custody determines assurance |
 
 No single production adapter set is selected inside `glassbox.app`. A process

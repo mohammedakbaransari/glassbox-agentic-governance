@@ -26,6 +26,7 @@ from glassbox.app.composition import (
 from glassbox.app.config import (
     ENV_PREFIX,
     SAFETY_SWITCHES,
+    BaselineConfig,
     EvidenceConfig,
     GlassBoxConfig,
     IdentityConfig,
@@ -231,6 +232,24 @@ class TestConfigurationLoading:
             EvidenceConfig(seal_interval_seconds=0)
         with pytest.raises(ConfigurationError):
             LimitsConfig(default_window_seconds=0)
+
+    def test_sentinel_hosts_without_a_service_name_is_rejected(self) -> None:
+        """GB-011 HA follow-up: Sentinel needs a master-name to discover."""
+        with pytest.raises(ConfigurationError):
+            LimitsConfig(sentinel_hosts=(("sentinel-1", 26379),))
+        with pytest.raises(ConfigurationError):
+            BaselineConfig(sentinel_hosts=(("sentinel-1", 26379),))
+
+    def test_sentinel_hosts_with_a_service_name_is_accepted(self) -> None:
+        limits = LimitsConfig(
+            sentinel_hosts=(("sentinel-1", 26379), ("sentinel-2", 26379)),
+            sentinel_service_name="glassbox-limits",
+        )
+        assert limits.sentinel_service_name == "glassbox-limits"
+        baseline = BaselineConfig(
+            sentinel_hosts=(("sentinel-1", 26379),), sentinel_service_name="glassbox-baseline"
+        )
+        assert baseline.sentinel_service_name == "glassbox-baseline"
 
 
 class TestConfigurationDescription:
@@ -464,14 +483,27 @@ class TestBuildRuntime:
             runtime.dispatcher = None  # type: ignore[misc]
 
     def test_required_components_matches_the_runtime_fields(self) -> None:
-        """Guards against a port being added without being verified."""
+        """Guards against a port being added without being verified.
+
+        ``workflow_engine`` is the one deliberate exception (Workstream D):
+        it is optional, attached post-construction via
+        ``with_workflow_engine``, and never conformance-checked by
+        ``build_runtime`` -- an adapter set that omits it still builds.
+        """
         declared = {name for name, _ in REQUIRED_COMPONENTS}
         fields = {
             field.name
             for field in dataclasses.fields(GovernanceRuntime)
-            if field.name not in {"config", "adapter_set_name"}
+            if field.name not in {"config", "adapter_set_name", "workflow_engine"}
         }
         assert declared == fields
+
+    def test_workflow_engine_is_optional_and_absent_by_default(self) -> None:
+        """The optional field must never be part of the conformance-checked set."""
+        declared = {name for name, _ in REQUIRED_COMPONENTS}
+        assert "workflow_engine" not in declared
+        runtime = build_runtime(dev_config(), conforming_adapter_set())
+        assert runtime.workflow_engine is None
 
     def test_description_names_the_adapter_set_and_components(self) -> None:
         described = build_runtime(dev_config(), conforming_adapter_set()).describe()
