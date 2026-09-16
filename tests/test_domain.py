@@ -528,6 +528,37 @@ class TestProposedAction:
     def test_evidence_payload_is_canonically_serialisable(self) -> None:
         assert canonical_bytes(dict(make_action(parameters={"amount": 1000}).as_evidence()))
 
+    def test_with_redacted_parameters_replaces_only_the_named_fields(self) -> None:
+        action = make_action(
+            parameters={"amount": 1000, "account_number": "1234567890", "memo": "Q3 rent"}
+        )
+        redacted = action.with_redacted_parameters(frozenset({"account_number"}))
+        assert redacted.parameter("account_number") == "<redacted>"
+        assert redacted.parameter("amount") == 1000
+        assert redacted.parameter("memo") == "Q3 rent"
+
+    def test_with_redacted_parameters_does_not_affect_consequence_or_exposure(self) -> None:
+        action = make_action(parameters={"account_number": "1234567890"})
+        redacted = action.with_redacted_parameters(frozenset({"account_number"}))
+        assert redacted.consequence is action.consequence
+        assert redacted.exposure == action.exposure
+        assert redacted.action == action.action
+        assert redacted.resource == action.resource
+        assert redacted.idempotency_key == action.idempotency_key
+
+    def test_with_redacted_parameters_is_a_no_op_for_an_empty_field_set(self) -> None:
+        action = make_action(parameters={"account_number": "1234567890"})
+        assert action.with_redacted_parameters(frozenset()) is action
+
+    def test_with_redacted_parameters_is_a_no_op_when_no_named_field_is_present(self) -> None:
+        action = make_action(parameters={"amount": 1000})
+        assert action.with_redacted_parameters(frozenset({"account_number"})) is action
+
+    def test_with_redacted_parameters_leaves_the_original_action_untouched(self) -> None:
+        action = make_action(parameters={"account_number": "1234567890"})
+        action.with_redacted_parameters(frozenset({"account_number"}))
+        assert action.parameter("account_number") == "1234567890"
+
 
 # --------------------------------------------------------------------------- #
 # Risk
@@ -968,8 +999,7 @@ class TestRedisTenantIsolation:
             window=Window(60),
         )
         assert store._redis_key(key) == (
-            "test:{acme}:glassbox|baseline|acme|agent|agent.treasury-bot|"
-            "exposure_monetary|60s"
+            "test:{acme}:glassbox|baseline|acme|agent|agent.treasury-bot|" "exposure_monetary|60s"
         )
 
 
@@ -1402,6 +1432,63 @@ class TestIntegrityReport:
         )
         assert report.is_acceptable is False
 
+    def test_outcome_chain_fields_default_to_vacuously_intact(self) -> None:
+        """A report built before any outcome chain existed (or for a segment
+        with no chained outcomes) must not overstate what was checked."""
+        report = IntegrityReport(
+            segment_id="seg-1", status=IntegrityStatus.INTACT, records_checked=3, verified_at=NOW
+        )
+        assert report.outcome_status is IntegrityStatus.INTACT
+        assert report.outcome_records_checked == 0
+        assert report.first_broken_outcome_seq is None
+        assert report.outcome_is_acceptable is True
+        assert report.is_fully_acceptable is True
+
+    def test_a_broken_outcome_chain_does_not_affect_the_intent_status(self) -> None:
+        """The two chains are independent: one can be broken without the other."""
+        report = IntegrityReport(
+            segment_id="seg-1",
+            status=IntegrityStatus.INTACT,
+            records_checked=3,
+            verified_at=NOW,
+            outcome_status=IntegrityStatus.BROKEN,
+            outcome_records_checked=1,
+            first_broken_outcome_seq=1,
+        )
+        assert report.is_acceptable is True
+        assert report.outcome_is_acceptable is False
+        assert report.is_fully_acceptable is False
+
+    def test_broken_outcome_chain_must_localise_the_failure(self) -> None:
+        with pytest.raises(DomainValidationError):
+            IntegrityReport(
+                segment_id="seg-1",
+                status=IntegrityStatus.INTACT,
+                records_checked=3,
+                verified_at=NOW,
+                outcome_status=IntegrityStatus.BROKEN,
+                outcome_records_checked=1,
+            )
+
+    def test_intact_outcome_chain_must_not_name_a_failing_record(self) -> None:
+        with pytest.raises(DomainValidationError):
+            IntegrityReport(
+                segment_id="seg-1",
+                status=IntegrityStatus.INTACT,
+                records_checked=3,
+                verified_at=NOW,
+                first_broken_outcome_seq=1,
+            )
+
+    def test_as_evidence_includes_the_outcome_chain_fields(self) -> None:
+        report = IntegrityReport(
+            segment_id="seg-1", status=IntegrityStatus.INTACT, records_checked=3, verified_at=NOW
+        )
+        payload = report.as_evidence()
+        assert payload["outcome_status"] == "intact"
+        assert payload["outcome_records_checked"] == 0
+        assert payload["first_broken_outcome_seq"] is None
+
 
 class TestOutcomeRecord:
     """Outcome is a separate, later write keyed by decision id."""
@@ -1416,6 +1503,58 @@ class TestOutcomeRecord:
         payload = record.as_evidence()
         assert payload["result_digest"] == DIGEST_A
         assert canonical_bytes(dict(payload))
+
+    @staticmethod
+    def _outcome(**overrides: Any) -> OutcomeRecord:
+        kwargs: Dict[str, Any] = {
+            "decision_id": "decision-0001",
+            "outcome": ExecutionOutcome(status=ExecutionStatus.EXECUTED, completed_at=NOW),
+        }
+        kwargs.update(overrides)
+        return OutcomeRecord(**kwargs)
+
+    def test_chain_payload_is_deterministic(self) -> None:
+        first = self._outcome().chain_payload(seq=0, prev_hash=GENESIS_PREV_HASH)
+        second = self._outcome().chain_payload(seq=0, prev_hash=GENESIS_PREV_HASH)
+        assert first == second
+
+    def test_mutating_any_field_changes_the_outcome_payload(self) -> None:
+        """Regression for the same class of defect the intent chain closes:
+        an altered outcome must not silently re-verify as intact."""
+        original = self._outcome().chain_payload(seq=0, prev_hash=GENESIS_PREV_HASH)
+        forged = self._outcome(
+            outcome=ExecutionOutcome(
+                status=ExecutionStatus.FAILED, completed_at=NOW, error_class="X"
+            )
+        ).chain_payload(seq=0, prev_hash=GENESIS_PREV_HASH)
+        assert original != forged
+
+    def test_changing_position_changes_the_outcome_payload(self) -> None:
+        record = self._outcome()
+        assert record.chain_payload(seq=0, prev_hash=GENESIS_PREV_HASH) != record.chain_payload(
+            seq=1, prev_hash=GENESIS_PREV_HASH
+        )
+
+    def test_changing_the_predecessor_changes_the_outcome_payload(self) -> None:
+        record = self._outcome()
+        assert record.chain_payload(seq=1, prev_hash=GENESIS_PREV_HASH) != record.chain_payload(
+            seq=1, prev_hash=b"\x01" * 32
+        )
+
+    def test_outcome_prev_hash_must_be_exactly_32_bytes(self) -> None:
+        with pytest.raises(DomainValidationError):
+            self._outcome().chain_payload(seq=0, prev_hash=b"\x00" * 31)
+
+    def test_outcome_negative_sequence_is_rejected(self) -> None:
+        with pytest.raises(DomainValidationError):
+            self._outcome().chain_payload(seq=-1, prev_hash=GENESIS_PREV_HASH)
+
+    def test_outcome_and_intent_chains_are_independent(self) -> None:
+        """Same seq/prev_hash, but the two record types must never collide --
+        an intent's chain payload is not accidentally reusable as an outcome's."""
+        intent_payload = make_intent().chain_payload(seq=0, prev_hash=GENESIS_PREV_HASH)
+        outcome_payload = self._outcome().chain_payload(seq=0, prev_hash=GENESIS_PREV_HASH)
+        assert intent_payload != outcome_payload
 
 
 # --------------------------------------------------------------------------- #

@@ -950,7 +950,10 @@ TOOL_DIGEST = "a" * 64
 
 
 def _load_tool_registry(
-    rt: Runtime, *, consequence: ConsequenceClass = ConsequenceClass.REVERSIBLE
+    rt: Runtime,
+    *,
+    consequence: ConsequenceClass = ConsequenceClass.REVERSIBLE,
+    sensitive_parameter_fields: Tuple[str, ...] = (),
 ) -> None:
     registry = rt.runtime.tool_registry
     assert isinstance(registry, InMemoryToolRegistry)
@@ -969,6 +972,7 @@ def _load_tool_registry(
                         exposure_rule=ExposureRule(
                             blast_radius=BlastRadius.SINGLE, monetary_field="amount"
                         ),
+                        sensitive_parameter_fields=frozenset(sensitive_parameter_fields),
                     ),
                 ),
             ),
@@ -985,7 +989,11 @@ class TestLayeredInputValidation:
     """
 
     def _load_schema_catalogue(
-        self, rt: Runtime, *, untrusted_text_fields: Tuple[str, ...] = ()
+        self,
+        rt: Runtime,
+        *,
+        untrusted_text_fields: Tuple[str, ...] = (),
+        sensitive_parameter_fields: Tuple[str, ...] = (),
     ) -> None:
         catalogue = rt.runtime.action_catalogue
         assert isinstance(catalogue, InMemoryActionCatalogue)
@@ -1005,8 +1013,10 @@ class TestLayeredInputValidation:
                             ParameterField(name="amount", type=ParameterType.NUMBER, required=True),
                             ParameterField(name="memo", type=ParameterType.STRING),
                             ParameterField(name="agent_notes", type=ParameterType.STRING),
+                            ParameterField(name="account_number", type=ParameterType.STRING),
                         ),
                         untrusted_text_fields=frozenset(untrusted_text_fields),
+                        sensitive_parameter_fields=frozenset(sensitive_parameter_fields),
                     ),
                 ),
             )
@@ -1080,6 +1090,69 @@ class TestLayeredInputValidation:
         )
         assert outcome.decision.effect is DecisionEffect.ALLOW
 
+    def test_a_sensitive_parameter_is_redacted_in_evidence_but_dispatched_in_the_clear(
+        self, rt: Runtime
+    ) -> None:
+        """The evidence-bound copy of the action never carries the raw value of
+        a catalogue-declared sensitive field, but the dispatcher -- which
+        performs the real effect -- still receives it unchanged. Redaction is a
+        property of the persisted evidence copy only, never of authorization or
+        execution."""
+        rt.happy_path()
+        self._load_schema_catalogue(rt, sensitive_parameter_fields=("account_number",))
+        dispatched_account_numbers: List[Any] = []
+
+        def handler(proposed: ProposedAction) -> Dict[str, str]:
+            dispatched_account_numbers.append(proposed.parameter("account_number"))
+            return {"status": "sent"}
+
+        rt.runtime.dispatcher.register(ACTION_NAME, handler)
+
+        outcome = rt.service.decide_and_dispatch_for_request(
+            credential(),
+            action_name=ACTION_NAME,
+            resource=ResourceRef(kind="account", id="ACC-1", tenant_id=TENANT),
+            parameters={"amount": 101.0, "account_number": "1234567890"},
+            idempotency_key="idem-layered-0005",
+        )
+        assert outcome.decision.effect is DecisionEffect.ALLOW
+
+        record = _record_of(rt, outcome)
+        assert record.action.parameter("account_number") == "<redacted>"
+        assert record.action.parameter("amount") == 101.0
+        assert dispatched_account_numbers == ["1234567890"]
+
+    def test_a_sensitive_field_is_redacted_even_when_the_action_is_denied(
+        self, rt: Runtime
+    ) -> None:
+        """A denied decision is still evidenced -- and that evidence must not
+        leak the sensitive value either."""
+        self._load_schema_catalogue(rt, sensitive_parameter_fields=("account_number",))
+        # No mandate/policy wired: the action is denied before dispatch.
+        outcome = rt.service.decide_and_dispatch_for_request(
+            credential(),
+            action_name=ACTION_NAME,
+            resource=ResourceRef(kind="account", id="ACC-1", tenant_id=TENANT),
+            parameters={"amount": 101.0, "account_number": "1234567890"},
+            idempotency_key="idem-layered-0006",
+        )
+        assert outcome.decision.effect is DecisionEffect.DENY
+        record = _record_of(rt, outcome)
+        assert record.action.parameter("account_number") == "<redacted>"
+
+    def test_a_field_not_declared_sensitive_is_stored_in_the_clear(self, rt: Runtime) -> None:
+        rt.happy_path()
+        self._load_schema_catalogue(rt)  # no sensitive_parameter_fields declared
+        outcome = rt.service.decide_and_dispatch_for_request(
+            credential(),
+            action_name=ACTION_NAME,
+            resource=ResourceRef(kind="account", id="ACC-1", tenant_id=TENANT),
+            parameters={"amount": 101.0, "account_number": "1234567890"},
+            idempotency_key="idem-layered-0007",
+        )
+        record = _record_of(rt, outcome)
+        assert record.action.parameter("account_number") == "1234567890"
+
 
 class TestToolRegistryStage:
     """GB-013: closes F6 -- an unregistered tool, or one presented with a
@@ -1116,6 +1189,48 @@ class TestToolRegistryStage:
         assert record.action.exposure.monetary == 101.0
         assert outcome.decision.effect is DecisionEffect.ALLOW
         assert rt.dispatched == ["idem-tool-1"]
+
+    def test_a_sensitive_field_is_redacted_for_a_tool_registry_resolved_action(
+        self, rt: Runtime
+    ) -> None:
+        """The redaction hook applies uniformly to both resolution paths: an
+        action reached via the tool registry (GB-013) is redacted the same way
+        as one reached via the action catalogue (GB-010)."""
+        rt.happy_path()
+        rt.allow(TOOL_NAME)
+        rt.runtime.mandate_store.put(
+            Mandate(
+                tenant_id=TENANT,
+                agent_ref=AGENT,
+                version=1,
+                max_consequence=ConsequenceClass.IRREVERSIBLE,
+                max_exposure=Exposure(monetary=1_000_000.0),
+                valid_from=0.0,
+                allowed_actions=frozenset({"mcp.*"}),
+                allowed_resources=frozenset({"account/*"}),
+            )
+        )
+        _load_tool_registry(rt, sensitive_parameter_fields=("account_number",))
+        dispatched_account_numbers: List[Any] = []
+
+        def handler(proposed: ProposedAction) -> Dict[str, str]:
+            dispatched_account_numbers.append(proposed.parameter("account_number"))
+            return {"status": "sent"}
+
+        rt.runtime.dispatcher.register(TOOL_NAME, handler)
+
+        outcome = rt.service.decide_and_dispatch_for_tool_call(
+            credential(),
+            tool_name=TOOL_NAME,
+            definition_sha256=TOOL_DIGEST,
+            resource=ResourceRef(kind="account", id="ACC-1", tenant_id=TENANT),
+            parameters={"amount": 101.0, "account_number": "1234567890"},
+            idempotency_key="idem-tool-redacted",
+        )
+        assert outcome.decision.effect is DecisionEffect.ALLOW
+        record = _record_of(rt, outcome)
+        assert record.action.parameter("account_number") == "<redacted>"
+        assert dispatched_account_numbers == ["1234567890"]
 
     def test_an_unregistered_tool_is_denied_and_evidenced(self, rt: Runtime) -> None:
         rt.happy_path()

@@ -1,0 +1,18 @@
+# Reference systemd timer for glassbox-maintenance.service.
+# Copy to /etc/systemd/system/glassbox-maintenance.timer alongside the
+# matching .service unit, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now glassbox-maintenance.timer
+[Unit]
+Description=Run glassbox-maintenance.service every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+# A missed tick (e.g. host was off) runs once at the next boot instead of
+# silently waiting for the next regularly-scheduled tick.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

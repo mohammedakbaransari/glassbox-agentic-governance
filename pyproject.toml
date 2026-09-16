@@ -150,6 +150,11 @@ line_length = 100
 #
 # `glassbox.adapters` as a whole is NOT a layer: only the rebuilt subtree
 # `glassbox.adapters.outbound` (plus `glassbox.adapters.inbound`) participates.
+# `glassbox.adapters.inbound` (the process entry points: http/, cli/) is the
+# composition root -- it may freely import outbound adapters to wire concrete
+# object graphs, but nothing may import it back: the "No rebuilt layer imports
+# a concrete inbound adapter" contract below keeps that direction one-way, and
+# it is held to the same v1-anchoring ban as every other rebuilt layer.
 # ---------------------------------------------------------------------------
 [tool.importlinter]
 root_package = "glassbox"
@@ -171,6 +176,17 @@ source_modules = ["glassbox.app"]
 forbidden_modules = ["glassbox.adapters"]
 
 [[tool.importlinter.contracts]]
+name = "No rebuilt layer imports a concrete inbound adapter"
+type = "forbidden"
+source_modules = [
+  "glassbox.domain",
+  "glassbox.ports",
+  "glassbox.app",
+  "glassbox.adapters.outbound",
+]
+forbidden_modules = ["glassbox.adapters.inbound"]
+
+[[tool.importlinter.contracts]]
 name = "The pure layers never reach forwards into orchestration or infrastructure"
 type = "forbidden"
 source_modules = ["glassbox.domain", "glassbox.ports"]
@@ -184,6 +200,7 @@ source_modules = [
   "glassbox.ports",
   "glassbox.app",
   "glassbox.adapters.outbound",
+  "glassbox.adapters.inbound",
 ]
 forbidden_modules = [
   "glassbox.api",

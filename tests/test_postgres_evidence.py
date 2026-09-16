@@ -73,11 +73,17 @@ class FakeCursor:
         for fragment, handler in (
             ("INSERT INTO evidence_segment", self._insert_segment),
             ("SELECT retention_sealed_last_seq", self._select_retention_seal),
+            ("SELECT outcome_last_seq", self._lock_outcome_chain),
             ("FROM evidence_segment WHERE segment_id = %s FOR UPDATE", self._lock_segment),
             ("FROM evidence_intent WHERE decision_id = %s", self._select_by_decision),
             ("INSERT INTO evidence_intent", self._insert_intent),
+            ("UPDATE evidence_segment SET outcome_last_seq", self._advance_outcome_chain),
             ("UPDATE evidence_segment SET last_seq", self._advance_segment),
             ("INSERT INTO evidence_outcome", self._insert_outcome),
+            (
+                "FROM evidence_outcome WHERE segment_id = %s AND seq IS NOT NULL",
+                self._select_outcome_chain,
+            ),
             ("purged_before_seq, sealed_at, merkle_root", self._select_segment_state),
             ("retention_sealed_at, retention_sealed_first_seq", self._select_segment_full),
             ("retention_sealed_at = to_timestamp", self._mark_sealed),
@@ -130,6 +136,8 @@ class FakeCursor:
                 "retention_worm_anchor_id": None,
                 "retention_worm_locator": None,
                 "retention_last_leaf_hmac": None,
+                "outcome_last_seq": -1,
+                "outcome_last_hash": bytes(genesis),
             },
         )
         return []
@@ -182,9 +190,35 @@ class FakeCursor:
         segment["last_hash"] = bytes(last_hash)
         return []
 
-    def _insert_outcome(self, params: Tuple[Any, ...]) -> List[Tuple[Any, ...]]:
-        self._db.outcomes.setdefault(params[0], params)
+    def _lock_outcome_chain(self, params: Tuple[Any, ...]) -> List[Tuple[Any, ...]]:
+        segment = self._db.segments.get(params[0])
+        if segment is None:
+            return []
+        return [(segment["outcome_last_seq"], segment["outcome_last_hash"])]
+
+    def _advance_outcome_chain(self, params: Tuple[Any, ...]) -> List[Tuple[Any, ...]]:
+        seq, mac, segment_id = params
+        segment = self._db.segments[segment_id]
+        segment["outcome_last_seq"] = seq
+        segment["outcome_last_hash"] = bytes(mac)
         return []
+
+    def _insert_outcome(self, params: Tuple[Any, ...]) -> List[Tuple[Any, ...]]:
+        # params: decision_id, status, completed_at, result_digest, error_class,
+        #         segment_id, seq, record, prev_hash, record_hmac, signer_key_id
+        decision_id, completed_at = params[0], params[2]
+        key = (decision_id, completed_at)
+        if key in self._db.outcomes:
+            return []  # ON CONFLICT (decision_id, completed_at) DO NOTHING
+        self._db.outcomes[key] = params
+        return [(decision_id,)]
+
+    def _select_outcome_chain(self, params: Tuple[Any, ...]) -> List[Tuple[Any, ...]]:
+        rows = [
+            row for row in self._db.outcomes.values() if row[5] == params[0] and row[6] is not None
+        ]
+        rows.sort(key=lambda row: row[6])
+        return [(row[6], row[7], row[8], row[9], row[10]) for row in rows]
 
     def _select_segment_state(self, params: Tuple[Any, ...]) -> List[Tuple[Any, ...]]:
         segment = self._db.segments.get(params[0])
@@ -928,6 +962,76 @@ class TestPostgresIntegration:
         assert report.status is IntegrityStatus.SEALED_PURGED
         assert report.is_acceptable is True
 
+    def test_outcome_chain_advances_on_a_real_server(self, store: PostgresEvidenceStore) -> None:
+        from glassbox.domain.decision import ExecutionOutcome, ExecutionStatus
+        from glassbox.domain.evidence import OutcomeRecord
+
+        receipts = [
+            store.append_intent(make_intent(decision_id=f"decision-{index:04d}"))
+            for index in range(3)
+        ]
+        for index, receipt in enumerate(receipts):
+            store.append_outcome(
+                receipt,
+                OutcomeRecord(
+                    decision_id=f"decision-{index:04d}",
+                    outcome=ExecutionOutcome(
+                        status=ExecutionStatus.EXECUTED, completed_at=NOW + index
+                    ),
+                ),
+            )
+        report = store.verify(SEGMENT, now=NOW)
+        assert report.status is IntegrityStatus.INTACT
+        assert report.outcome_status is IntegrityStatus.INTACT
+        assert report.outcome_records_checked == 3
+        assert report.is_fully_acceptable is True
+
+    def test_a_retried_outcome_write_does_not_advance_the_chain_twice_on_a_real_server(
+        self, store: PostgresEvidenceStore
+    ) -> None:
+        from glassbox.domain.decision import ExecutionOutcome, ExecutionStatus
+        from glassbox.domain.evidence import OutcomeRecord
+
+        receipt = store.append_intent(make_intent())
+        outcome = OutcomeRecord(
+            decision_id=receipt.decision_id,
+            outcome=ExecutionOutcome(status=ExecutionStatus.EXECUTED, completed_at=NOW),
+        )
+        store.append_outcome(receipt, outcome)
+        store.append_outcome(receipt, outcome)  # retry, same (decision_id, completed_at)
+
+        report = store.verify(SEGMENT, now=NOW)
+        assert report.outcome_records_checked == 1
+
+    def test_a_forged_outcome_row_is_detected_on_a_real_server(
+        self, store: PostgresEvidenceStore, provider: Any
+    ) -> None:
+        """Superuser roles bypass ``REVOKE UPDATE``, exactly as noted for the
+        intent chain's own tamper test -- proving the MAC chain, not the grant,
+        is what actually stops a forged outcome from re-verifying as intact."""
+        from glassbox.domain.decision import ExecutionOutcome, ExecutionStatus
+        from glassbox.domain.evidence import OutcomeRecord
+
+        receipt = store.append_intent(make_intent())
+        store.append_outcome(
+            receipt,
+            OutcomeRecord(
+                decision_id=receipt.decision_id,
+                outcome=ExecutionOutcome(status=ExecutionStatus.EXECUTED, completed_at=NOW),
+            ),
+        )
+        assert store.verify(SEGMENT, now=NOW).outcome_status is IntegrityStatus.INTACT
+
+        with provider.transaction() as cursor:
+            cursor.execute(
+                "UPDATE evidence_outcome SET record = %s WHERE decision_id = %s",
+                (json.dumps({"forged": True}), receipt.decision_id),
+            )
+        report = store.verify(SEGMENT, now=NOW)
+        assert report.outcome_status is IntegrityStatus.BROKEN
+        assert report.first_broken_outcome_seq == 0
+        assert report.is_fully_acceptable is False
+
 
 @_requires_postgres
 class TestPostgresRetentionStoreIntegration:
@@ -1087,9 +1191,7 @@ class TestPostgresPartitioning:
 
     def test_evidence_intent_is_a_partitioned_table(self, provider: Any) -> None:
         with provider.transaction() as cursor:
-            cursor.execute(
-                "SELECT relkind FROM pg_class WHERE relname = 'evidence_intent'", ()
-            )
+            cursor.execute("SELECT relkind FROM pg_class WHERE relname = 'evidence_intent'", ())
             (relkind,) = cursor.fetchone()
         assert relkind == "p"
 
@@ -1124,9 +1226,7 @@ class TestPostgresPartitioning:
 
         ensure_monthly_partitions(provider)
         real_now = _time.time()
-        store.append_intent(
-            make_intent(decision_id="decision-partition-1", created_at=real_now)
-        )
+        store.append_intent(make_intent(decision_id="decision-partition-1", created_at=real_now))
         with provider.transaction() as cursor:
             cursor.execute(
                 "SELECT tableoid::regclass::text FROM evidence_intent WHERE decision_id = %s",
@@ -1205,9 +1305,7 @@ class TestPostgresOutcomePartitioning:
 
     def test_evidence_outcome_is_a_partitioned_table(self, provider: Any) -> None:
         with provider.transaction() as cursor:
-            cursor.execute(
-                "SELECT relkind FROM pg_class WHERE relname = 'evidence_outcome'", ()
-            )
+            cursor.execute("SELECT relkind FROM pg_class WHERE relname = 'evidence_outcome'", ())
             (relkind,) = cursor.fetchone()
         assert relkind == "p"
 
@@ -1275,4 +1373,3 @@ class TestPostgresOutcomePartitioning:
             )
             plan = "\n".join(row[0] for row in cursor.fetchall())
         assert "Subplans Removed" in plan
-

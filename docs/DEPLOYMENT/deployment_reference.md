@@ -57,6 +57,20 @@ Accepted booleans are `true/false`, `1/0`, `yes/no`, and `on/off`
 `describe()` redacts connection values and reports only whether sensitive
 settings are configured.
 
+## Scheduled Maintenance Variables
+
+`glassbox/adapters/inbound/cli/maintenance.py` reads these directly (not
+through `GlassBoxConfig`); see [`deploy/cron/`](../../deploy/cron/README.md)
+for reference Kubernetes `CronJob` and systemd timer manifests that invoke it.
+
+| Environment variable | Default | Purpose |
+|---|---:|---|
+| `GLASSBOX_MAINTENANCE_SEAL_AFTER_SECONDS` | `2592000` (30 days) | Age before an unsealed segment is sealed |
+| `GLASSBOX_MAINTENANCE_PURGE_GRACE_SECONDS` | `2592000` (30 days) | Age after sealing before a segment is purged |
+| `GLASSBOX_MAINTENANCE_SEGMENT_BATCH_LIMIT` | `5000` | Max segments considered per run |
+| `GLASSBOX_MAINTENANCE_WORM_ANCHOR_DIR` | `./glassbox-worm-anchors` | Anchor directory when no KMS-backed signer is configured |
+| `GLASSBOX_MAINTENANCE_STALENESS_THRESHOLD_SECONDS` | `seal_after + purge_grace + 7 days` | Backlog age that triggers a `WARNING`-level staleness log |
+
 ## Integration-Test Variables
 
 These variables are test harness controls, not `GlassBoxConfig` fields:

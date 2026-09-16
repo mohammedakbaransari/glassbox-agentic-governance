@@ -14,7 +14,12 @@ from typing import Any, List, Tuple
 
 import pytest
 
-from glassbox.adapters.inbound.cli.maintenance import _fetch_segment_ids, _build_signer
+from glassbox.adapters.inbound.cli.maintenance import (
+    _build_signer,
+    _fetch_oldest_outstanding_segment_age_seconds,
+    _fetch_segment_ids,
+    detect_stale_backlog,
+)
 from glassbox.app.config import GlassBoxConfig, RuntimeProfile, SigningConfig
 
 POSTGRES_DSN = os.environ.get("GLASSBOX_POSTGRES_DSN", "")
@@ -35,6 +40,9 @@ class _FakeCursor:
 
     def fetchall(self) -> List[Tuple[Any, ...]]:
         return self.rows
+
+    def fetchone(self) -> Any:
+        return self.rows[0] if self.rows else None
 
 
 class _FakeProvider:
@@ -81,6 +89,60 @@ class TestFetchSegmentIds:
         assert "retention_sealed_last_seq IS NULL" in sql
 
 
+class TestFetchOldestOutstandingSegmentAgeSeconds:
+    def test_returns_none_when_nothing_has_outstanding_retention_work(self) -> None:
+        provider = _FakeProvider([])
+        result = _fetch_oldest_outstanding_segment_age_seconds(
+            provider, now=1_000_000.0  # type: ignore[arg-type]
+        )
+        assert result is None
+
+    def test_returns_the_age_in_seconds_for_a_plain_epoch_float(self) -> None:
+        provider = _FakeProvider([(1_000_000.0 - 3_600.0,)])
+        result = _fetch_oldest_outstanding_segment_age_seconds(
+            provider, now=1_000_000.0  # type: ignore[arg-type]
+        )
+        assert result == 3_600.0
+
+    def test_accepts_a_datetime_like_value_with_a_timestamp_method(self) -> None:
+        class _FakeDatetime:
+            def timestamp(self) -> float:
+                return 1_000_000.0 - 7_200.0
+
+        provider = _FakeProvider([(_FakeDatetime(),)])
+        result = _fetch_oldest_outstanding_segment_age_seconds(
+            provider, now=1_000_000.0  # type: ignore[arg-type]
+        )
+        assert result == 7_200.0
+
+
+class TestDetectStaleBacklog:
+    def test_returns_none_when_there_is_no_outstanding_work(self) -> None:
+        assert (
+            detect_stale_backlog(
+                oldest_outstanding_age_seconds=None, staleness_threshold_seconds=100.0
+            )
+            is None
+        )
+
+    def test_returns_none_when_the_oldest_segment_is_within_the_threshold(self) -> None:
+        assert (
+            detect_stale_backlog(
+                oldest_outstanding_age_seconds=50.0, staleness_threshold_seconds=100.0
+            )
+            is None
+        )
+
+    def test_warns_when_the_oldest_segment_exceeds_the_threshold(self) -> None:
+        warning = detect_stale_backlog(
+            oldest_outstanding_age_seconds=150.0, staleness_threshold_seconds=100.0
+        )
+        assert warning is not None
+        assert "stale" in warning
+        assert "150" in warning
+        assert "100" in warning
+
+
 @_requires_postgres
 class TestMaintenanceRunIntegration:
     """Real end-to-end run against a live server."""
@@ -118,9 +180,9 @@ class TestMaintenanceRunIntegration:
         import time as _time
 
         from glassbox.adapters.inbound.cli.maintenance import run
+        from glassbox.adapters.outbound.memory.signing import LocalMacSigner
         from glassbox.adapters.outbound.postgres.driver import PsycopgConnectionProvider
         from glassbox.adapters.outbound.postgres.evidence import PostgresEvidenceStore
-        from glassbox.adapters.outbound.memory.signing import LocalMacSigner
         from glassbox.app.retention_scheduler import RetentionAction
         from tests.test_domain import make_action, make_intent
 
@@ -173,9 +235,7 @@ class TestMaintenanceRunIntegration:
         provider = PsycopgConnectionProvider(POSTGRES_DSN)
         try:
             with provider.transaction() as cursor:
-                cursor.execute(
-                    "SELECT to_regclass('evidence_intent_default') IS NOT NULL", ()
-                )
+                cursor.execute("SELECT to_regclass('evidence_intent_default') IS NOT NULL", ())
                 assert cursor.fetchone() == (True,)
         finally:
             provider.close()

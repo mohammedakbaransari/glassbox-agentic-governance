@@ -237,6 +237,17 @@ class ActionDefinition:
             control (GB-029) -- a business field such as a supplier name or a
             purchase-order description is never scanned for injection patterns,
             which is what keeps the false-positive rate at zero.
+        sensitive_parameter_fields: Names of parameters that hold sensitive
+            transactional facts (account numbers, PII, secrets) which must
+            never be persisted in the clear. Only these fields are replaced by
+            a placeholder in the evidence-bound copy of an action
+            (:meth:`~glassbox.domain.action.ProposedAction.with_redacted_parameters`)
+            before it is written to ``evidence_intent`` -- the same instance,
+            unredacted, still reaches mandate, policy, risk and dispatch, since
+            none of those stages ever reads raw parameter values. A field
+            absent from this set is stored in the clear, exactly as before this
+            attribute existed; the default (empty) is a fully backward-
+            compatible no-op.
     """
 
     action: str
@@ -245,6 +256,7 @@ class ActionDefinition:
     required_attestations: Tuple[str, ...] = ()
     parameter_schema: Tuple[ParameterField, ...] = ()
     untrusted_text_fields: FrozenSet[str] = frozenset()
+    sensitive_parameter_fields: FrozenSet[str] = frozenset()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "action", require_identifier(self.action, field="action"))
@@ -295,6 +307,14 @@ class ActionDefinition:
             )
         for name in self.untrusted_text_fields:
             require_identifier(name, field="untrusted_text_fields")
+        if not isinstance(self.sensitive_parameter_fields, frozenset):
+            object.__setattr__(
+                self,
+                "sensitive_parameter_fields",
+                frozenset(self.sensitive_parameter_fields or ()),
+            )
+        for name in self.sensitive_parameter_fields:
+            require_identifier(name, field="sensitive_parameter_fields")
 
     def validate_parameters(self, parameters: Mapping[str, Any]) -> Tuple[str, ...]:
         """Return every way ``parameters`` violates this action's schema.
@@ -328,6 +348,7 @@ class ActionDefinition:
             "required_attestations": list(self.required_attestations),
             "parameter_schema": [field.as_evidence() for field in self.parameter_schema],
             "untrusted_text_fields": sorted(self.untrusted_text_fields),
+            "sensitive_parameter_fields": sorted(self.sensitive_parameter_fields),
         }
 
 

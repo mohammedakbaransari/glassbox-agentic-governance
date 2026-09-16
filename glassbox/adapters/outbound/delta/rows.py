@@ -21,6 +21,8 @@ __all__ = [
     "outcome_bronze_schema",
     "intent_record_to_bronze_row",
     "outcome_record_to_bronze_row",
+    "intent_evidence_dict_to_bronze_row",
+    "outcome_evidence_dict_to_bronze_row",
 ]
 
 #: Bronze partitioning, matching the plan's §6.4: append-only, partitioned by
@@ -183,6 +185,85 @@ def outcome_record_to_bronze_row(
         "completed_at": outcome.completed_at,
         "result_digest": outcome.result_digest,
         "error_class": outcome.error_class,
+        "cdc_lsn": cdc_lsn,
+        "cdc_operation": cdc_operation,
+    }
+
+
+def intent_evidence_dict_to_bronze_row(
+    evidence: Dict[str, Any], *, seq: int, cdc_lsn: str, cdc_operation: str = "insert"
+) -> Dict[str, Any]:
+    """Flatten a raw ``evidence_intent.record`` JSONB payload into a Bronze row.
+
+    Same field mapping as :func:`intent_record_to_bronze_row`, for a CDC source
+    (:class:`~glassbox.adapters.outbound.postgres.cdc_source.PostgresLogicalReplicationSource`)
+    that reads the already-serialised ``IntentRecord.as_evidence()`` dict off
+    the wire instead of holding a live domain object.
+    """
+    identity = evidence["identity"]
+    action = evidence["action"]
+    policy_decision = evidence["policy_decision"]
+    risk = evidence["risk"]
+    exposure = action["exposure"]
+    return {
+        "decision_id": evidence["decision_id"],
+        "segment_id": evidence["segment_id"],
+        "seq": seq,
+        "tenant_id": evidence["tenant_id"],
+        "cdc_date": _date_partition(evidence["created_at"]),
+        "created_at": evidence["created_at"],
+        "agent_ref": identity["agent_ref"],
+        "agent_instance_id": identity["agent_instance_id"],
+        "delegating_subject": identity["delegating_subject"],
+        "credential_type": identity["credential_type"],
+        "credential_id": identity["credential_id"],
+        "action": action["action"],
+        "resource_kind": action["resource_kind"],
+        "resource_id": action["resource_id"],
+        "consequence_class": action["consequence_class"],
+        "idempotency_key": action["idempotency_key"],
+        "policy_bundle_id": policy_decision["policy_bundle_id"],
+        "policy_bundle_sha256": policy_decision["policy_bundle_sha256"],
+        "decision_effect": policy_decision["effect"],
+        "reasons_csv": ",".join(policy_decision["reasons"]),
+        "risk_model_ver": risk["risk_model_ver"],
+        "risk_score": risk["risk_score"],
+        "risk_level": risk["risk_level"],
+        "exposure_monetary": exposure["monetary"],
+        "exposure_records": exposure["records"],
+        "blast_radius": exposure["blast_radius"],
+        "trace_id": evidence["trace_id"],
+        "causation_id": evidence["causation_id"],
+        "record_json": json.dumps(
+            dict(evidence), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ),
+        "cdc_lsn": cdc_lsn,
+        "cdc_operation": cdc_operation,
+    }
+
+
+def outcome_evidence_dict_to_bronze_row(
+    evidence: Dict[str, Any],
+    *,
+    tenant_id: Optional[str],
+    cdc_lsn: str,
+    cdc_operation: str = "insert",
+) -> Dict[str, Any]:
+    """Flatten a raw ``evidence_outcome.record`` JSONB payload into a Bronze row.
+
+    ``tenant_id`` is unresolvable from the outcome row alone (the source table
+    carries none -- the same reason :func:`outcome_record_to_bronze_row` takes
+    it as a parameter); a CDC source that cannot cheaply join back to
+    ``evidence_intent`` may pass ``None``. Silver's merge already tolerates an
+    outcome-only batch with nulled sibling columns.
+    """
+    return {
+        "decision_id": evidence["decision_id"],
+        "tenant_id": tenant_id,
+        "status": evidence["status"],
+        "completed_at": evidence["completed_at"],
+        "result_digest": evidence["result_digest"],
+        "error_class": evidence["error_class"],
         "cdc_lsn": cdc_lsn,
         "cdc_operation": cdc_operation,
     }

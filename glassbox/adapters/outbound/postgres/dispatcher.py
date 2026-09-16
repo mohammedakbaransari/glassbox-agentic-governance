@@ -29,6 +29,7 @@ from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Callable, Dict, Optional
 
 from glassbox.adapters.outbound.postgres.driver import ConnectionProvider, DriverUnavailableError
+from glassbox.adapters.outbound.postgres.schema import TENANT_CONTEXT_GUC
 from glassbox.domain.action import ProposedAction
 from glassbox.domain.decision import ExecutionOutcome, ExecutionStatus
 from glassbox.domain.errors import DispatchError, DispatchRefusedError, ToolOutputQuarantinedError
@@ -45,9 +46,13 @@ EffectHandler = Callable[[ProposedAction], object]
 #: Verifies that a receipt was genuinely issued by the evidence store.
 ReceiptCheck = Callable[[EvidenceReceipt], bool]
 
+#: Sets the transaction-scoped RLS GUC, the same way every evidence-touching
+#: transaction does (GB-026b) -- dispatch_ledger is tenant-scoped too (migration 11).
+_SET_TENANT_CONTEXT = "SELECT set_config(%s, %s, true)"
+
 _CLAIM = """
-INSERT INTO dispatch_ledger (idempotency_key, decision_id, action, status)
-VALUES (%s, %s, %s, 'claimed')
+INSERT INTO dispatch_ledger (idempotency_key, decision_id, action, status, tenant_id)
+VALUES (%s, %s, %s, 'claimed', %s)
 ON CONFLICT (idempotency_key) DO NOTHING
 RETURNING idempotency_key
 """
@@ -162,7 +167,12 @@ class PostgresDispatcher:
             if not claimed:
                 # Another replica -- or this key, retried -- got there first.
                 # Never run the handler; wait for its terminal outcome instead.
-                return self._await_existing(action.idempotency_key, timeout_s=timeout_s, now=now)
+                return self._await_existing(
+                    action.idempotency_key,
+                    tenant_id=action.tenant_id,
+                    timeout_s=timeout_s,
+                    now=now,
+                )
 
             future: Future = self._pool.submit(handler, action)
             try:
@@ -196,7 +206,7 @@ class PostgresDispatcher:
                     completed_at=now,
                     result_digest=_digest(result),
                 )
-            self._complete(action.idempotency_key, outcome)
+            self._complete(action.idempotency_key, outcome, tenant_id=action.tenant_id)
             return outcome
         finally:
             with self._lock:
@@ -227,7 +237,16 @@ class PostgresDispatcher:
         """Atomically claim ``idempotency_key``. Returns ``False`` if already claimed."""
         try:
             with self._provider.transaction() as cursor:
-                cursor.execute(_CLAIM, (action.idempotency_key, receipt.decision_id, action.action))
+                cursor.execute(_SET_TENANT_CONTEXT, (TENANT_CONTEXT_GUC, action.tenant_id))
+                cursor.execute(
+                    _CLAIM,
+                    (
+                        action.idempotency_key,
+                        receipt.decision_id,
+                        action.action,
+                        action.tenant_id,
+                    ),
+                )
                 row = cursor.fetchone()
         except DriverUnavailableError:
             raise
@@ -237,10 +256,11 @@ class PostgresDispatcher:
             ) from exc
         return row is not None
 
-    def _complete(self, idempotency_key: str, outcome: ExecutionOutcome) -> None:
+    def _complete(self, idempotency_key: str, outcome: ExecutionOutcome, *, tenant_id: str) -> None:
         """Record the terminal outcome so every other replica stops waiting."""
         try:
             with self._provider.transaction() as cursor:
+                cursor.execute(_SET_TENANT_CONTEXT, (TENANT_CONTEXT_GUC, tenant_id))
                 cursor.execute(
                     _COMPLETE,
                     (
@@ -258,12 +278,13 @@ class PostgresDispatcher:
             pass
 
     def _await_existing(
-        self, idempotency_key: str, *, timeout_s: float, now: float
+        self, idempotency_key: str, *, tenant_id: str, timeout_s: float, now: float
     ) -> ExecutionOutcome:
         """Wait for the replica holding the claim to reach a terminal state."""
         deadline = time.monotonic() + timeout_s
         while True:
             with self._provider.transaction() as cursor:
+                cursor.execute(_SET_TENANT_CONTEXT, (TENANT_CONTEXT_GUC, tenant_id))
                 cursor.execute(_SELECT_LEDGER, (idempotency_key,))
                 row = cursor.fetchone()
             if row is not None:

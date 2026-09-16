@@ -33,6 +33,18 @@ Additional maintenance-specific settings:
 ``GLASSBOX_MAINTENANCE_WORM_ANCHOR_DIR``
     Directory for sealed anchors when no KMS-backed signer is configured.
     Defaults to ``./glassbox-worm-anchors``.
+``GLASSBOX_MAINTENANCE_STALENESS_THRESHOLD_SECONDS``
+    How old the oldest segment with outstanding retention work may be before
+    a run logs a staleness warning. Defaults to
+    ``seal_after_seconds + purge_grace_seconds + 7 days``: if maintenance runs
+    on schedule, no segment should ever sit with outstanding work past that
+    point, so a segment older than it is itself evidence the scheduled job
+    (cron/CronJob/systemd timer) has stopped running -- not just a code
+    concern, an operational one this entrypoint cannot fix by itself, only
+    surface.
+
+See ``deploy/cron/`` for a reference Kubernetes ``CronJob`` manifest and
+systemd service/timer unit pair that invoke this entrypoint on a schedule.
 """
 
 from __future__ import annotations
@@ -40,7 +52,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 from glassbox.adapters.outbound.memory.clock import SystemClock
 from glassbox.adapters.outbound.postgres.driver import PsycopgConnectionProvider
@@ -51,7 +63,7 @@ from glassbox.app.observability import get_logger, log_error
 from glassbox.app.retention_scheduler import RetentionAction, RetentionOutcome, RetentionScheduler
 from glassbox.app.sealer import SegmentSealer
 
-__all__ = ["run", "main"]
+__all__ = ["run", "main", "detect_stale_backlog"]
 
 _logger = get_logger("maintenance")
 
@@ -64,6 +76,15 @@ SELECT segment_id
  LIMIT %s
 """
 
+_SELECT_OLDEST_OUTSTANDING_SEGMENT = """
+SELECT opened_at
+  FROM evidence_segment
+ WHERE retention_sealed_last_seq IS NULL
+    OR purged_before_seq <= retention_sealed_last_seq
+ ORDER BY opened_at ASC
+ LIMIT 1
+"""
+
 
 def _fetch_segment_ids(provider: PsycopgConnectionProvider, *, limit: int) -> List[str]:
     """Return segment ids with outstanding retention work, oldest first.
@@ -74,6 +95,53 @@ def _fetch_segment_ids(provider: PsycopgConnectionProvider, *, limit: int) -> Li
     with provider.transaction() as cursor:
         cursor.execute(_SELECT_RETENTION_CANDIDATES, (limit,))
         return [row[0] for row in cursor.fetchall()]
+
+
+def _fetch_oldest_outstanding_segment_age_seconds(
+    provider: PsycopgConnectionProvider, *, now: float
+) -> Optional[float]:
+    """Return how old (in seconds) the oldest segment with outstanding
+    retention work is, or ``None`` if there is none.
+
+    A single ``LIMIT 1`` query, independent of and in addition to
+    :func:`_fetch_segment_ids`'s batch query -- a negligible cost used only to
+    feed :func:`detect_stale_backlog`.
+    """
+    with provider.transaction() as cursor:
+        cursor.execute(_SELECT_OLDEST_OUTSTANDING_SEGMENT, ())
+        row = cursor.fetchone()
+    if not row or row[0] is None:
+        return None
+    opened_at = row[0]
+    # A real Postgres TIMESTAMPTZ column comes back as a datetime; fakes used
+    # in unit tests may pass a plain epoch float directly.
+    if hasattr(opened_at, "timestamp"):
+        opened_at = opened_at.timestamp()
+    return max(0.0, now - float(opened_at))
+
+
+def detect_stale_backlog(
+    *, oldest_outstanding_age_seconds: Optional[float], staleness_threshold_seconds: float
+) -> Optional[str]:
+    """Return a human-readable staleness warning, or ``None`` if not stale.
+
+    Pure function, no I/O: the backlog itself is the signal, not a separate
+    last-run-timestamp column. If maintenance runs on schedule, no segment
+    should ever sit with outstanding retention work past
+    ``seal_after_seconds + purge_grace_seconds``; a segment far older than
+    that means the scheduled job has stopped running, not that one segment
+    happened to arrive late.
+    """
+    if oldest_outstanding_age_seconds is None:
+        return None
+    if oldest_outstanding_age_seconds <= staleness_threshold_seconds:
+        return None
+    return (
+        "evidence maintenance appears stale: the oldest segment with outstanding "
+        f"retention work is {oldest_outstanding_age_seconds:.0f}s old, past the "
+        f"{staleness_threshold_seconds:.0f}s staleness threshold -- check that the scheduled "
+        "maintenance job (cron/CronJob/systemd timer) is actually running"
+    )
 
 
 def _build_signer(config: GlassBoxConfig):
@@ -96,8 +164,15 @@ def run(
     purge_grace_seconds: float,
     segment_batch_limit: int,
     worm_anchor_dir: str,
+    staleness_threshold_seconds: Optional[float] = None,
 ) -> Sequence[RetentionOutcome]:
     """Run one maintenance pass: top up partitions, then seal/purge eligible segments.
+
+    Args:
+        staleness_threshold_seconds: How old the oldest segment with
+            outstanding retention work may be before this run logs a
+            staleness warning (see :func:`detect_stale_backlog`). Defaults to
+            ``seal_after_seconds + purge_grace_seconds + 7 days`` when omitted.
 
     Returns:
         Every retention action taken this pass (or attempted and failed), for
@@ -113,11 +188,27 @@ def run(
     """
     from glassbox.adapters.outbound.postgres.schema import apply_migrations
 
+    if staleness_threshold_seconds is None:
+        staleness_threshold_seconds = seal_after_seconds + purge_grace_seconds + 7 * 86_400.0
+
     provider = PsycopgConnectionProvider(config.evidence.dsn)
     try:
         # Also tops up both evidence_intent's and evidence_outcome's monthly
         # partition windows for any already-applied migration >= 7/9.
         apply_migrations(provider)
+
+        clock = SystemClock()
+
+        stale_warning = detect_stale_backlog(
+            oldest_outstanding_age_seconds=_fetch_oldest_outstanding_segment_age_seconds(
+                provider, now=clock.now()
+            ),
+            staleness_threshold_seconds=staleness_threshold_seconds,
+        )
+        if stale_warning is not None:
+            _logger.warning(
+                stale_warning, extra={"staleness_threshold_seconds": staleness_threshold_seconds}
+            )
 
         store = PostgresEvidenceStore(provider, _build_signer(config))
         anchors = FilesystemWormAnchorStore(Path(worm_anchor_dir))
@@ -125,7 +216,7 @@ def run(
         scheduler = RetentionScheduler(
             retention=store,
             sealer=sealer,
-            clock=SystemClock(),
+            clock=clock,
             seal_after_seconds=seal_after_seconds,
             purge_grace_seconds=purge_grace_seconds,
         )
@@ -139,8 +230,11 @@ def run(
         if outcome.action in (RetentionAction.SEALED, RetentionAction.PURGED):
             _logger.info(
                 "retention action taken",
-                extra={"segment_id": outcome.segment_id, "action": outcome.action.value,
-                       "detail": outcome.detail},
+                extra={
+                    "segment_id": outcome.segment_id,
+                    "action": outcome.action.value,
+                    "detail": outcome.detail,
+                },
             )
         elif outcome.action is RetentionAction.FAILED:
             log_error(
@@ -161,6 +255,7 @@ def main(argv: Sequence[str] = ()) -> int:
     del argv  # no positional arguments; everything is environment-configured
     config = GlassBoxConfig.from_env()
     try:
+        raw_staleness_threshold = os.environ.get("GLASSBOX_MAINTENANCE_STALENESS_THRESHOLD_SECONDS")
         outcomes = run(
             config=config,
             seal_after_seconds=float(
@@ -174,6 +269,9 @@ def main(argv: Sequence[str] = ()) -> int:
             ),
             worm_anchor_dir=os.environ.get(
                 "GLASSBOX_MAINTENANCE_WORM_ANCHOR_DIR", "./glassbox-worm-anchors"
+            ),
+            staleness_threshold_seconds=(
+                float(raw_staleness_threshold) if raw_staleness_threshold is not None else None
             ),
         )
     except Exception as exc:  # noqa: BLE001 - top-level CLI boundary

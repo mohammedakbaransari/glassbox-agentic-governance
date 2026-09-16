@@ -20,9 +20,10 @@ constructing a :class:`ProposedAction` is a control-plane operation.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, FrozenSet, Mapping, Optional, Tuple
 
 from glassbox.domain.errors import DomainValidationError
 from glassbox.domain.serialization import (
@@ -31,7 +32,14 @@ from glassbox.domain.serialization import (
     require_non_negative,
 )
 
+#: Placeholder written in place of a parameter value the catalogue names as
+#: sensitive (:attr:`~glassbox.domain.catalogue.ActionDefinition.sensitive_parameter_fields`)
+#: when an evidence-bound copy of an action is built. Never used for anything
+#: other than the persisted evidence copy -- see :meth:`ProposedAction.with_redacted_parameters`.
+REDACTED_PARAMETER_PLACEHOLDER = "<redacted>"
+
 __all__ = [
+    "REDACTED_PARAMETER_PLACEHOLDER",
     "ConsequenceClass",
     "BlastRadius",
     "ResourceRef",
@@ -329,6 +337,29 @@ class ProposedAction:
             if key == name:
                 return value
         return default
+
+    def with_redacted_parameters(self, sensitive_fields: FrozenSet[str]) -> "ProposedAction":
+        """Return a copy with ``sensitive_fields`` parameter values replaced.
+
+        Used only to build the evidence-bound copy of this action (the
+        catalogue-declared :attr:`~glassbox.domain.catalogue.ActionDefinition.sensitive_parameter_fields`).
+        The original, unredacted instance keeps flowing to mandate, policy,
+        risk, limits, baseline and dispatch unchanged -- none of those stages
+        ever reads ``parameters`` (they read ``consequence``/``exposure``,
+        already fixed at construction), so redacting the evidence copy has no
+        authorization or dispatch effect. A field absent from ``sensitive_fields``
+        is never touched, and a caller that names no fields gets the same
+        instance back unchanged.
+        """
+        if not sensitive_fields:
+            return self
+        redacted_parameters = tuple(
+            (key, REDACTED_PARAMETER_PLACEHOLDER if key in sensitive_fields else value)
+            for key, value in self.parameters
+        )
+        if redacted_parameters == self.parameters:
+            return self
+        return dataclasses.replace(self, parameters=redacted_parameters)
 
     def as_evidence(self) -> Mapping[str, Any]:
         """Return the action fields recorded on the evidence row."""

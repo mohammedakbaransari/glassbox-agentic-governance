@@ -30,6 +30,7 @@ Metric availability and export are deployment-specific.
 - dispatcher saturation, timeout, and indeterminate outcomes;
 - evidence verification failures;
 - kill-switch state changes;
+- evidence maintenance staleness warnings (scheduled retention/partition job not running);
 - p95/p99 latency or error rates outside measured SLOs.
 
 ## PostgreSQL or Evidence Failure
@@ -47,8 +48,17 @@ Metric availability and export are deployment-specific.
 tables are monthly-partitioned (`evidence_intent`, `evidence_outcome`).
 `glassbox.app.retention_scheduler` seals a segment (WORM anchor) before
 purging it; `glassbox/adapters/inbound/cli/maintenance.py` is the operator
-entry point for manual partition/retention maintenance. Never purge a segment
-whose anchor write has not been confirmed durable.
+entry point for partition/retention maintenance. Never purge a segment
+whose anchor write has not been confirmed durable. This entrypoint has no
+built-in scheduler: it must be invoked periodically by a Kubernetes
+`CronJob` or a systemd timer -- see
+[`deploy/cron/`](../../deploy/cron/README.md) for reference manifests. Each
+run also checks the oldest segment with outstanding retention work; if it is
+older than `seal_after_seconds + purge_grace_seconds` (plus a configurable
+grace, `GLASSBOX_MAINTENANCE_STALENESS_THRESHOLD_SECONDS`), the run logs a
+`WARNING`-level `"evidence maintenance appears stale"` message -- alert on
+that log line, since a stale backlog is itself evidence the scheduled job
+has stopped running.
 
 ## Redis Failure
 

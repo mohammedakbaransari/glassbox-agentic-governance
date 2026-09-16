@@ -145,6 +145,13 @@ FORBIDDEN_IN_APP_LAYER = frozenset(
 #: rules even though they may perform I/O and use third-party libraries.
 OUTBOUND_ADAPTER_ROOT = "adapters/outbound"
 
+#: The composition root: process entry points (http/, cli/) that wire concrete
+#: object graphs. Held to the v1-anchoring ban like every other rebuilt layer,
+#: but -- unlike the enforced layers above -- it is deliberately free to import
+#: outbound adapters and third-party packages, since wiring a concrete adapter
+#: set is exactly its job.
+INBOUND_ADAPTER_ROOT = "adapters/inbound"
+
 #: v1 packages being replaced. No rebuilt layer may import any of them. This is
 #: the single source of truth: the AST tests below and the import-linter contract
 #: in ``pyproject.toml`` are both checked against it, so the two enforcement
@@ -188,6 +195,17 @@ def _iter_layer_modules(layer: str) -> Iterator[pathlib.Path]:
 def _iter_outbound_adapter_modules() -> Iterator[pathlib.Path]:
     """Yield every ``.py`` file under the rebuilt outbound adapter tree."""
     root = PACKAGE_ROOT / "adapters" / "outbound"
+    if not root.is_dir():  # pragma: no cover - guarded by test_layers_exist
+        return
+    for path in sorted(root.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        yield path
+
+
+def _iter_inbound_adapter_modules() -> Iterator[pathlib.Path]:
+    """Yield every ``.py`` file under the composition-root inbound adapter tree."""
+    root = PACKAGE_ROOT / "adapters" / "inbound"
     if not root.is_dir():  # pragma: no cover - guarded by test_layers_exist
         return
     for path in sorted(root.rglob("*.py")):
@@ -346,6 +364,38 @@ class TestDependencyRule:
             if imported.startswith(LEGACY_PACKAGES)
         ]
         assert not offenders, f"outbound adapters import v1 modules: {offenders}"
+
+    def test_inbound_adapters_never_import_v1_modules(self) -> None:
+        """The composition root does not wrap the code being replaced either."""
+        offenders = [
+            f"{path.relative_to(REPO_ROOT)}:{lineno} -> {imported}"
+            for path in _iter_inbound_adapter_modules()
+            for imported, lineno in _imported_modules(path)
+            if imported.startswith(LEGACY_PACKAGES)
+        ]
+        assert not offenders, f"inbound adapters import v1 modules: {offenders}"
+
+    def test_no_rebuilt_layer_imports_a_concrete_inbound_adapter(self) -> None:
+        """The composition root is imported from; it never imports back.
+
+        ``glassbox.adapters.inbound`` (http/, cli/) wires concrete outbound
+        adapters into a runtime -- the moment a lower layer (including
+        ``adapters.outbound`` itself) imports it back, the dependency arrow
+        has reversed and the entry point is no longer a leaf of the graph.
+        """
+        offenders = [
+            f"{path.relative_to(REPO_ROOT)}:{lineno} -> {imported}"
+            for layer in ENFORCED_LAYERS
+            for path in _iter_layer_modules(layer)
+            for imported, lineno in _imported_modules(path)
+            if imported.startswith("glassbox.adapters.inbound")
+        ] + [
+            f"{path.relative_to(REPO_ROOT)}:{lineno} -> {imported}"
+            for path in _iter_outbound_adapter_modules()
+            for imported, lineno in _imported_modules(path)
+            if imported.startswith("glassbox.adapters.inbound")
+        ]
+        assert not offenders, f"a rebuilt layer imports a concrete inbound adapter: {offenders}"
 
 
 class TestPurity:
@@ -643,6 +693,16 @@ class TestContractConsistency:
         assert contract["source_modules"] == ["glassbox.app"]
         assert "glassbox.adapters" in contract["forbidden_modules"]
 
+    def test_inbound_adapter_ban_is_declared_as_a_contract(self) -> None:
+        """The composition root is never imported back by a lower layer."""
+        contract = _contract_named("imports a concrete inbound adapter")
+        assert contract["type"] == "forbidden"
+        expected_sources = {f"glassbox.{name}" for name in ENFORCED_LAYERS} | {
+            "glassbox.adapters.outbound"
+        }
+        assert set(contract["source_modules"]) == expected_sources
+        assert contract["forbidden_modules"] == ["glassbox.adapters.inbound"]
+
     def test_legacy_ban_lists_the_same_packages_as_the_ast_check(self) -> None:
         """One source of truth for what counts as v1 code."""
         contract = _contract_named("anchored to the v1 code")
@@ -650,7 +710,10 @@ class TestContractConsistency:
 
     def test_legacy_ban_covers_every_rebuilt_layer(self) -> None:
         contract = _contract_named("anchored to the v1 code")
-        expected = {f"glassbox.{name}" for name in ENFORCED_LAYERS} | {"glassbox.adapters.outbound"}
+        expected = {f"glassbox.{name}" for name in ENFORCED_LAYERS} | {
+            "glassbox.adapters.outbound",
+            "glassbox.adapters.inbound",
+        }
         assert expected == set(contract["source_modules"])
 
     def test_no_legacy_package_is_also_a_rebuilt_layer(self) -> None:

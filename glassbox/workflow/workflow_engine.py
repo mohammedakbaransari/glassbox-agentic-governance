@@ -35,6 +35,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -47,6 +48,26 @@ from glassbox.store.repository import (
 )
 
 log = get_logger("workflow")
+
+#: Default lifetime of an in-memory quorum-tracking entry before it is
+#: evicted as stale (defense in depth, see :meth:`WorkflowEngine._evict_stale_quorum_entries`).
+DEFAULT_QUORUM_ENTRY_TTL_SECONDS: float = 24 * 60 * 60.0
+
+
+@dataclass
+class _QuorumEntry:
+    """In-memory, best-effort vote count towards a workflow's ``min_approvers``.
+
+    Never the source of truth -- the durable ``WorkflowStep`` history recorded
+    by :meth:`WorkflowEngine.approve` on every call (quorum-reached or not) is.
+    This is only a fast-path cache so a reviewer does not need the full step
+    history re-scanned on every vote; losing an entry (TTL eviction, or a
+    failed persist clearing it early) only costs a reviewer having to
+    re-approve, never a correctness or audit gap.
+    """
+
+    actors: List[str] = field(default_factory=list)
+    first_seen_at: float = 0.0
 
 
 class WorkflowEngine:
@@ -78,14 +99,16 @@ class WorkflowEngine:
         default_sla_minutes: int = 60,
         monitor_sla: bool = False,
         monitor_interval_s: int = 60,
+        quorum_entry_ttl_seconds: float = DEFAULT_QUORUM_ENTRY_TTL_SECONDS,
     ):
         self.repo = repository or SQLiteWorkflowRepository(":memory:")
         self.default_sla_minutes = default_sla_minutes
         self._monitor_interval_s = monitor_interval_s
         self._monitor_thread: Optional[threading.Thread] = None
         self._stop_monitor = threading.Event()
-        self._quorum_state: Dict[str, list] = {}  # {workflow_id: [actor, ...]}
+        self._quorum_state: Dict[str, _QuorumEntry] = {}  # {workflow_id: _QuorumEntry}
         self._quorum_lock = threading.Lock()
+        self._quorum_entry_ttl_s = quorum_entry_ttl_seconds
 
         if monitor_sla:
             self._start_sla_monitor()
@@ -175,12 +198,15 @@ class WorkflowEngine:
         Returns:
             WorkflowInstance — status will be "approved" only when quorum is reached.
         """
+        now = time.time()
         # Thread-safe quorum tracking stored in engine (survives repo.get() fetches)
         with self._quorum_lock:
-            actors = self._quorum_state.setdefault(workflow_id, [])
-            if actor not in actors:
-                actors.append(actor)
-            count = len(actors)
+            self._evict_stale_quorum_entries(now=now)
+            entry = self._quorum_state.setdefault(workflow_id, _QuorumEntry(first_seen_at=now))
+            if actor not in entry.actors:
+                entry.actors.append(actor)
+            count = len(entry.actors)
+            actors = list(entry.actors)
 
         inst = self._get(workflow_id)
         if not inst:
@@ -188,20 +214,28 @@ class WorkflowEngine:
         inst.approval_actors = list(actors)
 
         if count >= min_approvers:
-            # Quorum reached — transition to approved
-            inst = self._transition(
-                workflow_id,
-                "approve",
-                actor,
-                f"Quorum reached ({count}/{min_approvers}). {notes}",
-                "approved",
-                step_outcome="approved",
-            )
-            if inst:
-                inst.approval_actors = list(actors)
-                self.repo.update(inst)
-            with self._quorum_lock:
-                self._quorum_state.pop(workflow_id, None)
+            try:
+                # Quorum reached — transition to approved
+                inst = self._transition(
+                    workflow_id,
+                    "approve",
+                    actor,
+                    f"Quorum reached ({count}/{min_approvers}). {notes}",
+                    "approved",
+                    step_outcome="approved",
+                )
+                if inst:
+                    inst.approval_actors = list(actors)
+                    self.repo.update(inst)
+            finally:
+                # Cleared unconditionally, success or failure: a persist
+                # failure here must never leave an orphaned entry in memory
+                # forever. The in-memory count is a fast-path cache, never the
+                # source of truth (the durable WorkflowStep history is) -- a
+                # reviewer whose vote could not be made durable simply
+                # re-approves.
+                with self._quorum_lock:
+                    self._quorum_state.pop(workflow_id, None)
         else:
             # Partial — record step, persist
             step = WorkflowStep(
@@ -217,6 +251,23 @@ class WorkflowEngine:
             self.repo.update(inst)
 
         return self.repo.get(workflow_id)
+
+    def _evict_stale_quorum_entries(self, *, now: float) -> None:
+        """Evict quorum-tracking entries older than the TTL (defense in depth).
+
+        Must be called with :attr:`_quorum_lock` held. :meth:`approve` already
+        clears an entry every time quorum is *attempted* (reached or not, see
+        the ``finally`` block above); this only catches the different case of
+        a workflow that received a *partial* approval and was then abandoned
+        (never revisited), which would otherwise sit in memory forever.
+        """
+        stale = [
+            workflow_id
+            for workflow_id, entry in self._quorum_state.items()
+            if now - entry.first_seen_at > self._quorum_entry_ttl_s
+        ]
+        for workflow_id in stale:
+            del self._quorum_state[workflow_id]
 
     def quorum_approve(
         self,

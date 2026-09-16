@@ -2,9 +2,11 @@
 
 The consumer is deliberately decoupled from *how* change events arrive.
 Production wiring is Postgres logical replication (a
-:class:`ChangeEventSource` backed by ``psycopg2``'s replication protocol,
-lazy-imported so the dependency stays optional); tests use a plain iterable.
-Neither the consumer nor :class:`~glassbox.adapters.outbound.delta.bronze.DeltaBronzeWriter`
+:class:`ChangeEventSource` backed by wal2json's ``pg_logical_slot_get_changes``
+SQL interface over an ordinary ``psycopg`` connection -- see
+:class:`~glassbox.adapters.outbound.postgres.cdc_source.PostgresLogicalReplicationSource`);
+tests use a plain iterable. Neither the consumer nor
+:class:`~glassbox.adapters.outbound.delta.bronze.DeltaBronzeWriter`
 cares which one it is talking to -- the exactly-once guarantee lives entirely
 in the Bronze merge, not in this class holding a "have I seen this" cache.
 """

@@ -185,3 +185,90 @@ class TestReplayNeverCreatesAWorkflow:
         # persisted workflow -- and must create no new one.
         assert engine.get_by_decision(replayed.decision_id) is None
         assert len(engine.list_pending()) == pending_before
+
+
+class TestQuorumApprovalMemoryLeak:
+    """Regression for the 2026-09-16 review finding: a persist failure after
+    quorum was reached used to leave ``WorkflowEngine._quorum_state`` holding
+    an orphaned entry forever (an unbounded, if slow, in-process memory leak).
+    """
+
+    def _engine(self, **kwargs: Any) -> WorkflowEngine:
+        return WorkflowEngine(repository=SQLiteWorkflowRepository(":memory:"), **kwargs)
+
+    def _pending_workflow(self, engine: WorkflowEngine, decision_id: str) -> Any:
+        return engine.create_from_decision(
+            decision_id=decision_id,
+            agent_id="agent.treasury-bot",
+            decision_type=ACTION_NAME,
+            risk_score=10.0,
+            violations=[],
+        )
+
+    def test_quorum_is_reached_only_once_two_distinct_actors_approve(self) -> None:
+        engine = self._engine()
+        workflow = self._pending_workflow(engine, "decision-quorum-1")
+
+        engine.approve(workflow.workflow_id, "reviewer_a", min_approvers=2)
+        assert engine.repo.get(workflow.workflow_id).state == "pending"
+        assert workflow.workflow_id in engine._quorum_state  # partial vote retained
+
+        updated = engine.approve(workflow.workflow_id, "reviewer_b", min_approvers=2)
+        assert updated is not None
+        assert updated.state == "approved"
+        assert workflow.workflow_id not in engine._quorum_state  # cleared on quorum
+
+    def test_the_same_actor_approving_twice_does_not_inflate_the_quorum_count(self) -> None:
+        engine = self._engine()
+        workflow = self._pending_workflow(engine, "decision-quorum-2")
+
+        engine.approve(workflow.workflow_id, "reviewer_a", min_approvers=2)
+        engine.approve(workflow.workflow_id, "reviewer_a", min_approvers=2)
+
+        assert engine.repo.get(workflow.workflow_id).state == "pending"
+
+    def test_a_persist_failure_after_quorum_is_reached_still_clears_the_quorum_entry(
+        self,
+    ) -> None:
+        engine = self._engine()
+        workflow = self._pending_workflow(engine, "decision-quorum-3")
+        engine.approve(workflow.workflow_id, "reviewer_a", min_approvers=2)
+
+        def failing_update(instance: Any) -> None:
+            raise RuntimeError("simulated transient persistence failure")
+
+        original_update = engine.repo.update
+        engine.repo.update = failing_update  # type: ignore[method-assign]
+        try:
+            with pytest.raises(RuntimeError):
+                engine.approve(workflow.workflow_id, "reviewer_b", min_approvers=2)
+        finally:
+            engine.repo.update = original_update  # type: ignore[method-assign]
+
+        assert (
+            workflow.workflow_id not in engine._quorum_state
+        ), "a failed persist must not orphan the in-memory quorum entry forever"
+
+        # The vote count was lost with the entry (by design -- the in-memory
+        # tracker is a fast-path cache, never the source of truth), so a fresh
+        # approval starts the count over rather than silently re-approving.
+        updated = engine.approve(workflow.workflow_id, "reviewer_b", min_approvers=2)
+        assert updated is not None
+        assert updated.state == "pending"
+
+    def test_stale_quorum_entries_are_evicted_after_the_configured_ttl(self) -> None:
+        engine = self._engine(quorum_entry_ttl_seconds=60.0)
+        stale = self._pending_workflow(engine, "decision-quorum-stale")
+        engine.approve(stale.workflow_id, "reviewer_a", min_approvers=2)
+        assert stale.workflow_id in engine._quorum_state
+
+        with engine._quorum_lock:
+            engine._quorum_state[stale.workflow_id].first_seen_at -= 61.0
+
+        # The sweep is lazy: it runs on the next approve() call, even one for
+        # an unrelated workflow.
+        fresh = self._pending_workflow(engine, "decision-quorum-fresh")
+        engine.approve(fresh.workflow_id, "reviewer_x", min_approvers=2)
+
+        assert stale.workflow_id not in engine._quorum_state
+        assert fresh.workflow_id in engine._quorum_state

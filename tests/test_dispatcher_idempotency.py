@@ -9,6 +9,7 @@ instances, which is the scenario a single process can never exercise.
 
 from __future__ import annotations
 
+import os
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
@@ -42,6 +43,10 @@ class FakeLedger:
         self.rows: Dict[str, Dict[str, Any]] = {}
         self.lock = threading.RLock()
         self.available = True
+        #: Every statement executed, in order -- asserted against by the
+        #: tenant-context-ordering tests below (mirrors the fake used for
+        #: PostgresEvidenceStore's own GB-026b ordering test).
+        self.log: List[Tuple[str, Sequence[Any]]] = []
 
 
 class FakeLedgerCursor:
@@ -51,8 +56,13 @@ class FakeLedgerCursor:
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
         normalised = " ".join(sql.split())
-        if "INSERT INTO dispatch_ledger" in normalised:
-            key, decision_id, action = params
+        self._ledger.log.append((normalised, params))
+        if "SELECT set_config" in normalised:
+            # The RLS tenant-context GUC (GB-026b pattern, extended to
+            # dispatch_ledger by migration 11). Nothing here reads its result.
+            self._rows = []
+        elif "INSERT INTO dispatch_ledger" in normalised:
+            key, decision_id, action, tenant_id = params
             with self._ledger.lock:
                 if key in self._ledger.rows:
                     self._rows = []
@@ -61,6 +71,7 @@ class FakeLedgerCursor:
                         "status": "claimed",
                         "decision_id": decision_id,
                         "action": action,
+                        "tenant_id": tenant_id,
                         "completed_at": None,
                         "result_digest": None,
                         "error_class": None,
@@ -208,6 +219,74 @@ class TestPostgresDispatcher:
         assert outcome.result_digest is None
 
 
+class TestDispatchLedgerTenantScoping:
+    """GB-026b, extended by migration 11 to dispatch_ledger: the RLS policy is
+    only as good as the GUC being set before the first statement in every
+    transaction that touches the table, on every path -- claiming, completing,
+    and a losing replica awaiting the winner's outcome."""
+
+    def test_the_tenant_context_is_set_before_the_claim_insert(self) -> None:
+        ledger = FakeLedger()
+        store = evidence_store()
+        d = dispatcher(FakeLedgerProvider(ledger), store)
+        d.register("payments.wire_transfer", lambda action: {"status": "sent"})
+        receipt = store.append_intent(make_intent())
+        d.dispatch(make_action(), receipt, timeout_s=5.0, now=NOW)
+
+        set_index = next(i for i, (sql, _) in enumerate(ledger.log) if "SELECT set_config" in sql)
+        claim_index = next(
+            i for i, (sql, _) in enumerate(ledger.log) if "INSERT INTO dispatch_ledger" in sql
+        )
+        assert set_index < claim_index
+        _, set_params = ledger.log[set_index]
+        assert set_params == ("glassbox.tenant_id", "acme")
+
+    def test_the_tenant_context_is_set_before_completing_the_ledger_row(self) -> None:
+        ledger = FakeLedger()
+        store = evidence_store()
+        d = dispatcher(FakeLedgerProvider(ledger), store)
+        d.register("payments.wire_transfer", lambda action: {"status": "sent"})
+        receipt = store.append_intent(make_intent())
+        d.dispatch(make_action(), receipt, timeout_s=5.0, now=NOW)
+
+        set_indices = [i for i, (sql, _) in enumerate(ledger.log) if "SELECT set_config" in sql]
+        complete_index = next(
+            i for i, (sql, _) in enumerate(ledger.log) if "UPDATE dispatch_ledger" in sql
+        )
+        assert any(i < complete_index for i in set_indices)
+
+    def test_the_claim_stores_the_dispatching_tenants_id(self) -> None:
+        ledger = FakeLedger()
+        store = evidence_store()
+        d = dispatcher(FakeLedgerProvider(ledger), store)
+        d.register("payments.wire_transfer", lambda action: {"status": "sent"})
+        receipt = store.append_intent(make_intent())
+        action = make_action()
+        d.dispatch(action, receipt, timeout_s=5.0, now=NOW)
+        assert ledger.rows[action.idempotency_key]["tenant_id"] == "acme"
+
+    def test_a_losing_replica_sets_the_tenant_context_before_awaiting_the_outcome(self) -> None:
+        ledger = FakeLedger()
+        store = evidence_store()
+        replica_a = dispatcher(FakeLedgerProvider(ledger), store)
+        replica_b = dispatcher(FakeLedgerProvider(ledger), store)
+        replica_a.register("payments.wire_transfer", lambda action: {"ok": True})
+        replica_b.register("payments.wire_transfer", lambda action: {"ok": True})
+        receipt = store.append_intent(make_intent())
+        action = make_action()
+
+        replica_a.dispatch(action, receipt, timeout_s=5.0, now=NOW)
+        before = len(ledger.log)
+        replica_b.dispatch(action, receipt, timeout_s=5.0, now=NOW)
+        after_log = ledger.log[before:]
+
+        set_index = next(i for i, (sql, _) in enumerate(after_log) if "SELECT set_config" in sql)
+        select_index = next(
+            i for i, (sql, _) in enumerate(after_log) if "SELECT status, completed_at" in sql
+        )
+        assert set_index < select_index
+
+
 class TestCrossReplicaIdempotency:
     """The scenario a single process cannot exercise: two dispatcher instances
     sharing one ledger, modelling two replicas of the same service."""
@@ -301,3 +380,71 @@ class TestCrossReplicaIdempotency:
         finally:
             release.set()
             t.join(timeout=5.0)
+
+
+# --------------------------------------------------------------------------- #
+# Integration. Gated behind GLASSBOX_POSTGRES_DSN -- only a real server can
+# prove RLS is actually wired the way migration 11 declares it (a fake's
+# fragment-matching SQL dispatch cannot; superuser test roles bypass RLS
+# enforcement itself, so this asserts the policy and columns are in place,
+# not that a non-superuser role's queries are filtered by it).
+# --------------------------------------------------------------------------- #
+
+POSTGRES_DSN = os.environ.get("GLASSBOX_POSTGRES_DSN", "")
+
+_requires_postgres = pytest.mark.skipif(
+    not POSTGRES_DSN,
+    reason="set GLASSBOX_POSTGRES_DSN to run the Postgres integration tests",
+)
+
+
+@_requires_postgres
+class TestDispatchLedgerOnARealServer:
+    """dispatch_ledger's tenant scoping (migration 11), proven against Postgres."""
+
+    @pytest.fixture
+    def provider(self) -> Iterator[Any]:
+        from glassbox.adapters.outbound.postgres.driver import PsycopgConnectionProvider
+        from glassbox.adapters.outbound.postgres.schema import apply_migrations
+
+        connection_provider = PsycopgConnectionProvider(POSTGRES_DSN)
+        apply_migrations(connection_provider)
+        with connection_provider.transaction() as cursor:
+            cursor.execute("DELETE FROM dispatch_ledger", ())
+        try:
+            yield connection_provider
+        finally:
+            connection_provider.close()
+
+    def test_row_level_security_is_enabled_and_forced(self, provider: Any) -> None:
+        with provider.transaction() as cursor:
+            cursor.execute(
+                "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+                "WHERE relname = 'dispatch_ledger'"
+            )
+            enabled, forced = cursor.fetchone()
+        assert enabled is True
+        assert forced is True
+
+    def test_the_tenant_isolation_policy_exists(self, provider: Any) -> None:
+        with provider.transaction() as cursor:
+            cursor.execute("SELECT policyname FROM pg_policies WHERE tablename = 'dispatch_ledger'")
+            names = {row[0] for row in cursor.fetchall()}
+        assert "dispatch_ledger_tenant_isolation" in names
+
+    def test_a_claim_writes_the_dispatching_tenants_id(self, provider: Any) -> None:
+        store = evidence_store()
+        d = dispatcher(provider, store)
+        d.register("payments.wire_transfer", lambda action: {"status": "sent"})
+        receipt = store.append_intent(make_intent())
+        action = make_action()
+        d.dispatch(action, receipt, timeout_s=5.0, now=NOW)
+
+        with provider.transaction() as cursor:
+            cursor.execute(
+                "SELECT tenant_id FROM dispatch_ledger WHERE idempotency_key = %s",
+                (action.idempotency_key,),
+            )
+            row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == "acme"

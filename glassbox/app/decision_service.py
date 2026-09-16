@@ -85,7 +85,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Any, List, Mapping, Optional, Tuple
+from typing import Any, FrozenSet, List, Mapping, Optional, Tuple
 
 from glassbox.app.composition import GovernanceRuntime
 from glassbox.app.observability import bind_context, get_logger, log_error
@@ -366,7 +366,12 @@ class DecisionService:
         provenance = provenance or ModelProvenance()
 
         with bind_context(decision_id=decision_id, trace_id=trace_id):
-            action, catalogue_stage, catalogue_denial = self._check_catalogue(
+            (
+                action,
+                catalogue_stage,
+                catalogue_denial,
+                sensitive_parameter_fields,
+            ) = self._check_catalogue(
                 tenant_id=resource.tenant_id,
                 action_name=action_name,
                 resource=resource,
@@ -402,6 +407,7 @@ class DecisionService:
                         "tool_registry", "action resolved via the action catalogue, not a tool call"
                     ),
                     tool_registry_denial=None,
+                    sensitive_parameter_fields=sensitive_parameter_fields,
                 )
 
     def decide_and_dispatch_for_tool_call(
@@ -470,7 +476,12 @@ class DecisionService:
         provenance = provenance or ModelProvenance()
 
         with bind_context(decision_id=decision_id, trace_id=trace_id):
-            action, tool_registry_stage, tool_registry_denial = self._check_tool_registry(
+            (
+                action,
+                tool_registry_stage,
+                tool_registry_denial,
+                sensitive_parameter_fields,
+            ) = self._check_tool_registry(
                 tenant_id=resource.tenant_id,
                 tool_name=tool_name,
                 definition_sha256=definition_sha256,
@@ -506,6 +517,7 @@ class DecisionService:
                     catalogue_denial=None,
                     tool_registry_stage=tool_registry_stage,
                     tool_registry_denial=tool_registry_denial,
+                    sensitive_parameter_fields=sensitive_parameter_fields,
                 )
 
     def replay(
@@ -615,6 +627,7 @@ class DecisionService:
         asserted_subject: str,
         now: float,
         suppress_dispatch: bool = False,
+        sensitive_parameter_fields: FrozenSet[str] = frozenset(),
     ) -> DecisionOutcome:
         """Run every stage, write evidence, and dispatch if permitted."""
         runtime = self._runtime
@@ -726,7 +739,7 @@ class DecisionService:
             tenant_id=principal.tenant_id,
             created_at=now,
             principal=principal,
-            action=action,
+            action=action.with_redacted_parameters(sensitive_parameter_fields),
             decision=decision,
             risk=risk_score,
             trace_id=trace_id,
@@ -873,12 +886,19 @@ class DecisionService:
         resource: ResourceRef,
         parameters: Mapping[str, Any],
         idempotency_key: str,
-    ) -> Tuple[ProposedAction, StageOutcome, Optional[AuthorizationDecision]]:
+    ) -> Tuple[ProposedAction, StageOutcome, Optional[AuthorizationDecision], FrozenSet[str]]:
         """Resolve a tool call through the governed tool registry (GB-013).
 
         Runs before identity, like the action catalogue: resolution depends
         only on the tenant, tool name and presented digest, never on the
         caller's principal.
+
+        Returns:
+            A 4-tuple of the resolved (or placeholder) action, its stage
+            outcome, a denial if the tool could not be governed, and the
+            resolved definition's ``sensitive_parameter_fields`` (empty for
+            every placeholder branch, since there is no governed definition to
+            consult there).
         """
         runtime = self._runtime
         try:
@@ -893,6 +913,7 @@ class DecisionService:
                 AuthorizationDecision.deny(
                     DenialReason.DEPENDENCY_UNAVAILABLE, rationale="tool registry unavailable"
                 ),
+                frozenset(),
             )
         except ToolQuarantinedError as exc:
             log_error(_logger, exc, message="tool is quarantined pending re-approval")
@@ -903,6 +924,7 @@ class DecisionService:
                     DenialReason.TOOL_DEFINITION_CHANGED,
                     rationale=f"{tool_name!r} definition changed and awaits re-approval",
                 ),
+                frozenset(),
             )
         except ToolNotGovernedError as exc:
             log_error(_logger, exc, message="tool is not in the governed registry")
@@ -913,6 +935,7 @@ class DecisionService:
                     DenialReason.TOOL_NOT_GOVERNED,
                     rationale=f"{tool_name!r} is not a governed tool at the presented definition",
                 ),
+                frozenset(),
             )
 
         definition = tool_definition.action
@@ -924,7 +947,12 @@ class DecisionService:
             idempotency_key=idempotency_key,
             parameters=tuple(sorted(parameters.items())),
         )
-        return action, StageOutcome(stage="tool_registry", status=StageStatus.EXECUTED), None
+        return (
+            action,
+            StageOutcome(stage="tool_registry", status=StageStatus.EXECUTED),
+            None,
+            definition.sensitive_parameter_fields,
+        )
 
     def _check_catalogue(
         self,
@@ -935,7 +963,7 @@ class DecisionService:
         parameters: Mapping[str, Any],
         idempotency_key: str,
         now: float,
-    ) -> Tuple[ProposedAction, StageOutcome, Optional[AuthorizationDecision]]:
+    ) -> Tuple[ProposedAction, StageOutcome, Optional[AuthorizationDecision], FrozenSet[str]]:
         """Resolve ``action_name`` through the governed catalogue (GB-010).
 
         Runs before identity is even checked: catalogue resolution depends only
@@ -945,9 +973,12 @@ class DecisionService:
         evidence to.
 
         Returns:
-            A tuple of the resolved (or placeholder) action, its stage outcome,
-            and a denial if the action could not be governed or a required
-            attestation was not satisfied.
+            A 4-tuple of the resolved (or placeholder) action, its stage
+            outcome, a denial if the action could not be governed or a
+            required attestation was not satisfied, and the resolved
+            definition's ``sensitive_parameter_fields`` (empty for every
+            placeholder branch, since there is no governed definition to
+            consult there).
         """
         runtime = self._runtime
         try:
@@ -962,6 +993,7 @@ class DecisionService:
                 AuthorizationDecision.deny(
                     DenialReason.DEPENDENCY_UNAVAILABLE, rationale="action catalogue unavailable"
                 ),
+                frozenset(),
             )
         except ActionNotGovernedError as exc:
             log_error(_logger, exc, message="action is not in the governed catalogue")
@@ -972,6 +1004,7 @@ class DecisionService:
                     DenialReason.ACTION_NOT_GOVERNED,
                     rationale=f"{action_name!r} has no entry in the governed action catalogue",
                 ),
+                frozenset(),
             )
 
         action = ProposedAction(
@@ -1004,6 +1037,7 @@ class DecisionService:
                         f"{', '.join(flagged_fields)} matched an injection pattern"
                     ),
                 ),
+                definition.sensitive_parameter_fields,
             )
 
         unsatisfied = self._first_unsatisfied_attestation(tenant_id, resource, definition, now=now)
@@ -1015,8 +1049,14 @@ class DecisionService:
                     DenialReason.ATTESTATION_NOT_SATISFIED,
                     rationale=f"required attestation {unsatisfied!r} was not satisfied",
                 ),
+                definition.sensitive_parameter_fields,
             )
-        return action, StageOutcome(stage="catalogue", status=StageStatus.EXECUTED), None
+        return (
+            action,
+            StageOutcome(stage="catalogue", status=StageStatus.EXECUTED),
+            None,
+            definition.sensitive_parameter_fields,
+        )
 
     def _first_unsatisfied_attestation(
         self, tenant_id: str, resource: ResourceRef, definition: ActionDefinition, *, now: float

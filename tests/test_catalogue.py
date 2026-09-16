@@ -79,7 +79,43 @@ class TestActionDefinition:
             "required_attestations": ["ctr_filed"],
             "parameter_schema": [],
             "untrusted_text_fields": [],
+            "sensitive_parameter_fields": [],
         }
+
+    def test_sensitive_parameter_fields_defaults_to_empty(self) -> None:
+        definition = ActionDefinition(action="a", consequence=ConsequenceClass.REVERSIBLE)
+        assert definition.sensitive_parameter_fields == frozenset()
+
+    def test_sensitive_parameter_fields_accepts_any_iterable_and_normalises_to_frozenset(
+        self,
+    ) -> None:
+        definition = ActionDefinition(
+            action="a",
+            consequence=ConsequenceClass.REVERSIBLE,
+            sensitive_parameter_fields=["account_number", "account_number", "tax_id"],
+        )
+        assert definition.sensitive_parameter_fields == frozenset({"account_number", "tax_id"})
+
+    def test_sensitive_parameter_fields_rejects_a_non_identifier_name(self) -> None:
+        with pytest.raises(DomainValidationError):
+            ActionDefinition(
+                action="a",
+                consequence=ConsequenceClass.REVERSIBLE,
+                sensitive_parameter_fields=frozenset({""}),
+            )
+
+    def test_sensitive_parameter_fields_is_independent_of_untrusted_text_fields(self) -> None:
+        """The two concerns are orthogonal: a field can be sensitive (redacted
+        from evidence) without being untrusted text (scanned for injection),
+        and vice versa."""
+        definition = ActionDefinition(
+            action="a",
+            consequence=ConsequenceClass.REVERSIBLE,
+            sensitive_parameter_fields=frozenset({"account_number"}),
+            untrusted_text_fields=frozenset({"agent_notes"}),
+        )
+        assert definition.sensitive_parameter_fields == frozenset({"account_number"})
+        assert definition.untrusted_text_fields == frozenset({"agent_notes"})
 
 
 class TestActionCatalogueBundle:

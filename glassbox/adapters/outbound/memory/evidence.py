@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from glassbox.app.config import GlassBoxConfig
 from glassbox.domain.errors import EvidenceWriteError, SigningUnavailableError
@@ -64,6 +64,22 @@ class StoredRecord:
     signer_key_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class StoredOutcome:
+    """One appended outcome, with everything needed to re-verify it.
+
+    A separate, independent chain from :class:`StoredRecord`'s -- outcomes are
+    not stitched into the intent chain, they get their own, scoped to the same
+    segment.
+    """
+
+    record: OutcomeRecord
+    seq: int
+    prev_hash: bytes
+    record_hmac: bytes
+    signer_key_id: str
+
+
 class InMemoryEvidenceStore:
     """Append-only, MAC-chained evidence held in process memory.
 
@@ -77,6 +93,8 @@ class InMemoryEvidenceStore:
         "_segments",
         "_receipts",
         "_outcomes",
+        "_outcome_chain",
+        "_outcome_keys",
         "_chain_anchor",
         "_purged",
         "_worm_anchors",
@@ -91,7 +109,15 @@ class InMemoryEvidenceStore:
         self._lock = threading.RLock()
         self._segments: Dict[str, List[StoredRecord]] = {}
         self._receipts: Dict[str, EvidenceReceipt] = {}
-        self._outcomes: Dict[str, OutcomeRecord] = {}
+        self._outcomes: Dict[str, StoredOutcome] = {}
+        # Per-segment outcome chain, ordered by seq -- independent of the
+        # intent chain above, sharing only the segment as a scoping key.
+        self._outcome_chain: Dict[str, List[StoredOutcome]] = {}
+        # (decision_id, completed_at) pairs already recorded, mirroring the
+        # Postgres adapter's `ON CONFLICT (decision_id, completed_at) DO
+        # NOTHING`: a retried outcome write must not allocate a second chain
+        # entry for work already durable.
+        self._outcome_keys: set = set()
         # The MAC of the last purged record, used as the chain link for the first
         # surviving one. Distinct from the Merkle root, which attests to the
         # sealed *set* rather than linking the chain.
@@ -168,6 +194,12 @@ class InMemoryEvidenceStore:
     def append_outcome(self, receipt: EvidenceReceipt, record: OutcomeRecord) -> None:
         """Record what happened after the intent was made durable.
 
+        Chained the same way :meth:`append_intent` chains intents: a separate,
+        independent chain scoped to the same segment. Idempotent on
+        ``(decision_id, completed_at)``, mirroring the Postgres adapter's
+        ``ON CONFLICT DO NOTHING`` -- a retried write for a pair already
+        recorded is a true no-op and never advances the chain twice.
+
         Raises:
             ValueError: If the receipt and the outcome describe different decisions.
             EvidenceWriteError: If the receipt is unknown to this store.
@@ -183,16 +215,46 @@ class InMemoryEvidenceStore:
                     "no intent record exists for this receipt",
                     decision_id=receipt.decision_id,
                 )
-            self._outcomes[record.decision_id] = record
+            idempotency_key = (record.decision_id, record.outcome.completed_at)
+            if idempotency_key in self._outcome_keys:
+                return
+
+            chain = self._outcome_chain.setdefault(receipt.segment_id, [])
+            seq = len(chain)
+            prev_hash = chain[-1].record_hmac if chain else GENESIS_PREV_HASH
+
+            payload = record.chain_payload(seq=seq, prev_hash=prev_hash)
+            try:
+                mac = self._signer.mac(payload)
+            except SigningUnavailableError:
+                raise
+            except Exception as exc:
+                raise EvidenceWriteError(
+                    "MAC computation failed; refusing to write unkeyed evidence",
+                    decision_id=record.decision_id,
+                    cause=type(exc).__name__,
+                ) from exc
+
+            key_id = self._signer.key_id
+            stored = StoredOutcome(
+                record=record, seq=seq, prev_hash=prev_hash, record_hmac=mac, signer_key_id=key_id
+            )
+            chain.append(stored)
+            self._outcomes[record.decision_id] = stored
+            self._outcome_keys.add(idempotency_key)
 
     def verify(self, segment_id: str, *, now: float) -> IntegrityReport:
         """Verify the MAC chain of one segment.
 
         Recomputes each payload from the stored fields rather than trusting a
         cached digest, and checks ``seq`` continuity, so deletion and re-ordering
-        are detected as well as mutation.
+        are detected as well as mutation. Checks the outcome chain the same way,
+        independently of the intent chain -- either can be broken without the
+        other being affected.
         """
         with self._lock:
+            outcome_fields = self._verify_outcome_chain(segment_id)
+
             segment = self._segments.get(segment_id)
             if segment is None:
                 return IntegrityReport(
@@ -201,6 +263,7 @@ class InMemoryEvidenceStore:
                     records_checked=0,
                     verified_at=now,
                     detail="segment not found",
+                    **outcome_fields,
                 )
 
             purged = self._purged.get(segment_id, 0)
@@ -220,6 +283,7 @@ class InMemoryEvidenceStore:
                         verified_at=now,
                         first_broken_seq=stored.seq,
                         detail=f"sequence discontinuity: expected {expected_seq}",
+                        **outcome_fields,
                     )
                 if stored.prev_hash != expected_prev:
                     return IntegrityReport(
@@ -229,6 +293,7 @@ class InMemoryEvidenceStore:
                         verified_at=now,
                         first_broken_seq=stored.seq,
                         detail="chain link does not match the previous record",
+                        **outcome_fields,
                     )
                 payload = stored.record.chain_payload(seq=stored.seq, prev_hash=stored.prev_hash)
                 try:
@@ -242,6 +307,7 @@ class InMemoryEvidenceStore:
                         records_checked=expected_seq - purged,
                         verified_at=now,
                         detail=f"signing key {stored.signer_key_id!r} is unavailable",
+                        **outcome_fields,
                     )
                 if not authentic:
                     return IntegrityReport(
@@ -251,6 +317,7 @@ class InMemoryEvidenceStore:
                         verified_at=now,
                         first_broken_seq=stored.seq,
                         detail="record MAC does not authenticate the stored fields",
+                        **outcome_fields,
                     )
                 expected_prev = stored.record_hmac
                 expected_seq += 1
@@ -270,7 +337,54 @@ class InMemoryEvidenceStore:
                     if status is IntegrityStatus.SEALED_PURGED
                     else ""
                 ),
+                **outcome_fields,
             )
+
+    def _verify_outcome_chain(self, segment_id: str) -> Dict[str, Any]:
+        """Walk the outcome chain for one segment.
+
+        Must be called with ``self._lock`` held. Simpler than the intent
+        chain's walk: nothing ever purges an outcome chain entry, so there is
+        no SEALED_PURGED case here -- only INTACT, BROKEN, or UNVERIFIABLE.
+        """
+        chain = self._outcome_chain.get(segment_id, [])
+        expected_seq = 0
+        expected_prev = GENESIS_PREV_HASH
+        checked = 0
+
+        for stored in chain:
+            if stored.seq != expected_seq or stored.prev_hash != expected_prev:
+                return {
+                    "outcome_status": IntegrityStatus.BROKEN,
+                    "outcome_records_checked": checked,
+                    "first_broken_outcome_seq": stored.seq,
+                }
+            payload = stored.record.chain_payload(seq=stored.seq, prev_hash=stored.prev_hash)
+            try:
+                authentic = self._signer.verify(
+                    payload, stored.record_hmac, key_id=stored.signer_key_id
+                )
+            except SigningUnavailableError:
+                return {
+                    "outcome_status": IntegrityStatus.UNVERIFIABLE,
+                    "outcome_records_checked": checked,
+                    "first_broken_outcome_seq": None,
+                }
+            if not authentic:
+                return {
+                    "outcome_status": IntegrityStatus.BROKEN,
+                    "outcome_records_checked": checked,
+                    "first_broken_outcome_seq": stored.seq,
+                }
+            expected_prev = stored.record_hmac
+            expected_seq += 1
+            checked += 1
+
+        return {
+            "outcome_status": IntegrityStatus.INTACT,
+            "outcome_records_checked": checked,
+            "first_broken_outcome_seq": None,
+        }
 
     # ----------------------------------------------------------------- #
     # Retention (reference behaviour for GB-007)
@@ -389,7 +503,8 @@ class InMemoryEvidenceStore:
     def outcome_for(self, decision_id: str) -> Optional[OutcomeRecord]:
         """Return the recorded outcome, or ``None`` if none was written."""
         with self._lock:
-            return self._outcomes.get(decision_id)
+            stored = self._outcomes.get(decision_id)
+            return stored.record if stored is not None else None
 
     def segment_size(self, segment_id: str) -> int:
         """Return the number of live records in a segment."""

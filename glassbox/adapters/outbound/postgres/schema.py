@@ -451,6 +451,81 @@ ALTER TABLE evidence_outcome RENAME TO evidence_outcome_pre_partition_backup;
 ALTER TABLE evidence_outcome_partitioned RENAME TO evidence_outcome;
 """
 
+_MIGRATION_0010 = """
+-- Extends the keyed-MAC chain to outcome records (the review's largest
+-- remaining "vision vs implementation" gap: only evidence_intent was
+-- chain-protected). This is a SEPARATE, independent chain from
+-- evidence_intent's -- outcomes are not stitched into the intent chain --
+-- scoped to the same segment and using the same segment row as its lock, the
+-- same way the intent chain already does.
+--
+-- All new columns are nullable and the segment's outcome chain head columns
+-- default to genesis: any outcome row written before this migration simply
+-- has no chain (seq IS NULL), reported as "not chained" rather than
+-- "broken" -- the same honest, additive stance every other migration in
+-- this file takes towards pre-migration data.
+--
+-- `record` duplicates `status`/`completed_at`/`result_digest`/`error_class`
+-- as JSONB, mirroring evidence_intent's own `record` column, and for the
+-- same reason: `completed_at` is a caller-supplied float that must survive
+-- to verification bit-for-bit, and TIMESTAMPTZ storage only has microsecond
+-- precision -- reconstructing it from the timestamptz column instead of the
+-- signed JSONB would risk a spurious MAC mismatch on a value that was never
+-- actually tampered with.
+ALTER TABLE evidence_segment
+    ADD COLUMN IF NOT EXISTS outcome_last_seq  BIGINT NOT NULL DEFAULT -1,
+    ADD COLUMN IF NOT EXISTS outcome_last_hash BYTEA  NOT NULL DEFAULT decode(repeat('00', 32), 'hex');
+
+ALTER TABLE evidence_outcome
+    ADD COLUMN IF NOT EXISTS segment_id    TEXT,
+    ADD COLUMN IF NOT EXISTS seq           BIGINT,
+    ADD COLUMN IF NOT EXISTS record        JSONB,
+    ADD COLUMN IF NOT EXISTS prev_hash     BYTEA,
+    ADD COLUMN IF NOT EXISTS record_hmac   BYTEA,
+    ADD COLUMN IF NOT EXISTS signer_key_id TEXT;
+
+ALTER TABLE evidence_outcome
+    ADD CONSTRAINT evidence_outcome_hash_width
+        CHECK (prev_hash IS NULL OR octet_length(prev_hash) = 32);
+ALTER TABLE evidence_outcome
+    ADD CONSTRAINT evidence_outcome_mac_width
+        CHECK (record_hmac IS NULL OR octet_length(record_hmac) >= 32);
+
+CREATE INDEX IF NOT EXISTS ix_evidence_outcome_segment_seq
+    ON evidence_outcome (segment_id, seq);
+"""
+
+_MIGRATION_0011 = f"""
+-- Tenant scoping + RLS for dispatch_ledger (review finding: the table had
+-- no tenant_id column or RLS at all, unlike every evidence table, so an
+-- idempotency key was not tenant-scoped even though nothing else in this
+-- schema is tenant-agnostic). Mirrors evidence_intent's own RLS pattern
+-- (migration 4) exactly; unlike evidence_intent this table is small and not
+-- partitioned, so no copy-and-rename dance is needed.
+--
+-- Backfilled from evidence_intent via decision_id for any row written
+-- before this migration. A row whose intent no longer exists (already
+-- purged) is left with a NULL tenant_id and is simply invisible under RLS
+-- to every tenant -- the same honest "not covered", never "broken" stance
+-- every other additive migration in this file takes towards pre-migration
+-- data.
+ALTER TABLE dispatch_ledger ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+
+UPDATE dispatch_ledger
+   SET tenant_id = evidence_intent.tenant_id
+  FROM evidence_intent
+ WHERE dispatch_ledger.decision_id = evidence_intent.decision_id
+   AND dispatch_ledger.tenant_id IS NULL;
+
+CREATE INDEX IF NOT EXISTS ix_dispatch_ledger_tenant ON dispatch_ledger (tenant_id);
+
+ALTER TABLE dispatch_ledger ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dispatch_ledger FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY dispatch_ledger_tenant_isolation ON dispatch_ledger
+    USING (tenant_id = current_setting('{TENANT_CONTEXT_GUC}', true));
+"""
+
 #: Ordered migrations. Append only; never edit a released entry.
 MIGRATIONS: Tuple[Tuple[int, str, str], ...] = (
     (1, "evidence tables, indexes and constraints", _MIGRATION_0001),
@@ -462,6 +537,8 @@ MIGRATIONS: Tuple[Tuple[int, str, str], ...] = (
     (7, "physical time partitioning of evidence_intent", _MIGRATION_0007),
     (8, "drop the backup table's FK so segment cleanup is not blocked", _MIGRATION_0008),
     (9, "physical time partitioning of evidence_outcome", _MIGRATION_0009),
+    (10, "keyed-MAC chain for outcome records", _MIGRATION_0010),
+    (11, "tenant scoping and row-level security on dispatch_ledger", _MIGRATION_0011),
 )
 
 #: Derived, never hand-maintained: a constant edited separately from the list it

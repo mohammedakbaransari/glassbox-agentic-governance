@@ -382,6 +382,52 @@ class OutcomeRecord:
         """Return the canonical ``evidence_outcome`` payload."""
         return {"decision_id": self.decision_id, **dict(self.outcome.as_evidence())}
 
+    def chain_payload(self, *, seq: int, prev_hash: bytes) -> bytes:
+        """Return the exact bytes to be MAC-ed for this record's chain link.
+
+        A separate, independent chain from :meth:`IntentRecord.chain_payload`,
+        scoped to the same segment: outcome records are not stitched into the
+        intent chain, they get their own, so an intent's MAC chain and an
+        outcome's MAC chain can be verified (or found broken) independently.
+
+        Args:
+            seq: Position of this record within its segment's outcome chain.
+            prev_hash: MAC of the previous outcome record, or
+                :data:`GENESIS_PREV_HASH`.
+
+        Returns:
+            Canonical UTF-8 bytes.
+
+        Raises:
+            DomainValidationError: If ``seq`` is negative or ``prev_hash`` is not
+                exactly 32 bytes.
+        """
+        if isinstance(seq, bool) or not isinstance(seq, int):
+            raise DomainValidationError(
+                "seq must be an integer", field="seq", offending_type=type(seq).__name__
+            )
+        if seq < 0:
+            raise DomainValidationError("seq must not be negative", field="seq", value=seq)
+        if not isinstance(prev_hash, (bytes, bytearray)):
+            raise DomainValidationError(
+                "prev_hash must be bytes",
+                field="prev_hash",
+                offending_type=type(prev_hash).__name__,
+            )
+        if len(prev_hash) != len(GENESIS_PREV_HASH):
+            raise DomainValidationError(
+                "prev_hash must be exactly 32 bytes",
+                field="prev_hash",
+                length=len(prev_hash),
+            )
+        return canonical_bytes(
+            {
+                "seq": seq,
+                "prev_hash": bytes(prev_hash).hex(),
+                "record": dict(self.as_evidence()),
+            }
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class EvidenceReceipt:
@@ -686,6 +732,16 @@ class IntegrityReport:
 
     ``first_broken_seq`` localises tampering rather than merely reporting that
     something, somewhere, is wrong.
+
+    ``status``/``records_checked``/``first_broken_seq`` describe the **intent**
+    chain only, unchanged in meaning since before outcome records were chained
+    -- existing callers that only ever cared about intent-chain integrity are
+    unaffected. ``outcome_status``/``outcome_records_checked``/
+    ``first_broken_outcome_seq`` are the additive, independent counterparts for
+    the **outcome** chain: a segment that never had any chained outcome
+    appended to it reports ``outcome_status=IntegrityStatus.INTACT`` with
+    ``outcome_records_checked=0`` -- vacuously fine, not a claim that outcomes
+    were checked and found trustworthy.
     """
 
     segment_id: str
@@ -694,6 +750,9 @@ class IntegrityReport:
     verified_at: float
     first_broken_seq: Optional[int] = None
     detail: str = ""
+    outcome_status: IntegrityStatus = IntegrityStatus.INTACT
+    outcome_records_checked: int = 0
+    first_broken_outcome_seq: Optional[int] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -746,11 +805,70 @@ class IntegrityReport:
                 field="first_broken_seq",
                 status=self.status.value,
             )
+        if not isinstance(self.outcome_status, IntegrityStatus):
+            raise DomainValidationError(
+                "outcome_status must be an IntegrityStatus",
+                field="outcome_status",
+                offending_type=type(self.outcome_status).__name__,
+            )
+        if isinstance(self.outcome_records_checked, bool) or not isinstance(
+            self.outcome_records_checked, int
+        ):
+            raise DomainValidationError(
+                "outcome_records_checked must be an integer",
+                field="outcome_records_checked",
+                offending_type=type(self.outcome_records_checked).__name__,
+            )
+        if self.outcome_records_checked < 0:
+            raise DomainValidationError(
+                "outcome_records_checked must not be negative",
+                field="outcome_records_checked",
+                value=self.outcome_records_checked,
+            )
+        if self.first_broken_outcome_seq is not None:
+            if isinstance(self.first_broken_outcome_seq, bool) or not isinstance(
+                self.first_broken_outcome_seq, int
+            ):
+                raise DomainValidationError(
+                    "first_broken_outcome_seq must be an integer",
+                    field="first_broken_outcome_seq",
+                    offending_type=type(self.first_broken_outcome_seq).__name__,
+                )
+            if self.first_broken_outcome_seq < 0:
+                raise DomainValidationError(
+                    "first_broken_outcome_seq must not be negative",
+                    field="first_broken_outcome_seq",
+                    value=self.first_broken_outcome_seq,
+                )
+        if self.outcome_status is IntegrityStatus.BROKEN and self.first_broken_outcome_seq is None:
+            raise DomainValidationError(
+                "a broken outcome chain must localise the first failing record",
+                field="first_broken_outcome_seq",
+            )
+        if (
+            self.outcome_status is not IntegrityStatus.BROKEN
+            and self.first_broken_outcome_seq is not None
+        ):
+            raise DomainValidationError(
+                "only a broken outcome chain may name a failing record",
+                field="first_broken_outcome_seq",
+                outcome_status=self.outcome_status.value,
+            )
 
     @property
     def is_acceptable(self) -> bool:
-        """Whether an auditor may rely on this segment."""
+        """Whether an auditor may rely on the intent chain in this segment."""
         return self.status.is_acceptable
+
+    @property
+    def outcome_is_acceptable(self) -> bool:
+        """Whether an auditor may rely on the outcome chain in this segment."""
+        return self.outcome_status.is_acceptable
+
+    @property
+    def is_fully_acceptable(self) -> bool:
+        """Whether both the intent chain and the outcome chain are trustworthy."""
+        return self.is_acceptable and self.outcome_is_acceptable
 
     def as_evidence(self) -> Mapping[str, Any]:
         """Return the canonical representation for reporting."""
@@ -761,4 +879,7 @@ class IntegrityReport:
             "verified_at": self.verified_at,
             "first_broken_seq": self.first_broken_seq,
             "detail": self.detail,
+            "outcome_status": self.outcome_status.value,
+            "outcome_records_checked": self.outcome_records_checked,
+            "first_broken_outcome_seq": self.first_broken_outcome_seq,
         }

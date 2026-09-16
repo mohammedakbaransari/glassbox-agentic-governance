@@ -1,0 +1,66 @@
+# Reference Kubernetes CronJob for glassbox.adapters.inbound.cli.maintenance.
+# Not applied automatically by anything in this repository -- copy, fill in
+# the placeholders, and `kubectl apply -f k8s-cronjob.yaml`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: glassbox-evidence-maintenance
+  namespace: <namespace>
+spec:
+  # Every 15 minutes. Safe to run less often; GLASSBOX_MAINTENANCE_SEGMENT_BATCH_LIMIT
+  # bounds a single run's work regardless of cadence.
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 0 # a failed run is retried by the next scheduled tick, not immediately
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: glassbox-maintenance
+              image: <your-glassbox-image>:<tag>
+              command: ["python", "-m", "glassbox.adapters.inbound.cli.maintenance"]
+              env:
+                - name: GLASSBOX_PROFILE
+                  value: "prod"
+                - name: GLASSBOX_EVIDENCE_DSN
+                  valueFrom:
+                    secretKeyRef:
+                      name: glassbox-evidence-credentials
+                      key: dsn
+                - name: GLASSBOX_SIGNING_ALLOW_LOCAL_KEY
+                  value: "false"
+                - name: GLASSBOX_SIGNING_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: glassbox-signing-credentials
+                      key: key-id
+                # Optional overrides -- see the module docstring in
+                # glassbox/adapters/inbound/cli/maintenance.py for every
+                # GLASSBOX_MAINTENANCE_* variable and its default.
+                - name: GLASSBOX_MAINTENANCE_SEAL_AFTER_SECONDS
+                  value: "2592000" # 30 days
+                - name: GLASSBOX_MAINTENANCE_PURGE_GRACE_SECONDS
+                  value: "2592000" # 30 days
+                - name: GLASSBOX_MAINTENANCE_SEGMENT_BATCH_LIMIT
+                  value: "5000"
+                - name: GLASSBOX_MAINTENANCE_WORM_ANCHOR_DIR
+                  value: "/var/lib/glassbox/worm-anchors"
+              volumeMounts:
+                - name: worm-anchors
+                  mountPath: /var/lib/glassbox/worm-anchors
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+          volumes:
+            - name: worm-anchors
+              persistentVolumeClaim:
+                claimName: glassbox-worm-anchors

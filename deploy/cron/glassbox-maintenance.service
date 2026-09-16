@@ -1,0 +1,20 @@
+# Reference systemd unit for glassbox.adapters.inbound.cli.maintenance.
+# Not installed automatically by anything in this repository -- copy to
+# /etc/systemd/system/glassbox-maintenance.service, fill in the placeholders,
+# and pair with glassbox-maintenance.timer.
+[Unit]
+Description=GlassBox evidence retention/partition maintenance
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=glassbox
+Group=glassbox
+WorkingDirectory=/opt/glassbox
+EnvironmentFile=/etc/glassbox/maintenance.env
+ExecStart=/opt/glassbox/.venv/bin/python -m glassbox.adapters.inbound.cli.maintenance
+# A single failed run must be visible to the operator, not silently retried
+# forever -- the next scheduled timer tick is the retry, not systemd itself.
+Restart=no
+TimeoutStartSec=600

@@ -181,6 +181,51 @@ class EvidenceStoreConformance:
             store.append_outcome(stranger, record)
 
     # ----------------------------------------------------------------- #
+    # Outcome chain
+    # ----------------------------------------------------------------- #
+
+    @staticmethod
+    def _outcome_record(decision_id: str, *, completed_at: float = NOW) -> OutcomeRecord:
+        return OutcomeRecord(
+            decision_id=decision_id,
+            outcome=ExecutionOutcome(status=ExecutionStatus.EXECUTED, completed_at=completed_at),
+        )
+
+    def test_outcome_records_are_chained_independently_of_the_intent_chain(
+        self, store: Any
+    ) -> None:
+        receipts = [
+            store.append_intent(make_intent(decision_id=f"decision-{index:04d}"))
+            for index in range(3)
+        ]
+        for index, receipt in enumerate(receipts):
+            store.append_outcome(
+                receipt, self._outcome_record(f"decision-{index:04d}", completed_at=NOW + index)
+            )
+        report = store.verify(SEGMENT, now=NOW)
+        assert report.status is IntegrityStatus.INTACT
+        assert report.outcome_status is IntegrityStatus.INTACT
+        assert report.outcome_records_checked == 3
+        assert report.outcome_is_acceptable is True
+        assert report.is_fully_acceptable is True
+
+    def test_a_retried_outcome_write_does_not_advance_the_chain_twice(self, store: Any) -> None:
+        """Idempotent on ``(decision_id, completed_at)``: a retry costs nothing."""
+        receipt = store.append_intent(make_intent())
+        outcome = self._outcome_record(receipt.decision_id)
+        store.append_outcome(receipt, outcome)
+        store.append_outcome(receipt, outcome)  # retry
+        report = store.verify(SEGMENT, now=NOW)
+        assert report.outcome_records_checked == 1
+
+    def test_a_segment_with_no_chained_outcomes_is_vacuously_intact(self, store: Any) -> None:
+        for index in range(2):
+            store.append_intent(make_intent(decision_id=f"decision-{index:04d}"))
+        report = store.verify(SEGMENT, now=NOW)
+        assert report.outcome_status is IntegrityStatus.INTACT
+        assert report.outcome_records_checked == 0
+
+    # ----------------------------------------------------------------- #
     # Integrity
     # ----------------------------------------------------------------- #
 

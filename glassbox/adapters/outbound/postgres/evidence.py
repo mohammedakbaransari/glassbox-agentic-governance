@@ -63,6 +63,15 @@ from glassbox.ports.retention import SegmentLeaf
 
 __all__ = ["PostgresEvidenceStore"]
 
+#: Default outcome-chain fields for an ``IntegrityReport``: vacuously intact,
+#: nothing checked. Used whenever a report is built without ever having looked
+#: at the outcome chain at all (e.g. the segment itself does not exist).
+_EMPTY_OUTCOME_FIELDS: Mapping[str, Any] = {
+    "outcome_status": IntegrityStatus.INTACT,
+    "outcome_records_checked": 0,
+    "first_broken_outcome_seq": None,
+}
+
 #: Sets the transaction-scoped RLS GUC (GB-026b). `set_config` binds both the
 #: name and the value as parameters, unlike `SET LOCAL name = value`, which
 #: cannot bind either -- consistent with "every statement binds its parameters".
@@ -113,10 +122,34 @@ UPDATE evidence_segment
  WHERE segment_id = %s
 """
 
+_SELECT_OUTCOME_CHAIN_HEAD_FOR_UPDATE = """
+SELECT outcome_last_seq, outcome_last_hash
+  FROM evidence_segment
+ WHERE segment_id = %s
+   FOR UPDATE
+"""
+
+_ADVANCE_OUTCOME_CHAIN = """
+UPDATE evidence_segment
+   SET outcome_last_seq = %s, outcome_last_hash = %s
+ WHERE segment_id = %s
+"""
+
 _UPSERT_OUTCOME = """
-INSERT INTO evidence_outcome (decision_id, status, completed_at, result_digest, error_class)
-VALUES (%s, %s, to_timestamp(%s), %s, %s)
+INSERT INTO evidence_outcome (
+    decision_id, status, completed_at, result_digest, error_class,
+    segment_id, seq, record, prev_hash, record_hmac, signer_key_id
+)
+VALUES (%s, %s, to_timestamp(%s), %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (decision_id, completed_at) DO NOTHING
+RETURNING decision_id
+"""
+
+_SELECT_OUTCOME_CHAIN = """
+SELECT seq, record, prev_hash, record_hmac, signer_key_id
+  FROM evidence_outcome
+ WHERE segment_id = %s AND seq IS NOT NULL
+ ORDER BY seq ASC
 """
 
 _SELECT_SEGMENT_STATE = """
@@ -317,7 +350,7 @@ class PostgresEvidenceStore:
 
                 seq = last_seq + 1
                 payload = record.chain_payload(seq=seq, prev_hash=last_hash)
-                mac = self._sign(payload, record)
+                mac = self._sign(payload, decision_id=record.decision_id)
                 key_id = self._signer.key_id
 
                 cursor.execute(
@@ -350,6 +383,14 @@ class PostgresEvidenceStore:
     def append_outcome(self, receipt: EvidenceReceipt, record: OutcomeRecord) -> None:
         """Record what happened after the intent was made durable.
 
+        Chained the same way :meth:`append_intent` chains intents: the segment
+        row (locked ``FOR UPDATE``) is both the serialisation point and the
+        chain head for outcomes, via its ``outcome_last_seq``/
+        ``outcome_last_hash`` columns -- a separate, independent chain from the
+        intent chain on the same row. A retried write for a ``(decision_id,
+        completed_at)`` pair already recorded is a true no-op: the chain head
+        is only advanced when the row is genuinely new.
+
         Raises:
             ValueError: If the receipt and the outcome describe different decisions.
             EvidenceWriteError: If no intent exists for the receipt, or the write
@@ -369,6 +410,20 @@ class PostgresEvidenceStore:
                         "no intent record exists for this receipt",
                         decision_id=receipt.decision_id,
                     )
+
+                cursor.execute(_SELECT_OUTCOME_CHAIN_HEAD_FOR_UPDATE, (receipt.segment_id,))
+                head = cursor.fetchone()
+                if head is None:
+                    raise EvidenceWriteError(
+                        "evidence segment could not be locked for the outcome chain",
+                        segment_id=receipt.segment_id,
+                    )
+                last_seq, last_hash = int(head[0]), bytes(head[1])
+                seq = last_seq + 1
+                payload = record.chain_payload(seq=seq, prev_hash=last_hash)
+                mac = self._sign(payload, decision_id=record.decision_id)
+                key_id = self._signer.key_id
+
                 cursor.execute(
                     _UPSERT_OUTCOME,
                     (
@@ -377,8 +432,19 @@ class PostgresEvidenceStore:
                         outcome.completed_at,
                         outcome.result_digest,
                         outcome.error_class,
+                        receipt.segment_id,
+                        seq,
+                        json.dumps(dict(record.as_evidence())),
+                        last_hash,
+                        mac,
+                        key_id,
                     ),
                 )
+                if cursor.fetchone() is not None:
+                    # A row was genuinely inserted (not an idempotent retry
+                    # short-circuited by ON CONFLICT DO NOTHING) -- only then
+                    # does the outcome chain actually advance.
+                    cursor.execute(_ADVANCE_OUTCOME_CHAIN, (seq, mac, receipt.segment_id))
         except EvidenceWriteError:
             raise
         except Exception as exc:
@@ -394,7 +460,9 @@ class PostgresEvidenceStore:
 
         Recomputes every payload from the stored fields; a cached digest is never
         trusted. Sequence continuity is checked, so deletion and re-ordering are
-        detected as well as mutation.
+        detected as well as mutation. Checks the outcome chain the same way,
+        independently of the intent chain -- either can be broken without the
+        other being affected.
 
         Raises:
             EvidenceIntegrityError: If verification could not be performed at all.
@@ -411,6 +479,7 @@ class PostgresEvidenceStore:
                         records_checked=0,
                         verified_at=now,
                         detail="segment not found",
+                        **_EMPTY_OUTCOME_FIELDS,
                     )
                 purged_before = int(state[0])
                 sealed_at = state[1]
@@ -422,6 +491,9 @@ class PostgresEvidenceStore:
 
                 cursor.execute(_SELECT_CHAIN, (segment_id,))
                 rows = cursor.fetchall()
+
+                cursor.execute(_SELECT_OUTCOME_CHAIN, (segment_id,))
+                outcome_rows = cursor.fetchall()
         except Exception as exc:
             raise EvidenceIntegrityError(
                 "evidence verification could not be performed",
@@ -429,6 +501,8 @@ class PostgresEvidenceStore:
                 cause=type(exc).__name__,
                 detail=str(exc),
             ) from exc
+
+        outcome_fields = self._verify_outcome_chain(outcome_rows, now=now)
 
         return self._verify_rows(
             segment_id,
@@ -448,6 +522,7 @@ class PostgresEvidenceStore:
             sealed_anchor=sealed_anchor if sealed_anchor is not None else retention_last_leaf_hmac,
             anchored=worm_anchor_id is not None or retention_worm_anchor_id is not None,
             now=now,
+            outcome_fields=outcome_fields,
         )
 
     # ----------------------------------------------------------------- #
@@ -668,8 +743,12 @@ class PostgresEvidenceStore:
     # Internals
     # ----------------------------------------------------------------- #
 
-    def _sign(self, payload: bytes, record: IntentRecord) -> bytes:
-        """Compute the record MAC, refusing to degrade to an unkeyed digest."""
+    def _sign(self, payload: bytes, *, decision_id: str) -> bytes:
+        """Compute the record MAC, refusing to degrade to an unkeyed digest.
+
+        Shared by both the intent chain and the outcome chain -- ``decision_id``
+        is only ever used for error context, never part of the signed payload.
+        """
         try:
             return self._signer.mac(payload)
         except SigningUnavailableError:
@@ -677,7 +756,7 @@ class PostgresEvidenceStore:
         except Exception as exc:
             raise EvidenceWriteError(
                 "MAC computation failed; refusing to write unkeyed evidence",
-                decision_id=record.decision_id,
+                decision_id=decision_id,
                 cause=type(exc).__name__,
             ) from exc
 
@@ -691,8 +770,16 @@ class PostgresEvidenceStore:
         sealed_anchor: Optional[bytes],
         anchored: bool,
         now: float,
+        outcome_fields: Mapping[str, Any] = _EMPTY_OUTCOME_FIELDS,
     ) -> IntegrityReport:
-        """Walk the chain, checking continuity, linkage and authenticity."""
+        """Walk the chain, checking continuity, linkage and authenticity.
+
+        ``outcome_fields`` (already computed by :meth:`_verify_outcome_chain`)
+        is attached, unchanged, to whichever report this method returns: the
+        outcome chain's integrity is independent of the intent chain's, so it
+        is reported alongside every outcome here, including a BROKEN intent
+        chain.
+        """
         expected_seq = purged_before
         expected_prev = GENESIS_PREV_HASH if purged_before == 0 else sealed_anchor
         checked = 0
@@ -711,10 +798,16 @@ class PostgresEvidenceStore:
                     now,
                     seq,
                     f"sequence discontinuity: expected {expected_seq}",
+                    outcome_fields=outcome_fields,
                 )
             if expected_prev is not None and prev_hash != expected_prev:
                 return _broken(
-                    segment_id, checked, now, seq, "chain link does not match the previous record"
+                    segment_id,
+                    checked,
+                    now,
+                    seq,
+                    "chain link does not match the previous record",
+                    outcome_fields=outcome_fields,
                 )
             if self._verify_columns:
                 mismatch = _column_mismatch(row, record_payload)
@@ -725,6 +818,7 @@ class PostgresEvidenceStore:
                         now,
                         seq,
                         f"indexed column disagrees with the signed record: {mismatch}",
+                        outcome_fields=outcome_fields,
                     )
 
             payload = canonical_bytes(
@@ -739,6 +833,7 @@ class PostgresEvidenceStore:
                     records_checked=checked,
                     verified_at=now,
                     detail=f"signing key {key_id!r} is unavailable",
+                    **outcome_fields,
                 )
             if not authentic:
                 return _broken(
@@ -747,6 +842,7 @@ class PostgresEvidenceStore:
                     now,
                     seq,
                     "record MAC does not authenticate the stored fields",
+                    outcome_fields=outcome_fields,
                 )
 
             expected_prev = mac
@@ -773,6 +869,7 @@ class PostgresEvidenceStore:
                 records_checked=checked,
                 verified_at=now,
                 detail=f"{purged_before} record(s) purged from an unsealed segment",
+                **outcome_fields,
             )
         return IntegrityReport(
             segment_id=segment_id,
@@ -780,7 +877,64 @@ class PostgresEvidenceStore:
             records_checked=checked,
             verified_at=now,
             detail=detail,
+            **outcome_fields,
         )
+
+    def _verify_outcome_chain(self, rows: Sequence[Sequence[Any]], *, now: float) -> Dict[str, Any]:
+        """Walk the outcome chain for one segment.
+
+        Simpler than :meth:`_verify_rows`: nothing ever purges or seals
+        ``evidence_outcome`` rows today, so there is no SEALED_PURGED case to
+        handle -- only INTACT, BROKEN, or UNVERIFIABLE (signer unavailable).
+        Rows with a ``NULL`` ``seq`` (written before the outcome chain existed)
+        are excluded by the caller's query, not by this method.
+        """
+        del now  # kept for signature symmetry with _verify_rows; not otherwise used
+        expected_seq = 0
+        expected_prev = GENESIS_PREV_HASH
+        checked = 0
+
+        for row in rows:
+            seq = int(row[0])
+            record_payload = _as_mapping(row[1])
+            prev_hash = bytes(row[2])
+            mac = bytes(row[3])
+            key_id = str(row[4])
+
+            if seq != expected_seq or prev_hash != expected_prev:
+                return {
+                    "outcome_status": IntegrityStatus.BROKEN,
+                    "outcome_records_checked": checked,
+                    "first_broken_outcome_seq": seq,
+                }
+
+            payload = canonical_bytes(
+                {"seq": seq, "prev_hash": prev_hash.hex(), "record": record_payload}
+            )
+            try:
+                authentic = self._signer.verify(payload, mac, key_id=key_id)
+            except SigningUnavailableError:
+                return {
+                    "outcome_status": IntegrityStatus.UNVERIFIABLE,
+                    "outcome_records_checked": checked,
+                    "first_broken_outcome_seq": None,
+                }
+            if not authentic:
+                return {
+                    "outcome_status": IntegrityStatus.BROKEN,
+                    "outcome_records_checked": checked,
+                    "first_broken_outcome_seq": seq,
+                }
+
+            expected_prev = mac
+            expected_seq += 1
+            checked += 1
+
+        return {
+            "outcome_status": IntegrityStatus.INTACT,
+            "outcome_records_checked": checked,
+            "first_broken_outcome_seq": None,
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -857,7 +1011,15 @@ def _column_mismatch(row: Sequence[Any], record: Mapping[str, Any]) -> str:
     return ""
 
 
-def _broken(segment_id: str, checked: int, now: float, seq: int, detail: str) -> IntegrityReport:
+def _broken(
+    segment_id: str,
+    checked: int,
+    now: float,
+    seq: int,
+    detail: str,
+    *,
+    outcome_fields: Mapping[str, Any] = _EMPTY_OUTCOME_FIELDS,
+) -> IntegrityReport:
     """Build a localised BROKEN report."""
     return IntegrityReport(
         segment_id=segment_id,
@@ -866,6 +1028,7 @@ def _broken(segment_id: str, checked: int, now: float, seq: int, detail: str) ->
         verified_at=now,
         first_broken_seq=seq,
         detail=detail,
+        **outcome_fields,
     )
 
 
