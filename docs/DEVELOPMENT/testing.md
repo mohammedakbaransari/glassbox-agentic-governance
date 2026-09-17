@@ -13,8 +13,7 @@ python -m pytest tests -q
 ```
 
 Coverage is enforced at 80 percent for the current v2 architecture (`domain`,
-`ports`, `app`, and inbound/outbound adapters). Retained legacy compatibility
-packages are tested but reported separately from this release gate:
+`ports`, `app`, and inbound/outbound adapters):
 
 ```bash
 python -m pytest tests \
@@ -64,9 +63,10 @@ keys, or records.
 ## Quality Gates
 
 CI runs formatting, import order, pylint, mypy, strict domain/port typing,
-import-linter, ruff, Bandit, dependency audit, a package build/install check on
-Python 3.13 (the single supported version), the full test suite, examples,
-benchmarks, property tests, and environment-backed integration jobs.
+import-linter, ruff, Bandit, dependency audit, a package build/install check,
+the full test suite, benchmarks, property tests, and environment-backed
+integration jobs. Python 3.13 is the current CI interpreter; package metadata
+permits Python 3.13 and newer.
 
 Run the relevant focused check immediately after an edit, then run the full
 suite before merging a cross-cutting change.
@@ -81,16 +81,6 @@ suite before merging a cross-cutting change.
 - Keep unit tests independent of optional services.
 - Add conformance cases when changing a port contract.
 - Update [CLAIMS.md](../CLAIMS.md) when a public guarantee changes.
-
-## Batch Harness
-
-`scripts/run_test_batches.py` executes `tests/batch_manifest.json` and can
-produce artifacts for scheduled runs. It is an orchestration convenience, not a
-substitute for the ordinary pytest suite.
-
-```bash
-python scripts/run_test_batches.py
-```
 
 ## Related Documentation
 

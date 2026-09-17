@@ -47,15 +47,38 @@ Accepted booleans are `true/false`, `1/0`, `yes/no`, and `on/off`
 | `GLASSBOX_POLICY_BUNDLE_REGISTRY_DSN` | empty | Required |
 | `GLASSBOX_POLICY_REQUIRE_SIGNATURE` | `true` | Must remain `true` |
 | `GLASSBOX_POLICY_DENY_ON_BUNDLE_UNAVAILABLE` | `true` | Must remain `true` |
+| `GLASSBOX_RISK_ENFORCE_THRESHOLD` | `true` | Must remain `true` |
+| `GLASSBOX_RISK_DENY_LEVEL` | `high` | Denies bands strictly above this level |
 | `GLASSBOX_DISPATCH_DEFAULT_TIMEOUT_S` | `30.0` | Positive |
 | `GLASSBOX_DISPATCH_MAX_IN_FLIGHT` | `64` | Positive |
 | `GLASSBOX_DISPATCH_REQUIRE_EVIDENCE_RECEIPT` | `true` | Must remain `true` |
 | `GLASSBOX_OBSERVABILITY_SERVICE_NAME` | `glassbox` | Valid identifier |
 | `GLASSBOX_OBSERVABILITY_LOG_LEVEL` | `INFO` | DEBUG/INFO/WARNING/ERROR/CRITICAL |
 | `GLASSBOX_OBSERVABILITY_JSON_LOGS` | `true` | Deployment choice |
+| `GLASSBOX_HTTP_ADMISSION_ENABLED` | `true` | Keep enabled unless equivalent protection is proven at every entry point |
+| `GLASSBOX_HTTP_ADMISSION_MAX_REQUESTS` | `120` | Positive; per client key and process |
+| `GLASSBOX_HTTP_ADMISSION_WINDOW_SECONDS` | `10.0` | Positive |
 
 `describe()` redacts connection values and reports only whether sensitive
 settings are configured.
+
+### Redis Sentinel settings
+
+`LimitsConfig` and `BaselineConfig` support Sentinel discovery through
+`sentinel_hosts`, `sentinel_service_name`, and
+`sentinel_socket_timeout_s`. `sentinel_hosts` is a structured tuple of
+`(host, port)` pairs and must currently be supplied through
+`GlassBoxConfig.from_mapping()` or direct construction; the environment loader
+only coerces scalar fields. The `prod` profile still requires `limits.url` and
+`baseline.url`, even when Sentinel endpoints are also configured.
+
+## PostgreSQL Schema
+
+The current schema version is **11**. Migrations are append-only and applied by
+`build_evidence_store()` before the store is returned. The latest migrations
+add the independent outcome keyed-MAC chain (10) and tenant scoping with forced
+row-level security for `dispatch_ledger` (11). A migration failure prevents
+startup.
 
 ## Scheduled Maintenance Variables
 
@@ -81,11 +104,10 @@ These variables are test harness controls, not `GlassBoxConfig` fields:
 | `GLASSBOX_REDIS_URL` | Enable Redis-backed tests |
 | `GLASSBOX_SPARK_LOCAL_JOB` | Enable optional local Spark execution test |
 | `GLASSBOX_RUN_BUILD_TESTS` | Enable isolated build/install tests |
+| `GLASSBOX_RUN_BENCHMARKS` | Enable the opt-in P99 latency benchmark (`tests/test_performance_benchmarks.py`) |
 
 Do not pass them to `GlassBoxConfig.from_env()` in the same environment without
 filtering: unknown `GLASSBOX_*` keys are rejected by design.
-
-| `GLASSBOX_RUN_BENCHMARKS` | Enable the opt-in P99 latency benchmark (`tests/test_performance_benchmarks.py`) |
 
 ## HTTP Routes
 

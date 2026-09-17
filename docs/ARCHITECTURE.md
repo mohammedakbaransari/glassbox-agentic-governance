@@ -142,8 +142,9 @@ validated `ProposedAction` to `decide_and_dispatch`.
 
 - **Allow:** dispatch follows durable intent evidence.
 - **Deny:** no effect is dispatched; reasons and stage outcomes are recorded.
-- **Require approval:** no effect is dispatched by the current request; an
-  external workflow owns approval completion.
+- **Require approval:** no effect is dispatched by the current request. The
+    HTTP approval routes can transition approval state, while a separate
+    integration must decide whether and how to resume the original effect.
 
 Infrastructure failures follow explicit domain rules. Required production
 controls cannot be silently disabled or replaced by permissive local fallback.

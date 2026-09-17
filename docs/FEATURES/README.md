@@ -17,7 +17,6 @@ boundary.
 | Verified | Code and focused tests exist; see `CLAIMS.md` |
 | Adapter available | Integration code exists; deployment assurance remains environment-specific |
 | Operator-owned | Required external platform/process capability |
-| Legacy | Retained synchronous implementation, not the default for new work |
 
 No maturity label is a compliance certification or production-readiness
 attestation for a particular deployment.

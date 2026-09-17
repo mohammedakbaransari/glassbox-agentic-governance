@@ -49,19 +49,20 @@ them.
 | HTTP-layer request flood | In-process admission-control guard (`HttpAdmissionController`) rejects a burst before identity verification |
 | Cold-start anomaly bypass | Peer-group baseline prior; no silent skip |
 | Evidence loss before effect | Durable intent receipt required by dispatcher |
-| Evidence forgery | Canonical keyed MAC chain, signer identity, segment verification (intent records only — outcome records are an accepted gap, see CLAIMS.md) |
+| Evidence forgery | Independent canonical keyed-MAC chains for intent and outcome records, signer identity, and segment verification |
 | Duplicate side effect | Durable idempotency ledger and receipt validation |
 | Replay causes effect | Structurally separate replay path with no dispatcher call |
 | Dependency outage permits effect | Production safety switches and fail-closed errors |
 | Unauthorized dispatch of a high-risk decision | `DecisionEffect.REQUIRE_APPROVAL` + `ApprovalService`; dual-control quorum via `WorkflowEngine.quorum_approve` |
-| Risk score silently ignored | Opt-in `RiskConfig.enforce_threshold`/`deny_level` gate (`DenialReason.RISK_THRESHOLD_EXCEEDED`) |
+| Risk score silently ignored | `RiskConfig.enforce_threshold`/`deny_level` gate (`DenialReason.RISK_THRESHOLD_EXCEEDED`), enabled by default and required by the `prod` profile |
 
 ## Responsibility Boundary
 
 GlassBox does not by itself provide TLS termination, DDoS protection, identity
 issuance, secrets management, database encryption, KMS administration, SIEM,
-approval completion, host hardening, vulnerability response, backup/restore, or
-disaster recovery. These are required platform and organizational controls.
+reviewer identity governance, post-approval effect execution, host hardening,
+vulnerability response, backup/restore, or disaster recovery. These are
+required platform and organizational controls.
 
 ## Security Validation
 

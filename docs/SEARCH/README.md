@@ -1,53 +1,40 @@
 # Documentation Search Index
 
-This directory contains search index files for quick lookup across the GlassBox documentation.
+Use this index for quick lookup across the GlassBox documentation. Start with
+the [documentation index](../README.md) when navigating by audience or task.
 
 ## Search Strategy
 
 The GlassBox documentation uses multiple search approaches:
 
-### 1. **Built-in Search (Recommended)**
-Use your browser's built-in search (Ctrl+F / Cmd+F) on:
-- [docs/README.md](../README.md) - Main index with keyword listings
+### Documentation Index
 
-### 2. **Topic-Based Navigation**
-Navigate by topic through the search index sections in:
-- [docs/README.md](../README.md#-search-index-by-topic)
+Use [docs/README.md](../README.md) for role-based entry points and the current
+documentation structure.
 
-### 3. **Role-Based Learning Paths**
-Find your role in:
-- [docs/README.md](../README.md#-learning-paths-by-role)
+### Full-Text Search
 
-### 4. **Full-Text Search (CLI)**
-From repo root:
+From the repository root, use ripgrep:
+
 ```bash
-# Search all docs for a term
-grep -r "your_search_term" docs/
-
-# Count occurrences
-grep -r "your_search_term" docs/ | wc -l
-
-# Show file + line
-grep -rn "your_search_term" docs/
-
-# Regex search
-grep -rE "pattern|variation" docs/
+rg -n -i "search term" docs
+rg -n "pattern|variation" docs
 ```
 
-### 5. **Category-Specific Search**
-Each docs/ subdirectory has its own README with local index:
-- [API/README.md](../API/README.md) - Search API docs
-- [USER/README.md](../USER/README.md) - Search user guides
-- [DEVELOPMENT/README.md](../DEVELOPMENT/README.md) - Search developer docs
-- [FEATURES/README.md](../FEATURES/README.md) - Search features
-- [DEPLOYMENT/README.md](../DEPLOYMENT/README.md) - Search deployment
-- [COMPLIANCE/README.md](../COMPLIANCE/README.md) - Search compliance
-- [SECURITY/README.md](../SECURITY/README.md) - Search security
-- [PROCESSES/README.md](../PROCESSES/README.md) - Search processes
+### Category Indexes
+
+- [API](../API/README.md)
+- [User guides](../USER/README.md)
+- [Development](../DEVELOPMENT/README.md)
+- [Features](../FEATURES/README.md)
+- [Deployment](../DEPLOYMENT/README.md)
+- [Compliance](../COMPLIANCE/README.md)
+- [Security](../SECURITY/README.md)
+- [Processes](../PROCESSES/README.md)
 
 ---
 
-## 🔍 Keyword Index
+## Keyword Index
 
 ### A
 - **Adapters** → [../ARCHITECTURE.md](../ARCHITECTURE.md), [DEVELOPMENT/implementation_guide.md](../DEVELOPMENT/implementation_guide.md)
@@ -70,7 +57,6 @@ Each docs/ subdirectory has its own README with local index:
 - **Compliance** → [COMPLIANCE/requirements.md](../COMPLIANCE/requirements.md)
 - **Configuration** → [DEPLOYMENT/deployment_reference.md](../DEPLOYMENT/deployment_reference.md)
 - **Containerization** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
-- **Currency** → [FEATURES/velocity_breaker.md](../FEATURES/velocity_breaker.md)
 
 ### D
 - **Database** → [DEPLOYMENT/deployment_reference.md](../DEPLOYMENT/deployment_reference.md)
@@ -123,7 +109,7 @@ Each docs/ subdirectory has its own README with local index:
 
 ### M
 - **Metrics** → [DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md)
-- **Migration** → [ARCHITECTURE.md](../ARCHITECTURE.md#current-and-legacy-implementations)
+- **Migration** → [Architecture](../ARCHITECTURE.md), [claims](../CLAIMS.md)
 - **Monitoring** → [DEPLOYMENT/guide.md](../DEPLOYMENT/guide.md)
 - **Multi-Tenant** → [FEATURES/enterprise.md](../FEATURES/enterprise.md)
 
@@ -179,7 +165,7 @@ Each docs/ subdirectory has its own README with local index:
 - **Tune** → [DEPLOYMENT/performance_tuning.md](../DEPLOYMENT/performance_tuning.md)
 
 ### U
-- **Upgrade** → [ARCHITECTURE.md](../ARCHITECTURE.md#current-and-legacy-implementations)
+- **Upgrade** → [Architecture](../ARCHITECTURE.md), [deployment](../DEPLOYMENT/README.md)
 - **Use Case** → [USER/use_cases.md](../USER/use_cases.md)
 
 ### V
@@ -193,79 +179,10 @@ Each docs/ subdirectory has its own README with local index:
 ### X-Z
 - **YAML** → [DEPLOYMENT/deployment_reference.md](../DEPLOYMENT/deployment_reference.md)
 
----
+## Search Tips
 
-## Search Statistics
-
-| Category | Documents | Keywords | Topics |
-|----------|-----------|----------|--------|
-| API | 2 | 45+ | REST, endpoints, auth |
-| USER | 4 | 60+ | Guides, examples, help |
-| DEVELOPMENT | 3 | 55+ | Architecture, design, code |
-| FEATURES | 4 | 50+ | Enterprise, VB, advanced |
-| DEPLOYMENT | 4 | 60+ | Ops, config, monitoring |
-| COMPLIANCE | 2 | 40+ | Regulations, audit, HIPAA |
-| SECURITY | 2 | 50+ | Hardening, encryption, RBAC |
-| PROCESSES | 2 | 35+ | Workflows, QA, teams |
-| **Total** | **32** | **~395** | **All aspects** |
-
----
-
-## 🔗 Cross-Document Links
-
-Most documents link to related topics for easy navigation:
-
-- See "Related Documentation" section in each document
-- Breadcrumb navigation in all documents
-- Table of Contents at top of longer docs
-- Quick links in README sections
-
----
-
-## 🎯 How to Search Effectively
-
-### Local Browser Search (Ctrl+F)
-Best for: Quick lookup in one doc
-1. Open the relevant docs/*/README.md
-2. Use Ctrl+F (Cmd+F on Mac)
-3. Type search term
-4. Click through matches
-
-### Grep (Terminal)
-Best for: Finding docs about a topic
-```bash
-# Find all docs mentioning "velocity"
-grep -r "velocity" docs/
-
-# Find docs with "policy" and show line
-grep -rn "policy" docs/
-
-# Case-insensitive search
-grep -ri "encryption" docs/
-```
-
-### GitHub Search
-Best for: Cross-repo searching
-```
-repo:mohammedakbaransari/glassbox-agentic-governance "search term"
-```
-
-### Documentation Index
-Best for: Topic-based navigation
-1. Check [Topic-Based Search Index](#-search-index-by-topic) above
-2. Or check [docs/README.md](../README.md) search index
-
----
-
-## 💡 Tips for Better Search
-
-1. **Use specific keywords** - "velocity breaker" better than "breaker"
-2. **Check related sections** - Each doc links to related topics
-3. **Start with README files** - They contain overviews and links
-4. **Use category READMEs** - Better targeted results
-5. **Check version docs** - Your version might have different info
-6. **Try multiple searches** - Different docs use different terms
-
----
-
-*GlassBox Documentation Search*
+- Prefer specific terms such as `risk threshold`, `outcome chain`, or
+	`admission control`.
+- Search [CLAIMS.md](../CLAIMS.md) when validating a guarantee.
+- Search [GLOSSARY.md](../GLOSSARY.md) when terminology is unfamiliar.
+- Check the related-document links at the end of each guide.

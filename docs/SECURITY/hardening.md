@@ -30,6 +30,9 @@ Never log bearer tokens or client certificate material.
 - Permit only schema-declared parameters.
 - Resolve governance attestations from systems of record.
 - Register tool definition digests and quarantine changed or compromised tools.
+- Declare sensitive action parameters in
+  `ActionDefinition.sensitive_parameter_fields`; the evidence-bound action is
+  redacted while the original value remains available to policy and dispatch.
 - Separate catalogue/tool administration from runtime identities.
 - Tool **output**, not just tool registration, is re-scanned for prompt
   injection after dispatch (`glassbox.domain.prompt_injection.scan()`); a
@@ -45,9 +48,9 @@ Never log bearer tokens or client certificate material.
 - Define rapid revocation and kill-switch ownership.
 - Require signed active policy bundles and deny when unavailable.
 - Review risk thresholds, limit ceilings, and peer groups under change control.
-  `RiskConfig.enforce_threshold`/`deny_level` is an opt-in, tested control
-  (`DenialReason.RISK_THRESHOLD_EXCEEDED`) — off by default, since risk
-  scoring is otherwise pure observability.
+  `RiskConfig.enforce_threshold`/`deny_level` is enabled by default and is
+  required by the `prod` profile. A threshold denial uses
+  `DenialReason.RISK_THRESHOLD_EXCEEDED`.
 - Keep approval completion in an authenticated, auditable workflow:
   `glassbox.app.approval_service.ApprovalService`, backed by
   `WorkflowEngine.quorum_approve` for dual-control sign-off.
@@ -62,10 +65,10 @@ Never log bearer tokens or client certificate material.
 - Seal segments and anchor roots to retention-locked WORM storage.
 - Test legal hold, retention expiry, backup, restore, and independent verification.
 
-Tamper evidence is not immutability. Independent key custody and WORM policy are
-deployment properties. **Accepted gap:** only `evidence_intent` rows
-participate in the MAC chain today; `evidence_outcome` rows are appended but
-not yet chain-protected (see [CLAIMS.md](../CLAIMS.md)).
+Tamper evidence is not immutability. Intent and outcome records have separate
+keyed-MAC chains, but independent key custody and WORM policy remain deployment
+properties. Verify both `IntegrityReport.status` and
+`IntegrityReport.outcome_status` during integrity checks.
 
 ## 6. Harden Distributed State
 
@@ -132,6 +135,8 @@ The repository ships an application factory, not a hardened public server.
 - [ ] Repeated idempotency keys do not repeat effects.
 - [ ] Replay generates no target-system traffic.
 - [ ] Evidence modification is detected.
+- [ ] Intent and outcome chain status are both verified.
+- [ ] HTTP admission control is enabled, capacity-tested, and monitored.
 - [ ] Restore and historical verification have been exercised.
 
 ```bash

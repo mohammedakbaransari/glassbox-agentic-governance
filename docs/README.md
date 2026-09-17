@@ -28,6 +28,8 @@ Start here based on your goal:
 - [PROCESSES/](PROCESSES/) - contribution/review process docs
 - [SEARCH/](SEARCH/) - topic index support
 - [CLAIMS.md](CLAIMS.md) - every documented claim, its code, and its test
+- [REVIEW/](REVIEW/) - dated historical reviews; consult each review's status
+  notice before treating findings as current
 
 ## Update Discipline
 

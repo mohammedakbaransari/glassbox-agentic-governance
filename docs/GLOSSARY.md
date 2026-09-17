@@ -66,7 +66,7 @@ The port `ApprovalService` depends on. Satisfied structurally (no adapter shim n
 - See: [ports/workflow.py](../glassbox/ports/workflow.py)
 
 **Risk-threshold gating**
-An opt-in control (`RiskConfig.enforce_threshold`/`deny_level`) that denies a decision (`DenialReason.RISK_THRESHOLD_EXCEEDED`) when its computed `RiskScore` exceeds a configured band. Off by default: risk scoring is otherwise pure observability, never silently gating.
+A control (`RiskConfig.enforce_threshold`/`deny_level`) that denies a decision (`DenialReason.RISK_THRESHOLD_EXCEEDED`) when its computed `RiskScore` exceeds a configured band. It is enabled by default and is a required safety switch in the `prod` profile. Development configurations may disable it explicitly when risk is being observed rather than enforced.
 - See: [app/decision_service.py](../glassbox/app/decision_service.py)
 
 **`DecisionService`**
@@ -114,7 +114,7 @@ Proof that an `IntentRecord` was made durable before any effect was dispatched: 
 - See: [domain/evidence.py](../glassbox/domain/evidence.py)
 
 **`IntentRecord` / `OutcomeRecord`**
-The pre-effect and post-effect halves of one decision's evidence. `IntentRecord`s are MAC-chained (HMAC over the prior record's hash); `OutcomeRecord`s are appended but **not yet chain-protected** — see [CLAIMS.md](CLAIMS.md) for this accepted gap.
+The pre-effect and post-effect halves of one decision's evidence. Each record type has its own keyed-MAC chain. Outcome-chain verification is reported separately through `IntegrityReport.outcome_status`, so intent and execution integrity can be assessed independently.
 - See: [domain/evidence.py](../glassbox/domain/evidence.py)
 
 **`EvidenceSegment`**

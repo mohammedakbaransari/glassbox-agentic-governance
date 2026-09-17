@@ -32,15 +32,15 @@ pip install pytest pytest-cov
 python -m pytest tests -q
 
 # With coverage
-python -m pytest tests --cov=glassbox --cov-report=term-missing
-
-# Batch harness (artifacts + scheduling support)
-python scripts/run_test_batches.py
+python -m pytest tests \
+	--cov=glassbox.domain --cov=glassbox.ports --cov=glassbox.app \
+	--cov=glassbox.adapters.inbound --cov=glassbox.adapters.outbound \
+	--cov-report=term-missing --cov-fail-under=80
 ```
 
 ## Code quality expectations
 
-- Target Python 3.13; it is the only version this project builds, tests, and ships against.
+- Target Python 3.13 or newer; CI currently validates Python 3.13.
 - Add/maintain type hints for public interfaces.
 - Add tests for new behavior and bug fixes.
 - Avoid adding mandatory runtime dependencies to core.

@@ -33,7 +33,7 @@ Proposed action ──► DecisionService.decide_and_dispatch(...)
                             │
                     Dispatcher.dispatch() (only if ALLOW)
                             │
-                    OutcomeRecord — append_outcome()
+                    OutcomeRecord — independent MAC chain
 ```
 
 Every governed decision — allowed, denied, or requiring approval — produces a
@@ -59,6 +59,7 @@ outcome.receipt                  # EvidenceReceipt: segment_id, seq, record_hmac
 # Verify a segment's MAC chain (auditor-facing)
 report = evidence_store.verify(segment_id, now=clock.now())
 report.status  # IntegrityStatus.INTACT / TAMPERED / UNVERIFIABLE
+report.outcome_status  # Independent verification of execution outcomes
 
 # Pending human review (compliance sign-off) queue
 from glassbox.app.approval_service import ApprovalService
@@ -75,7 +76,7 @@ approvals.list_pending()
 | AIRM.GV.01 | GOVERN | Risk management policies | Signed `PolicyBundle` evaluated by the policy decision point on every decision | ✅ Mechanism |
 | AIRM.MP.01 | MAP | AI risk identification | `ConsequenceClass`/`Exposure` on every `ProposedAction`; `RiskInputs` | ✅ Mechanism |
 | AIRM.ME.01 | MEASURE | AI risk measurement | `glassbox.domain.risk.RiskScore` (0–100, deterministic, no clock reads) | ✅ Mechanism |
-| AIRM.MG.01 | MANAGE | AI risk treatment | `DecisionEffect` (ALLOW / DENY / REQUIRE_APPROVAL) + opt-in `RiskConfig.enforce_threshold`/`deny_level` | ✅ Mechanism |
+| AIRM.MG.01 | MANAGE | AI risk treatment | `DecisionEffect` (ALLOW / DENY / REQUIRE_APPROVAL) + default-on `RiskConfig.enforce_threshold`/`deny_level` | ✅ Mechanism |
 | AIRM.MG.02 | MANAGE | AI decision audit trail | `EvidenceStore.append_intent`/`append_outcome`, MAC-chained, append-only | ✅ Mechanism |
 
 ## EU AI Act
@@ -86,7 +87,7 @@ Applicable to high-risk AI systems operating in the EU.
 |---|---|---|---|---|
 | EUAI.A9 | Art. 9 | Risk management system | `RiskScore` + policy bundle evaluation | ✅ Mechanism |
 | EUAI.A11 | Art. 11 | Technical documentation | `AuthorizationDecision.rationale` + policy bundle digest cited on every decision | ⚠️ Partial |
-| EUAI.A12 | Art. 12 | Record-keeping | MAC-chained `IntentRecord`/`OutcomeRecord`; see the accepted gap below | ✅ Mechanism |
+| EUAI.A12 | Art. 12 | Record-keeping | Independently MAC-chained `IntentRecord` and `OutcomeRecord` evidence | ✅ Mechanism |
 | EUAI.A13 | Art. 13 | Transparency | `AuthorizationDecision.rationale`, always populated, never omitted | ✅ Mechanism |
 | EUAI.A14 | Art. 14 | Human oversight | `DecisionEffect.REQUIRE_APPROVAL` + `ApprovalService` + `WorkflowEngine.quorum_approve` | ✅ Mechanism |
 | EUAI.A15 | Art. 15 | Accuracy and robustness | `glassbox.domain.prompt_injection.scan()` on inbound fields and tool output | ⚠️ Partial |
@@ -304,11 +305,6 @@ mechanism works if one exists in [CLAIMS.md](../CLAIMS.md).
 - **Rows marked "Policy-defined"** describe a seam, not a shipped feature:
   attach the actual rule as a signed `PolicyBundle` entry, evaluated the same
   way as every other decision, and evidenced identically.
-- **Outcome records are not yet MAC-chained** — only `evidence_intent` rows
-  participate in the hash chain today; `evidence_outcome` rows are an
-  accepted gap (see [CLAIMS.md](../CLAIMS.md)). An auditor relying on
-  outcome-record tamper-evidence specifically (e.g. FDA 21 CFR Part 11
-  §11.50) should treat that row as partial until this is closed.
 - **GDPR Art. 22 / jurisdiction-scoped gates** require the caller to pass
   jurisdiction context through a policy rule; GlassBox does not infer
   jurisdiction from a request.

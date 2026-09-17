@@ -24,12 +24,12 @@ resolving.
   risk scoring, and policy enforcement
 - Distributed, fail-closed velocity limits and cold-start-resistant anomaly
   detection
-- Append-only, keyed-MAC evidence with retention that never breaks
-  verifiability
+- Append-only intent and outcome evidence with independent keyed-MAC chains and
+  retention that preserves verifiability
 - At-most-once, idempotent dispatch with pure replay — replay never
   re-executes a side effect
-- An HTTP surface (with in-process admission control), a PostgreSQL
-  evidence/limits backend, Redis-backed limits (with per-tenant quota),
+- An HTTP surface (with in-process admission control), PostgreSQL-backed
+  evidence and dispatch ledger, Redis-backed limits (with per-tenant quota),
   KMS-backed signing, S3 Object Lock WORM anchoring, and OpenTelemetry
   tracing/metrics
 - An operable human-approval workflow (dual-control quorum, SLA/escalation)
@@ -66,14 +66,18 @@ print(runtime.describe())
 
 GlassBox denies by default. Before an action can execute, register its governed
 definition, mandate, policy permission, baseline, and dispatcher. The
-[complete quick start](docs/USER/quick_start.md) is executed from Markdown as
-part of documentation validation and demonstrates the full path.
+[complete quick start](docs/USER/quick_start.md) explains the full path; the
+matching [executable example](examples/quick_start_v2.py) runs it with the
+development-only in-memory adapters.
 
 ## Run tests
 
 ```bash
 python -m pytest tests -q
-python -m pytest tests --cov=glassbox --cov-report=term-missing
+python -m pytest tests \
+  --cov=glassbox.domain --cov=glassbox.ports --cov=glassbox.app \
+  --cov=glassbox.adapters.inbound --cov=glassbox.adapters.outbound \
+  --cov-report=term-missing --cov-fail-under=80
 ```
 
 ## Project layout

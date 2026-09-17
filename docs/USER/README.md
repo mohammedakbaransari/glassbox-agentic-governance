@@ -46,6 +46,7 @@ Documentation distinguishes:
 - **Adapter available:** implementation exists, but production assurance depends
   on deployment configuration and external services.
 - **Operator-owned:** required outside this repository, such as TLS ingress,
-  identity governance, disaster recovery, and approval completion.
+  identity governance, disaster recovery, reviewer governance, and
+  post-approval effect execution.
 
 Framework mappings and examples are not certifications or legal advice.

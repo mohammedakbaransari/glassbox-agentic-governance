@@ -14,13 +14,13 @@ infrastructure, policy ownership, approval workflows, and operational controls.
 | Tool governance | Registration, definition digest, quarantine, mandate grants, **output re-scanning** (`ToolOutputQuarantinedError` on flagged tool results, not just input) | Tool inventory ownership is organizational |
 | Mandates and kill switch | Time-bounded authority, emergency denial, and resource-scoped grants (`ActionResourceGrant` on a specific `(action, resource_kind, resource_id)` tuple) | Approval/revocation process is organizational |
 | Policy decision point | Port plus memory reference and bundle domain model | Production signed registry/PDP wiring is deployment-specific |
-| Risk scoring | Deterministic risk port and reference engine; opt-in threshold gating (`RiskConfig.enforce_threshold`/`deny_level`, `DenialReason.RISK_THRESHOLD_EXCEEDED` — wired and tested, off by default) | Model governance and thresholds are organizational |
+| Risk scoring | Deterministic risk port and reference engine; threshold gating through `RiskConfig.enforce_threshold`/`deny_level` and `DenialReason.RISK_THRESHOLD_EXCEEDED` | Gating is enabled by default and required by the `prod` profile; threshold selection and model governance are organizational |
 | Distributed limits | Redis atomic limit adapter with a per-tenant subject quota (`max_tenant_subjects`) bounding one tenant's own footprint | Redis HA, persistence, and capacity are operator-owned |
 | Behavioral baselines | Redis and memory baseline adapters with cold-start prior | Peer-group governance and model monitoring are organizational |
 | HTTP admission control | Cheap in-process, pre-identity request-rate guard (`HttpAdmissionController`) | Platform-level rate limiting/DoS protection is operator-owned |
 | Human approval workflow | `ApprovalService` + `WorkflowGateway`; dual-control quorum approval, escalation, expiry, revocation | Reviewer roster and SLA policy are organizational |
 | Evidence-before-effect | Intent receipt required before dispatch | Database durability and KMS availability determine assurance |
-| Tamper evidence | Keyed MAC chain (intent records), segment sealing, Merkle proofs, S3 Object Lock WORM anchoring (`S3WormAnchorStore`) | Outcome records are not yet MAC-chained (accepted gap, see CLAIMS.md); independent key custody is operator-owned |
+| Tamper evidence | Independent keyed-MAC chains for intent and outcome records, segment sealing, Merkle proofs, and S3 Object Lock WORM anchoring (`S3WormAnchorStore`) | Independent key custody and storage retention policy are operator-owned |
 | Evidence lifecycle | Postgres monthly partitioning (intent and outcome tables) + a real retention scheduler and maintenance CLI | Retention policy and legal hold are organizational |
 | Idempotent dispatch | Durable PostgreSQL dispatch ledger | Target system should honor idempotency too |
 | Replay | Side-effect-free re-evaluation with new evidence | Historical data access policy is operator-owned |

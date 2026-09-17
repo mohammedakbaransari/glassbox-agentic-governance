@@ -121,7 +121,7 @@ the rebuilt layers (see the port's own docstring).
 
 ---
 
-## What GlassBox does not do (yet)
+## Boundaries and Exclusions
 
 Stated explicitly, rather than left to be assumed:
 
@@ -131,15 +131,13 @@ Stated explicitly, rather than left to be assumed:
   ([glassbox/adapters/outbound/spark/](../glassbox/adapters/outbound/spark/)).
 - **No automatic obligation discharge.** A `REQUIRE_APPROVAL` decision or an
   unmet blocking obligation is recorded as `PENDING_APPROVAL`; resolving it is
-  an external workflow, not something `DecisionService` does itself.
-- **No production Postgres logical-replication CDC source yet.** ~~The CDC
-  consumer is fully built and tested against a pluggable source; the
-  production Postgres-replication-backed source is not yet implemented.~~
-  Implemented: `glassbox/adapters/outbound/postgres/cdc_source.py`'s
-  `PostgresLogicalReplicationSource` polls a logical replication slot via
-  wal2json's `pg_logical_slot_get_changes` SQL interface. Not live-verified
-  in this sandbox (`wal_level=replica`, no `wal2json` plugin here) — see
-  claim #17.
+  a separate workflow; `DecisionService` does not resume the effect. The HTTP
+  adapter exposes approval-state transitions only.
+- **PostgreSQL CDC requires wal2json.** `PostgresLogicalReplicationSource`
+  polls a logical replication slot through
+  `pg_logical_slot_get_changes`. The source has fake-slot coverage but has not
+  been verified against a live wal2json-enabled server in this repository's
+  test environment; see claim 17.
 - **No v2-native MCP tool-poisoning detection.** The legacy
   `glassbox.integrations.mcp_gateway` (`MCPToolScanner`/`MCPGovernanceGateway`)
   was physically deleted along with the rest of v1 (GB-040) and was not
@@ -147,9 +145,8 @@ Stated explicitly, rather than left to be assumed:
   `glassbox.domain.prompt_injection` scanner plus tool-output re-scanning
   cover the same threat class (untrusted content driving a subsequent
   decision) generically, not just for MCP-shaped tool calls specifically.
-- **This document is not exhaustive.** It covers the guarantees, threats, and
-  success criteria with the highest cost if wrong. A full line-by-line audit
-  of every document under `docs/` remains open work.
+- **This document is intentionally selective.** It covers guarantees, threats,
+  and success criteria with the highest cost if wrong.
 
 ---
 

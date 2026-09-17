@@ -28,7 +28,7 @@ development profile with controlled adapters instead.
 | `404`/`409` from `/v2/approvals/*` | Approval workflow | Decision id exists; requested transition is valid from the current state |
 | `429` from v2 HTTP | HTTP admission control | Client-key request rate against the in-process budget |
 | `503` from v2 HTTP | Evidence/signing dependency | Evidence database and KMS availability |
-| Approval remains pending | External workflow | Approval system; current request never dispatches |
+| Approval remains pending | Approval workflow | Use the authenticated approval routes or integrated workflow; the original decision request never dispatches a pending action |
 | Duplicate effect concern | Dispatcher ledger | Idempotency key and durable ledger state |
 | Different behavior across replicas | Distributed state | Redis/PostgreSQL adapter selection and tenant keys |
 

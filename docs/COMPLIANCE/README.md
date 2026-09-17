@@ -31,10 +31,10 @@ flowchart LR
 | Planned | Design intent only; not available for assurance |
 | External | Entirely owned by organization/platform |
 
-The 97-entry [requirements reference](requirements.md) is an engineering
-crosswalk maintained by the legacy `ComplianceCatalogue`. Its status values are
-not certifications and must be reconciled with the current runtime and the
-actual deployment before use in an audit.
+The 97-entry [requirements reference](requirements.md) is a preserved
+engineering crosswalk. Its status values are not certifications and must be
+reconciled with the current runtime, verified claims, and actual deployment
+before use in an audit.
 
 ## Assessment Workflow
 

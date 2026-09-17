@@ -3,8 +3,9 @@
 GlassBox provides a governance library, application composition model, Flask
 application factory, infrastructure adapters, and local integration services.
 It does not provide a turnkey production platform, cloud account baseline,
-Kubernetes manifests, Terraform modules, or a preassembled production
-`AdapterSet`.
+application deployment manifests, Terraform modules, or a preassembled
+production `AdapterSet`. The repository does include reference Kubernetes and
+systemd schedules for evidence maintenance.
 
 Production readiness therefore has two parts:
 
@@ -23,7 +24,7 @@ Production readiness therefore has two parts:
 
 ## Supported Runtime Baseline
 
-- Python 3.13 only, as declared and built in CI
+- Python 3.13 or newer, as declared by the package; CI currently validates 3.13
 - Linux or Windows for the Python package; production platform qualification is
   operator-owned
 - Optional service clients installed from the matching extras
@@ -81,6 +82,8 @@ filesystem adapter.
 - [ ] Identity derives tenant and subject from governed trust roots.
 - [ ] PostgreSQL schema, row-level security, backups, restore, and retention are verified.
 - [ ] Redis persistence/HA and atomic limit behavior are verified across processes.
+- [ ] HTTP admission-control capacity and platform-level rate limiting are tested.
+- [ ] Evidence maintenance is scheduled and stale-backlog warnings are monitored.
 - [ ] KMS key policy separates use, administration, and audit responsibilities.
 - [ ] Policy and catalogue bundles are versioned, signed, activated, and rollback-capable.
 - [ ] WORM retention and legal-hold settings are tested on the actual target service.
@@ -107,7 +110,9 @@ resources before promotion.
 ## Known Boundaries
 
 - `/healthz` reports successful composition; it is not a deep dependency probe.
-- Approval completion is external to the current v2 HTTP adapter.
+- The v2 HTTP approval routes transition approval state only; they never execute
+  the original effect. A separate integration must decide whether and how to
+  dispatch an approved action.
 - The repository does not assemble a complete production adapter set.
 - Infrastructure availability and disaster recovery depend on the deployed
   services, not the Python library alone.

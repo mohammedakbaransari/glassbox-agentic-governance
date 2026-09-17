@@ -60,6 +60,10 @@ and dispatch handler in the selected adapters. See
 - `decide_and_dispatch`: trusted server-side `ProposedAction`
 - `replay`: historical principal and action, with no dispatch capability
 
+Risk-threshold enforcement is enabled by default. The `prod` profile requires
+`RiskConfig.enforce_threshold=True`; development configurations may disable it
+explicitly when collecting risk scores without using them as a denial gate.
+
 `DecisionService` is stateless apart from its immutable runtime reference. All
 cross-request state belongs behind ports.
 

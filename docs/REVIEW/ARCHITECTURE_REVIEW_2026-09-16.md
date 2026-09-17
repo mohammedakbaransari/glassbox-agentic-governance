@@ -1,10 +1,41 @@
 # GlassBox Agentic Governance — Principal Architect Review (2026-09-16)
 
-**Scope note (read first):** This review covers the codebase as it exists today: the v1 packages
+> **Historical architecture snapshot.** This report records findings from
+> 2026-09-16 before the remediation work summarized below. Its body is
+> intentionally preserved as review evidence and does not describe the current
+> implementation. For current guarantees, use [CLAIMS.md](../CLAIMS.md); for
+> current architecture, use [ARCHITECTURE.md](../ARCHITECTURE.md).
+
+## Post-Review Remediation Status
+
+The concrete P1/P2 findings from this review were subsequently addressed and
+validated. The current state is:
+
+| Review finding | Current status |
+|---|---|
+| Sensitive action parameters persisted in clear text | Closed: catalogue-declared `sensitive_parameter_fields` are redacted on the evidence-bound action; see claim 11 |
+| Quorum state could survive a failed persistence attempt | Closed: unconditional cleanup plus TTL eviction; see claim 12 |
+| Evidence maintenance had no deployable schedule or staleness signal | Closed: Kubernetes and systemd reference schedules plus stale-backlog warnings; see claim 13 |
+| Outcome evidence was not chain-protected | Closed: independent outcome keyed-MAC chain and verification, migration 10; see claim 14 |
+| Dispatch ledger lacked tenant scoping and RLS | Closed: tenant GUC propagation and migration 11; see claim 15 |
+| Inbound adapters were outside architecture enforcement | Closed: import-linter and AST contracts cover the composition root; see claim 16 |
+| No production-shaped PostgreSQL CDC source | Closed in code: wal2json polling source added; live wal2json verification remains environment-dependent; see claim 17 |
+| Risk threshold described as disabled by default | Corrected: `RiskConfig.enforce_threshold` defaults to `True` and is required by the `prod` profile |
+
+The remaining items in the report are historical observations or longer-term
+design options, not an active remediation backlog.
+
+---
+
+## Original Review (Preserved Verbatim)
+
+Statements below describe the repository as reviewed on 2026-09-16. They are
+retained for traceability and must be read together with the remediation status
+above.
+
+**Original scope note:** This review covered the codebase as it existed on 2026-09-16: the v1 packages
 (`api, authoring, benchmarks, compliance, events, governance, integrations, orchestration, rag,
-rules, scenarios, security, telemetry, testing`) were physically deleted in a prior session (see
-`/memories/repo/glassbox-notes.md`); only stale empty directories (`__pycache__` only) remain on
-disk for `glassbox/api` and `glassbox/governance`. The live system is v2-only:
+rules, scenarios, security, telemetry, testing`) had been physically deleted. The live system was v2-only:
 `glassbox/{domain,ports,app,adapters/{inbound,outbound},workflow,store}`. This review does not
 repeat a class-by-class card for all ~120 classes; it scopes to the ~30 architecturally
 load-bearing modules (evidence, dispatch, decision pipeline, identity/mandate, limits/baseline,

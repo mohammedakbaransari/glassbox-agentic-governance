@@ -1,195 +1,90 @@
-# Processes & Workflows
+# Processes and Workflows
 
-This directory contains documentation for processes, workflows, and procedures.
+This section defines repository-owned engineering practices. Deployment teams
+remain responsible for their own release approvals, incident severity model,
+on-call coverage, communication channels, and service-level objectives.
 
-## Contents
+## Documentation Style
 
-### Documentation Style
-- **[style_guide.md](style_guide.md)** — how to write and maintain documentation in this repository
+Use the [documentation style guide](style_guide.md) for structure, terminology,
+links, examples, and review expectations.
 
-## 🔄 Development Processes
+## Development Workflow
 
-### Code Review Process
+1. Create a focused branch from `main`.
+2. Implement the smallest complete change.
+3. Add or update tests for changed behavior.
+4. Run the relevant focused tests, then the repository quality gates.
+5. Update user, operator, API, and claims documentation where behavior changed.
+6. Open a pull request that explains the change, risk, and validation performed.
 
-**Steps:**
-1. Create feature branch
-2. Implement changes
-3. Write tests (coverage >90%)
-4. Submit pull request
-5. Reviewer checks:
-   - [ ] Tests pass
-   - [ ] Code style is consistent
-   - [ ] Documentation is updated
-   - [ ] Breaking changes are identified and managed
-   - [ ] Performance impact is assessed
-6. Approval and merge
+The enforced coverage floor is 80%, as configured in `pyproject.toml`. Coverage
+is a release signal, not a substitute for testing failure modes, concurrency,
+tenant isolation, and evidence integrity.
 
-**Review Checklist:**
-- [ ] Tests added/updated
-- [ ] Documentation updated
-- [ ] No security issues
-- [ ] No hardcoded values
-- [ ] Thread-safe (if applicable)
-- [ ] Performance tested
-- [ ] Backward compatible
+## Review Checklist
 
-### Pull Request Template
-```markdown
-## Description
-Brief description of changes
-
-## Type of Change
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Documentation
-- [ ] Performance improvement
-
-## Testing
-Describe tests added
-
-## Checklist
-- [ ] Tests pass
-- [ ] No new warnings
-- [ ] Documentation updated
-- [ ] Backward compatible
-```
+- [ ] The behavior and trust-boundary impact are clear.
+- [ ] Tests cover the success path and relevant failure paths.
+- [ ] Format, lint, type, architecture, security, and test gates pass.
+- [ ] Public interfaces and compatibility implications are identified.
+- [ ] Documentation and claim-to-test citations are current.
+- [ ] Performance-sensitive changes include measurements where appropriate.
+- [ ] No secret, credential, or unsafe production default was introduced.
 
 ## Quality Gates
 
-- Static analysis: pylint, mypy
-- Formatting: black, isort
-- Architecture: import-linter + `tests/test_layering.py`
-- Security scan: bandit, pip-audit
-- Dependency review and secret scanning on every pull request
-- [ ] Deployed to production
+The authoritative commands and versions are defined in `pyproject.toml` and
+`.github/workflows/ci.yml`. The principal gates are:
 
-## 📈 Continuous Improvement
+- formatting with Black and isort;
+- linting with Ruff and pylint;
+- type checking with mypy;
+- architecture checks with import-linter and `tests/test_layering.py`;
+- security checks with Bandit, pip-audit, dependency review, and secret scanning;
+- the full pytest suite, including the 80% coverage threshold;
+- claims, packaging, and lockfile validation.
 
-### Metrics Tracking
-- **Code Quality** - Lines of code, cyclomatic complexity
-- **Performance** - Latency P50/P95/P99, throughput
-- **Reliability** - Error rate, uptime
-- **Security** - Vulnerabilities found, response time
-- **Testing** - Coverage %, defect escapes
+Do not treat deployment as a pull-request quality gate. Release and production
+promotion are separate, environment-owned processes.
 
-### Improvement Initiatives
-1. **Identify** - Find bottlenecks or issues
-2. **Measure** - Establish baseline metrics
-3. **Implement** - Design and code improvement
-4. **Verify** - Measure impact
-5. **Document** - Share learnings
-6. **Iterate** - Find next improvement
+## Incident Workflow
 
-### Retrospectives
-- **Sprint retrospectives** - Every 2 weeks
-- **Release retrospectives** - After major release
-- **Postmortems** - After incidents
-- **Annual review** - Year-end assessment
+1. Detect the condition through telemetry, an alert, or a user report.
+2. Classify it using the deployment's severity model and the
+   [diagnostic matrix](../USER/troubleshooting.md#quick-diagnostic-matrix).
+3. Determine whether the event is a governance denial, dependency outage,
+   integrity failure, or uncertain target-system outcome.
+4. Mitigate it using the matching [operations runbook](../OPERATIONS/README.md).
+   Never bypass fail-closed controls merely to restore throughput.
+5. Restore the affected dependency or configuration and validate the original
+   invariant before reopening traffic.
+6. If evidence or dispatch was involved, verify the evidence segment and
+   reconcile the dispatch ledger with the target system.
+7. Record the root cause, affected decision or segment identifiers, corrective
+   actions, and follow-up tests.
 
-## 🔄 Operational Processes
+## Deployment-Team Responsibilities
 
-### Incident Management
-1. **Detection** - Automated alerts, [operational runbook](../OPERATIONS/README.md) triage, or user report
-2. **Triage** - Assess severity and impact using the [diagnostic matrix](../USER/troubleshooting.md#quick-diagnostic-matrix)
-3. **Response** - Engage on-call team; for a denial-volume incident, confirm whether it is a governance denial or a dependency outage before escalating (never bypass fail-closed controls to "unblock" callers)
-4. **Mitigation** - Reduce impact per the matching [operations runbook](../OPERATIONS/README.md) (PostgreSQL/evidence, Redis, KMS, identity, dispatcher, approval, admission control)
-5. **Resolution** - Fix root cause
-6. **Recovery** - Restore service; if evidence or the dispatch ledger was involved, verify segment integrity (`EvidenceStore.verify()`) and reconcile the dispatch ledger against the target system before declaring recovery complete
-7. **Postmortem** - Learn and improve; cite the specific decision ids / segment ids examined, not just a narrative summary
+Each deployment should define and maintain:
 
-### Severity Levels
-- **SEV 1**: System down, data loss risk
-- **SEV 2**: Degraded service, significant impact
-- **SEV 3**: Minor issue, workaround exists
-- **SEV 4**: Cosmetic or documentation
+- severity levels, escalation paths, and on-call coverage;
+- response and recovery objectives based on measured behavior;
+- incident communication channels and status-page procedures;
+- release approval, rollback, and disaster-recovery processes;
+- regular backup, failover, key-rotation, and evidence-integrity exercises;
+- operational metrics such as latency, error rate, denial rate, recovery time,
+  deployment frequency, and change failure rate.
 
-### On-Call Rotation
-- **Weekly rotation** - 1 engineer on call
-- **Response SLA**: 15 minutes
-- **Resolution SLA**: 1 hour (SEV 1)
-- **Runbooks** - Documented procedures
+The repository provides technical controls and reference runbooks. It does not
+prescribe a particular team structure, meeting cadence, paging product, or SLA.
 
-## 📞 Communication Procedures
+## Related Documentation
 
-### Status Page
-- Configure a status page for your deployment (this repository does not ship or operate one)
-- Update at a cadence appropriate to your SLA during incidents
-- Route updates to your incident communication channel
-
-### Escalation Path
-1. Tier 1: Support team
-2. Tier 2: Engineering
-3. Tier 3: Lead engineer/CTO
-4. Executive team (if needed)
-
-### Notification Channels
-- **Email** - Official notifications
-- **SMS** - Critical alerts
-- **Slack** - Team coordination
-- **PagerDuty** - On-call escalation
-- **Status page** - Public updates
-
-## 🎓 Knowledge Management
-
-### Documentation Standards
-- Clear, concise language
-- Examples included
-- Diagrams for complex concepts
-- Links to related docs
-- Regular reviews/updates
-- Version control maintained
-
-### Runbooks
-Documented for:
-- Deployment procedures
-- Rollback procedures
-- Incident response
-- Disaster recovery
-- Common troubleshooting
-
-**Format:**
-- Step-by-step instructions
-- Decision points/branches
-- Expected outputs
-- Troubleshooting tips
-- Escalation path
-
-### Knowledge Sharing
-- Weekly tech talks
-- Architecture reviews
-- Peer programming sessions
-- Documentation index
-- Internal wiki access
-
-## Process Metrics
-
-Monitor process health:
-- **Deployment frequency** - Deployments/month
-- **Lead time** - Commit to production
-- **MTTR** - Mean time to recovery
-- **Code review time** - Hours to review
-- **Test pass rate** - % of tests passing
-- **Documentation coverage** - % documented
-
-## 🔗 Related Documentation
-
-- **Review process**: [../../CONTRIBUTING.md](../../CONTRIBUTING.md)
-- **Development**: [../DEVELOPMENT/](../DEVELOPMENT/)
-- **Deployment**: [../DEPLOYMENT/](../DEPLOYMENT/)
-- **Security**: [../SECURITY/](../SECURITY/)
-
-## 📝 Process Improvement Form
-
-Document improvements:
-
-```
-Date: ___________
-Team: ___________
-Process: ________________
-Issue/Opportunity: _________________________
-Proposed Change: _________________________
-Expected Impact: _________________________
-Owner: _________  Due Date: _________
-```
+- [Contributing](../../CONTRIBUTING.md)
+- [Development](../DEVELOPMENT/README.md)
+- [Deployment](../DEPLOYMENT/README.md)
+- [Operations](../OPERATIONS/README.md)
+- [Security](../SECURITY/README.md)
 
 
